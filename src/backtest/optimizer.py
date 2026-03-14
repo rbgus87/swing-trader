@@ -1,0 +1,253 @@
+"""파라미터 최적화 -- 그리드 서치 + Walk-Forward."""
+
+import itertools
+from datetime import datetime, timedelta
+
+import pandas as pd
+from loguru import logger
+
+from src.backtest.engine import BacktestEngine, BacktestResult
+
+PARAM_GRID = {
+    "macd_fast": [8, 10, 12],
+    "macd_slow": [22, 24, 26],
+    "macd_signal": [7, 9],
+    "rsi_period": [12, 14],
+    "rsi_min": [35, 40, 45],
+    "rsi_max": [60, 65, 70],
+    "volume_multiplier": [1.2, 1.5, 2.0],
+    "stop_atr_mult": [1.0, 1.5, 2.0],
+    "target_return": [0.06, 0.08, 0.10],
+}
+
+
+class ParameterOptimizer:
+    """그리드 서치 및 Walk-Forward 검증 기반 파라미터 최적화."""
+
+    def __init__(self, engine: BacktestEngine | None = None):
+        self.engine = engine or BacktestEngine()
+
+    def run_grid_search(
+        self,
+        codes: list[str],
+        start_date: str,
+        end_date: str,
+        param_grid: dict | None = None,
+    ) -> pd.DataFrame:
+        """그리드 서치 실행.
+
+        Args:
+            codes: 종목 코드 리스트.
+            start_date: 시작일 (YYYYMMDD).
+            end_date: 종료일 (YYYYMMDD).
+            param_grid: 파라미터 그리드 (기본: PARAM_GRID).
+
+        Returns:
+            결과 DataFrame (파라미터 + 성과지표), sharpe 내림차순 정렬.
+            필터: sharpe >= 1.0, mdd >= -15%, win_rate >= 45%, profit_factor >= 1.8
+        """
+        grid = param_grid or PARAM_GRID
+        combos = self._generate_param_combinations(grid)
+        total = len(combos)
+        logger.info(f"그리드 서치 시작: {total}개 조합")
+
+        results = []
+        for i, params in enumerate(combos):
+            try:
+                result = self.engine.run(codes, start_date, end_date, params)
+                row = {**params}
+                row["total_return"] = result.total_return
+                row["annual_return"] = result.annual_return
+                row["max_drawdown"] = result.max_drawdown
+                row["sharpe_ratio"] = result.sharpe_ratio
+                row["sortino_ratio"] = result.sortino_ratio
+                row["win_rate"] = result.win_rate
+                row["profit_factor"] = result.profit_factor
+                row["avg_trade_return"] = result.avg_trade_return
+                row["trade_count"] = result.trade_count
+                row["avg_hold_days"] = result.avg_hold_days
+                results.append(row)
+
+                if (i + 1) % 100 == 0:
+                    logger.info(f"진행: {i + 1}/{total}")
+            except Exception as e:
+                logger.warning(f"조합 {i + 1} 실패: {e}")
+
+        if not results:
+            logger.warning("유효한 결과 없음")
+            return pd.DataFrame()
+
+        df = pd.DataFrame(results)
+
+        # 필터 적용
+        filtered = df[
+            (df["sharpe_ratio"] >= 1.0)
+            & (df["max_drawdown"] >= -15.0)
+            & (df["win_rate"] >= 45.0)
+            & (df["profit_factor"] >= 1.8)
+        ]
+
+        if filtered.empty:
+            logger.warning(
+                "필터 통과 조합 없음, 전체 결과 sharpe 정렬로 반환"
+            )
+            return df.sort_values("sharpe_ratio", ascending=False).reset_index(
+                drop=True
+            )
+
+        return filtered.sort_values(
+            "sharpe_ratio", ascending=False
+        ).reset_index(drop=True)
+
+    def walk_forward(
+        self,
+        codes: list[str],
+        start_date: str,
+        end_date: str,
+        train_months: int = 24,
+        test_months: int = 3,
+        step_months: int = 3,
+    ) -> list[BacktestResult]:
+        """Walk-Forward 검증.
+
+        각 구간: train 기간에서 최적 파라미터 -> test 기간 OOS 성과 측정.
+
+        Args:
+            codes: 종목 코드 리스트.
+            start_date: 전체 시작일 (YYYYMMDD).
+            end_date: 전체 종료일 (YYYYMMDD).
+            train_months: 훈련 구간 개월 수.
+            test_months: 테스트 구간 개월 수.
+            step_months: 슬라이딩 스텝 개월 수.
+
+        Returns:
+            각 구간의 OOS BacktestResult 리스트.
+        """
+        windows = self._generate_walk_forward_windows(
+            start_date, end_date, train_months, test_months, step_months
+        )
+
+        if not windows:
+            logger.warning("Walk-Forward 윈도우 생성 실패")
+            return []
+
+        logger.info(f"Walk-Forward: {len(windows)}개 구간")
+        oos_results = []
+
+        for i, (train_start, train_end, test_start, test_end) in enumerate(
+            windows
+        ):
+            logger.info(
+                f"구간 {i + 1}: "
+                f"Train {train_start}~{train_end}, "
+                f"Test {test_start}~{test_end}"
+            )
+
+            try:
+                # Train: 소규모 그리드로 최적 파라미터 탐색
+                small_grid = {
+                    "macd_fast": [10, 12],
+                    "macd_slow": [24, 26],
+                    "macd_signal": [9],
+                    "rsi_period": [14],
+                    "rsi_min": [35, 40],
+                    "rsi_max": [65, 70],
+                    "volume_multiplier": [1.5],
+                    "stop_atr_mult": [1.5, 2.0],
+                    "target_return": [0.08],
+                }
+
+                train_results = self.run_grid_search(
+                    codes, train_start, train_end, small_grid
+                )
+
+                if train_results.empty:
+                    logger.warning(f"구간 {i + 1}: 훈련 결과 없음, 건너뜀")
+                    continue
+
+                # 최적 파라미터 추출
+                best_row = train_results.iloc[0]
+                best_params = {
+                    k: best_row[k]
+                    for k in small_grid.keys()
+                    if k in best_row.index
+                }
+
+                # Test: OOS 성과 측정
+                oos_result = self.engine.run(
+                    codes, test_start, test_end, best_params
+                )
+                oos_result.params = best_params
+                oos_results.append(oos_result)
+
+                logger.info(
+                    f"구간 {i + 1} OOS: "
+                    f"수익률 {oos_result.total_return:.2f}%, "
+                    f"Sharpe {oos_result.sharpe_ratio:.2f}"
+                )
+            except Exception as e:
+                logger.error(f"구간 {i + 1} 실패: {e}")
+
+        return oos_results
+
+    def _generate_param_combinations(self, param_grid: dict) -> list[dict]:
+        """파라미터 조합 생성.
+
+        Args:
+            param_grid: {파라미터명: [값 리스트]} 딕셔너리.
+
+        Returns:
+            모든 조합의 딕셔너리 리스트.
+        """
+        keys = list(param_grid.keys())
+        values = list(param_grid.values())
+        combinations = []
+        for combo in itertools.product(*values):
+            combinations.append(dict(zip(keys, combo)))
+        return combinations
+
+    @staticmethod
+    def _generate_walk_forward_windows(
+        start_date: str,
+        end_date: str,
+        train_months: int,
+        test_months: int,
+        step_months: int,
+    ) -> list[tuple[str, str, str, str]]:
+        """Walk-Forward 윈도우 생성.
+
+        Args:
+            start_date: 전체 시작일 (YYYYMMDD).
+            end_date: 전체 종료일 (YYYYMMDD).
+            train_months: 훈련 구간 개월 수.
+            test_months: 테스트 구간 개월 수.
+            step_months: 슬라이딩 스텝 개월 수.
+
+        Returns:
+            [(train_start, train_end, test_start, test_end), ...] 리스트.
+        """
+        start = datetime.strptime(start_date, "%Y%m%d")
+        end = datetime.strptime(end_date, "%Y%m%d")
+
+        windows = []
+        current = start
+
+        while True:
+            train_start = current
+            train_end = train_start + timedelta(days=train_months * 30)
+            test_start = train_end + timedelta(days=1)
+            test_end = test_start + timedelta(days=test_months * 30)
+
+            if test_end > end:
+                break
+
+            windows.append((
+                train_start.strftime("%Y%m%d"),
+                train_end.strftime("%Y%m%d"),
+                test_start.strftime("%Y%m%d"),
+                test_end.strftime("%Y%m%d"),
+            ))
+
+            current += timedelta(days=step_months * 30)
+
+        return windows
