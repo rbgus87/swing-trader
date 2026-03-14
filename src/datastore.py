@@ -1,0 +1,345 @@
+"""SQLite 데이터 저장소.
+
+포지션, 매매 기록, 일일 성과, OHLCV 캐시 등의 CRUD를 제공.
+모든 쿼리는 파라미터 바인딩을 사용하여 SQL injection 방지.
+"""
+
+import sqlite3
+from pathlib import Path
+
+from src.models import Position, TradeRecord
+
+
+class DataStore:
+    """SQLite 기반 데이터 저장소.
+
+    Args:
+        db_path: SQLite 파일 경로. 기본값은 "trading.db".
+    """
+
+    def __init__(self, db_path: str = "trading.db"):
+        self._db_path = db_path
+        self._conn: sqlite3.Connection | None = None
+
+    def connect(self) -> None:
+        """DB 연결."""
+        self._conn = sqlite3.connect(self._db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+
+    def close(self) -> None:
+        """DB 연결 종료."""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """활성 연결 반환. 없으면 자동 연결."""
+        if self._conn is None:
+            self.connect()
+        return self._conn
+
+    def create_tables(self) -> None:
+        """테이블 생성 (없으면)."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS positions (
+                id INTEGER PRIMARY KEY,
+                code TEXT NOT NULL,
+                name TEXT,
+                entry_date TEXT NOT NULL,
+                entry_price INTEGER NOT NULL,
+                quantity INTEGER NOT NULL,
+                stop_price INTEGER NOT NULL,
+                target_price INTEGER,
+                status TEXT DEFAULT 'open',
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY,
+                code TEXT NOT NULL,
+                name TEXT,
+                side TEXT NOT NULL,
+                price INTEGER NOT NULL,
+                quantity INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                fee REAL,
+                tax REAL,
+                pnl REAL,
+                pnl_pct REAL,
+                reason TEXT,
+                executed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_performance (
+                date TEXT PRIMARY KEY,
+                realized_pnl REAL,
+                unrealized_pnl REAL,
+                total_capital REAL,
+                daily_return REAL,
+                mdd_current REAL,
+                trade_count INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS ohlcv_cache (
+                code TEXT NOT NULL,
+                date TEXT NOT NULL,
+                open INTEGER,
+                high INTEGER,
+                low INTEGER,
+                close INTEGER,
+                volume INTEGER,
+                amount INTEGER,
+                PRIMARY KEY (code, date)
+            );
+            """
+        )
+        self.conn.commit()
+
+    # ── Positions ──────────────────────────────────────────────
+
+    def insert_position(self, pos: Position) -> int:
+        """포지션 삽입.
+
+        Args:
+            pos: Position 데이터클래스 인스턴스.
+
+        Returns:
+            삽입된 row의 id.
+        """
+        cursor = self.conn.execute(
+            """
+            INSERT INTO positions
+                (code, name, entry_date, entry_price, quantity,
+                 stop_price, target_price, status, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pos.code,
+                pos.name,
+                pos.entry_date,
+                pos.entry_price,
+                pos.quantity,
+                pos.stop_price,
+                pos.target_price,
+                pos.status,
+                pos.updated_at,
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def update_position(self, position_id: int, **kwargs) -> None:
+        """포지션 업데이트.
+
+        Args:
+            position_id: 대상 포지션 ID.
+            **kwargs: 업데이트할 컬럼=값 쌍.
+        """
+        if not kwargs:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+        values = list(kwargs.values()) + [position_id]
+        self.conn.execute(
+            f"UPDATE positions SET {set_clause} WHERE id = ?",
+            values,
+        )
+        self.conn.commit()
+
+    def get_open_positions(self) -> list[dict]:
+        """열린 포지션 목록 조회.
+
+        Returns:
+            dict 리스트 (각 row).
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM positions WHERE status = ?", ("open",)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def count_open_positions(self) -> int:
+        """열린 포지션 수 조회."""
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE status = ?", ("open",)
+        )
+        return cursor.fetchone()[0]
+
+    # ── Trades ─────────────────────────────────────────────────
+
+    def record_trade(self, trade: TradeRecord) -> int:
+        """매매 기록 삽입.
+
+        Args:
+            trade: TradeRecord 인스턴스.
+
+        Returns:
+            삽입된 row의 id.
+        """
+        cursor = self.conn.execute(
+            """
+            INSERT INTO trades
+                (code, name, side, price, quantity, amount,
+                 fee, tax, pnl, pnl_pct, reason, executed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trade.code,
+                trade.name,
+                trade.side,
+                trade.price,
+                trade.quantity,
+                trade.amount,
+                trade.fee,
+                trade.tax,
+                trade.pnl,
+                trade.pnl_pct,
+                trade.reason,
+                trade.executed_at,
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_last_trade(self, code: str) -> dict | None:
+        """특정 종목의 마지막 매매 기록 조회.
+
+        Args:
+            code: 종목 코드.
+
+        Returns:
+            매매 기록 dict 또는 None.
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM trades WHERE code = ? ORDER BY id DESC LIMIT 1",
+            (code,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_trades_by_date(self, target_date: str) -> list[dict]:
+        """특정 날짜의 매매 기록 조회.
+
+        Args:
+            target_date: "YYYY-MM-DD" 형식 날짜.
+
+        Returns:
+            매매 기록 dict 리스트.
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM trades WHERE executed_at LIKE ?",
+            (f"{target_date}%",),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ── Daily Performance ──────────────────────────────────────
+
+    def save_daily_performance(
+        self,
+        date: str,
+        realized_pnl: float,
+        unrealized_pnl: float,
+        total_capital: float,
+        daily_return: float,
+        mdd_current: float,
+        trade_count: int,
+    ) -> None:
+        """일일 성과 저장 (upsert).
+
+        Args:
+            date: "YYYY-MM-DD" 형식.
+            realized_pnl: 실현 손익.
+            unrealized_pnl: 미실현 손익.
+            total_capital: 총 자산.
+            daily_return: 일일 수익률.
+            mdd_current: 현재 MDD.
+            trade_count: 매매 횟수.
+        """
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO daily_performance
+                (date, realized_pnl, unrealized_pnl, total_capital,
+                 daily_return, mdd_current, trade_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                date,
+                realized_pnl,
+                unrealized_pnl,
+                total_capital,
+                daily_return,
+                mdd_current,
+                trade_count,
+            ),
+        )
+        self.conn.commit()
+
+    def get_daily_performance(self, date: str) -> dict | None:
+        """일일 성과 조회.
+
+        Args:
+            date: "YYYY-MM-DD" 형식.
+
+        Returns:
+            성과 dict 또는 None.
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM daily_performance WHERE date = ?", (date,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    # ── OHLCV Cache ────────────────────────────────────────────
+
+    def cache_ohlcv(self, code: str, records: list[dict]) -> None:
+        """OHLCV 데이터 캐시 저장.
+
+        Args:
+            code: 종목 코드.
+            records: [{"date": ..., "open": ..., ...}] 형태 딕셔너리 리스트.
+        """
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO ohlcv_cache
+                (code, date, open, high, low, close, volume, amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    code,
+                    r["date"],
+                    r.get("open"),
+                    r.get("high"),
+                    r.get("low"),
+                    r.get("close"),
+                    r.get("volume"),
+                    r.get("amount"),
+                )
+                for r in records
+            ],
+        )
+        self.conn.commit()
+
+    def get_cached_ohlcv(
+        self, code: str, start_date: str, end_date: str
+    ) -> list[dict]:
+        """캐시된 OHLCV 데이터 조회.
+
+        Args:
+            code: 종목 코드.
+            start_date: 시작일 "YYYY-MM-DD".
+            end_date: 종료일 "YYYY-MM-DD".
+
+        Returns:
+            OHLCV dict 리스트 (날짜순 정렬).
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT * FROM ohlcv_cache
+            WHERE code = ? AND date >= ? AND date <= ?
+            ORDER BY date
+            """,
+            (code, start_date, end_date),
+        )
+        return [dict(row) for row in cursor.fetchall()]

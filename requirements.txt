@@ -1,0 +1,16 @@
+PyQt5==5.15.11
+pykrx==1.0.45
+pandas>=2.0
+pandas-ta>=0.3.14b
+vectorbt>=0.26
+numpy>=1.24
+APScheduler>=3.10
+loguru>=0.7
+requests>=2.31
+python-dotenv>=1.0
+PyYAML>=6.0
+holidays>=0.45
+pytz>=2023.3
+pytest>=7.4
+black>=23.0
+ruff>=0.1
