@@ -1,0 +1,181 @@
+"""종목 스크리닝 — 장 시작 전(08:30) 실행.
+
+pykrx를 사용하여 전종목 OHLCV를 수집하고,
+유동성 필터 + 기술적 지표 기반 매수 후보를 선별.
+"""
+
+from datetime import datetime, timedelta
+
+import pandas as pd
+from loguru import logger
+from pykrx import stock
+
+from data.column_mapper import OHLCV_MAP, map_columns
+from src.strategy.signals import (
+    calculate_indicators,
+    calculate_signal_score,
+    check_entry_signal,
+)
+
+
+class Screener:
+    """종목 스크리닝 — 장 시작 전(08:30) 실행."""
+
+    def __init__(self, config: dict):
+        """스크리너 초기화.
+
+        Args:
+            config: 전체 설정 딕셔너리.
+        """
+        screening = config.get("screening", {})
+        self.min_daily_amount = screening.get("min_daily_amount", 5_000_000_000)
+        self.min_price = screening.get("min_price", 1000)
+        self.max_price = screening.get("max_price", 500000)
+        self.top_n = screening.get("top_n", 30)
+        self.universe = config.get("trading", {}).get("universe", "kospi_kosdaq")
+        self.strategy_config = config.get("strategy", {})
+
+    def get_all_codes(self, market: str | None = None) -> list[str]:
+        """전종목 코드 수집.
+
+        Args:
+            market: "KOSPI", "KOSDAQ", 또는 None (universe 설정 기반).
+
+        Returns:
+            종목 코드 리스트.
+        """
+        if market:
+            return stock.get_market_ticker_list(market=market)
+
+        if self.universe == "kospi":
+            return stock.get_market_ticker_list(market="KOSPI")
+        elif self.universe == "kosdaq":
+            return stock.get_market_ticker_list(market="KOSDAQ")
+        else:
+            # kospi_kosdaq
+            kospi = stock.get_market_ticker_list(market="KOSPI")
+            kosdaq = stock.get_market_ticker_list(market="KOSDAQ")
+            return kospi + kosdaq
+
+    def run_daily_screening(self, date: str | None = None) -> list[str]:
+        """당일 매수 후보 종목 스크리닝.
+
+        Steps:
+        1. 전종목 코드 수집 (pykrx)
+        2. 유동성 필터 (거래대금, 주가 범위)
+        3. 지표 계산
+        4. 매수 신호 체크
+        5. 점수 기반 상위 N종목 반환
+
+        Args:
+            date: 기준 날짜 ("YYYYMMDD"). None이면 오늘.
+
+        Returns:
+            매수 후보 종목 코드 리스트 (점수 내림차순).
+        """
+        if date is None:
+            date = datetime.now().strftime("%Y%m%d")
+
+        start_date = (
+            datetime.strptime(date, "%Y%m%d") - timedelta(days=200)
+        ).strftime("%Y%m%d")
+
+        codes = self.get_all_codes()
+        logger.info(f"스크리닝 시작: 전체 {len(codes)}종목, 기준일 {date}")
+
+        candidates: list[tuple[str, float]] = []
+
+        for code in codes:
+            try:
+                # 일봉 OHLCV 수집
+                df = stock.get_market_ohlcv_by_date(start_date, date, code)
+                if df.empty or len(df) < 130:
+                    continue
+
+                df = map_columns(df, OHLCV_MAP)
+
+                # 유동성 필터
+                if not self._apply_liquidity_filter(code, df):
+                    continue
+
+                # 지표 계산
+                df_with_ind = calculate_indicators(
+                    df,
+                    macd_fast=self.strategy_config.get("macd_fast", 12),
+                    macd_slow=self.strategy_config.get("macd_slow", 26),
+                    macd_signal=self.strategy_config.get("macd_signal", 9),
+                    rsi_period=self.strategy_config.get("rsi_period", 14),
+                    bb_period=self.strategy_config.get("bb_period", 20),
+                    bb_std=self.strategy_config.get("bb_std", 2.0),
+                )
+
+                if df_with_ind.empty:
+                    continue
+
+                # 60분봉 데이터 (pykrx는 분봉을 직접 제공하지 않으므로
+                # 일봉 기반 근사치 사용: sma5, sma20 컬럼을 일봉에서 참조)
+                df_60m = pd.DataFrame(
+                    {
+                        "sma5": [df_with_ind.iloc[-1]["sma5"]],
+                        "sma20": [df_with_ind.iloc[-1]["sma20"]],
+                    }
+                )
+
+                # 매수 신호 체크
+                if check_entry_signal(
+                    df_with_ind,
+                    df_60m,
+                    rsi_entry_min=self.strategy_config.get("rsi_entry_min", 40),
+                    rsi_entry_max=self.strategy_config.get("rsi_entry_max", 65),
+                    volume_multiplier=self.strategy_config.get(
+                        "volume_multiplier", 1.5
+                    ),
+                ):
+                    score = calculate_signal_score(df_with_ind)
+                    candidates.append((code, score))
+
+            except Exception as e:
+                logger.warning(f"종목 {code} 스크리닝 실패: {e}")
+                continue
+
+        # 점수 내림차순 정렬, 상위 N종목
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        result = [code for code, _ in candidates[: self.top_n]]
+
+        logger.info(f"스크리닝 완료: {len(candidates)}종목 신호 발생, 상위 {len(result)}종목 선정")
+        return result
+
+    def _apply_liquidity_filter(self, code: str, df: pd.DataFrame) -> bool:
+        """유동성 필터 적용.
+
+        최근 종가와 최근 5일 평균 거래대금으로 필터링.
+
+        Args:
+            code: 종목 코드.
+            df: OHLCV DataFrame (영문 컬럼명).
+
+        Returns:
+            필터 통과 시 True.
+        """
+        if df.empty:
+            return False
+
+        latest = df.iloc[-1]
+
+        # 주가 범위 필터
+        price = latest["close"]
+        if price < self.min_price or price > self.max_price:
+            return False
+
+        # 거래대금 필터 (최근 5일 평균)
+        if "amount" in df.columns:
+            recent_amount = df["amount"].tail(5).mean()
+            if recent_amount < self.min_daily_amount:
+                return False
+        else:
+            # amount 컬럼이 없으면 close * volume 으로 근사
+            recent_amount = (df["close"] * df["volume"]).tail(5).mean()
+            if recent_amount < self.min_daily_amount:
+                return False
+
+        return True

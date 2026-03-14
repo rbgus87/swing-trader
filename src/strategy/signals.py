@@ -1,0 +1,298 @@
+"""매매 신호 생성 — 지표 계산, 매수/매도 신호, 점수 산출.
+
+pandas-ta 라이브러리를 사용하여 기술적 지표를 계산하고,
+스윙 매매를 위한 AND(매수) / OR(매도) 조건 기반 신호를 생성.
+"""
+
+import pandas as pd
+import pandas_ta as ta
+
+from src.models import ExitReason, Position
+
+
+def calculate_indicators(
+    df: pd.DataFrame,
+    *,
+    macd_fast: int = 12,
+    macd_slow: int = 26,
+    macd_signal: int = 9,
+    rsi_period: int = 14,
+    bb_period: int = 20,
+    bb_std: float = 2.0,
+    stoch_k: int = 14,
+    stoch_d: int = 3,
+    stoch_smooth: int = 3,
+    atr_period: int = 14,
+    adx_period: int = 14,
+    volume_sma_period: int = 20,
+) -> pd.DataFrame:
+    """OHLCV DataFrame에 기술적 지표를 추가.
+
+    입력: 영문 컬럼명 (open, high, low, close, volume) DataFrame.
+
+    추가 지표:
+    - SMA: 5, 20, 60, 120일
+    - MACD (12, 26, 9): macd, macd_signal, macd_hist
+    - RSI (14): rsi
+    - 볼린저밴드 (20, 2σ): bb_upper, bb_mid, bb_lower
+    - 스토캐스틱 (14, 3, 3): stoch_k, stoch_d
+    - ATR (14): atr
+    - ADX (14): adx
+    - 거래량 이동평균 (20): volume_sma20
+
+    NaN 행 제거 후 반환 (dropna).
+
+    Args:
+        df: open, high, low, close, volume 컬럼을 가진 DataFrame.
+        macd_fast: MACD 단기 기간.
+        macd_slow: MACD 장기 기간.
+        macd_signal: MACD 시그널 기간.
+        rsi_period: RSI 기간.
+        bb_period: 볼린저밴드 기간.
+        bb_std: 볼린저밴드 표준편차.
+        stoch_k: 스토캐스틱 %K 기간.
+        stoch_d: 스토캐스틱 %D 기간.
+        stoch_smooth: 스토캐스틱 스무딩.
+        atr_period: ATR 기간.
+        adx_period: ADX 기간.
+        volume_sma_period: 거래량 이동평균 기간.
+
+    Returns:
+        지표가 추가된 DataFrame (NaN 행 제거됨).
+    """
+    result = df.copy()
+
+    # SMA
+    result["sma5"] = ta.sma(result["close"], length=5)
+    result["sma20"] = ta.sma(result["close"], length=20)
+    result["sma60"] = ta.sma(result["close"], length=60)
+    result["sma120"] = ta.sma(result["close"], length=120)
+
+    # MACD
+    macd_df = ta.macd(
+        result["close"], fast=macd_fast, slow=macd_slow, signal=macd_signal
+    )
+    macd_col = f"MACD_{macd_fast}_{macd_slow}_{macd_signal}"
+    macds_col = f"MACDs_{macd_fast}_{macd_slow}_{macd_signal}"
+    macdh_col = f"MACDh_{macd_fast}_{macd_slow}_{macd_signal}"
+    result["macd"] = macd_df[macd_col]
+    result["macd_signal"] = macd_df[macds_col]
+    result["macd_hist"] = macd_df[macdh_col]
+
+    # RSI
+    result["rsi"] = ta.rsi(result["close"], length=rsi_period)
+
+    # 볼린저밴드
+    bb_df = ta.bbands(result["close"], length=bb_period, std=bb_std)
+    result["bb_upper"] = bb_df[f"BBU_{bb_period}_{bb_std}_{bb_std}"]
+    result["bb_mid"] = bb_df[f"BBM_{bb_period}_{bb_std}_{bb_std}"]
+    result["bb_lower"] = bb_df[f"BBL_{bb_period}_{bb_std}_{bb_std}"]
+
+    # 스토캐스틱
+    stoch_df = ta.stoch(
+        result["high"], result["low"], result["close"],
+        k=stoch_k, d=stoch_d, smooth_k=stoch_smooth,
+    )
+    result["stoch_k"] = stoch_df[f"STOCHk_{stoch_k}_{stoch_d}_{stoch_smooth}"]
+    result["stoch_d"] = stoch_df[f"STOCHd_{stoch_k}_{stoch_d}_{stoch_smooth}"]
+
+    # ATR
+    result["atr"] = ta.atr(
+        result["high"], result["low"], result["close"], length=atr_period
+    )
+
+    # ADX
+    adx_df = ta.adx(
+        result["high"], result["low"], result["close"], length=adx_period
+    )
+    result["adx"] = adx_df[f"ADX_{adx_period}"]
+
+    # 거래량 이동평균
+    result["volume_sma20"] = ta.sma(result["volume"], length=volume_sma_period)
+
+    result.dropna(inplace=True)
+    result.reset_index(drop=True, inplace=True)
+
+    return result
+
+
+def check_entry_signal(
+    df: pd.DataFrame,
+    df_60m: pd.DataFrame,
+    *,
+    ma_trend: int = 20,
+    rsi_entry_min: float = 40,
+    rsi_entry_max: float = 65,
+    volume_multiplier: float = 1.5,
+) -> bool:
+    """매수 신호 — AND 조건 (모두 충족 시 True).
+
+    조건:
+    1. 20일 이평선 위 종가 (추세)
+    2. MACD 히스토그램 양전환 (전일 음 → 당일 양)
+    3. RSI 40~65 (모멘텀 구간)
+    4. 거래량 >= 20일 평균 × 1.5배
+    5. 60분봉 SMA5 > SMA20 (단기 상향)
+
+    Args:
+        df: 일봉 지표 계산 완료된 DataFrame (최소 2행 이상).
+        df_60m: 60분봉 DataFrame (sma5, sma20 컬럼 포함).
+        ma_trend: 추세 판단용 이평 기간 (sma{N} 컬럼 필요).
+        rsi_entry_min: RSI 하한.
+        rsi_entry_max: RSI 상한.
+        volume_multiplier: 거래량 배수 기준.
+
+    Returns:
+        모든 조건 충족 시 True.
+    """
+    if len(df) < 2:
+        return False
+    if len(df_60m) < 1:
+        return False
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    latest_60m = df_60m.iloc[-1]
+
+    sma_col = f"sma{ma_trend}"
+
+    # 1. 종가 > 20일 이평선
+    if latest["close"] <= latest[sma_col]:
+        return False
+
+    # 2. MACD 히스토그램 양전환 (전일 음 → 당일 양)
+    if not (prev["macd_hist"] < 0 and latest["macd_hist"] > 0):
+        return False
+
+    # 3. RSI 40~65
+    if not (rsi_entry_min <= latest["rsi"] <= rsi_entry_max):
+        return False
+
+    # 4. 거래량 >= 20일 평균 × volume_multiplier
+    if latest["volume"] < latest["volume_sma20"] * volume_multiplier:
+        return False
+
+    # 5. 60분봉 SMA5 > SMA20
+    if latest_60m["sma5"] <= latest_60m["sma20"]:
+        return False
+
+    return True
+
+
+def check_exit_signal(
+    position: Position,
+    current_price: int,
+    latest: pd.Series,
+    *,
+    max_hold_days: int = 15,
+    target_return: float = 0.08,
+) -> ExitReason | None:
+    """매도 신호 — OR 조건 (하나라도 충족 시 반환).
+
+    우선순위순:
+    1. 손절가 이탈 → STOP_LOSS
+    2. 트레일링스탑 발동 → TRAILING_STOP
+    3. 목표가 도달 → TARGET_REACHED
+    4. MACD 데드크로스 (수익 +2% 이상이고, macd_hist 음전환) → MACD_DEAD
+    5. 최대 보유기간 초과 → MAX_HOLD
+
+    Args:
+        position: Position 객체.
+        current_price: 현재가 (int).
+        latest: 일봉 최신 행 (macd_hist 포함).
+        max_hold_days: 최대 보유 기간(일).
+        target_return: 목표 수익률 (미사용, target_price 기준 판단).
+
+    Returns:
+        ExitReason 또는 None (보유 유지).
+    """
+    # 1. 손절가 이탈
+    if position.stop_price > 0 and current_price <= position.stop_price:
+        return ExitReason.STOP_LOSS
+
+    # 2. 트레일링스탑 발동
+    if position.trailing_stop > 0 and current_price <= position.trailing_stop:
+        return ExitReason.TRAILING_STOP
+
+    # 3. 목표가 도달
+    if position.target_price > 0 and current_price >= position.target_price:
+        return ExitReason.TARGET_REACHED
+
+    # 4. MACD 데드크로스 (수익 +2% 이상이고, macd_hist 음전환)
+    pnl_pct = (current_price - position.entry_price) / position.entry_price
+    if pnl_pct >= 0.02:
+        macd_hist = latest["macd_hist"] if "macd_hist" in latest.index else None
+        if macd_hist is not None:
+            if position.prev_macd_hist > 0 and macd_hist < 0:
+                return ExitReason.MACD_DEAD
+
+    # 5. 최대 보유기간 초과
+    if position.hold_days >= max_hold_days:
+        return ExitReason.MAX_HOLD
+
+    return None
+
+
+def calculate_signal_score(df: pd.DataFrame) -> float:
+    """신호 강도 점수 계산 (0.0 ~ 5.0).
+
+    점수 항목 (각 최대 1.0):
+    - RSI 위치 점수: 50 근처가 가장 높음 (매수 초기 추세 진입)
+    - MACD 히스토그램 크기: 양수이고 클수록 높음
+    - 거래량 배수: volume / volume_sma20 비율
+    - ADX 추세 강도: 25 이상이면 점수 부여
+    - 볼린저밴드 위치: 중간~상단 범위
+
+    Args:
+        df: 지표 계산 완료된 DataFrame.
+
+    Returns:
+        0.0 ~ 5.0 범위의 점수.
+    """
+    if len(df) < 1:
+        return 0.0
+
+    latest = df.iloc[-1]
+    score = 0.0
+
+    # 1. RSI 위치 점수 (50 근처가 최고, 30~70 범위에서 점수 부여)
+    rsi = latest.get("rsi", 50)
+    rsi_score = max(0.0, 1.0 - abs(rsi - 52.5) / 22.5)
+    score += rsi_score
+
+    # 2. MACD 히스토그램 크기
+    macd_hist = latest.get("macd_hist", 0)
+    if macd_hist > 0:
+        # 가격 대비 정규화 (close 기준)
+        close = latest.get("close", 1)
+        normalized = macd_hist / close * 100 if close > 0 else 0
+        macd_score = min(1.0, normalized / 0.5)
+        score += macd_score
+
+    # 3. 거래량 배수
+    volume = latest.get("volume", 0)
+    volume_sma = latest.get("volume_sma20", 1)
+    if volume_sma > 0:
+        vol_ratio = volume / volume_sma
+        vol_score = min(1.0, max(0.0, (vol_ratio - 1.0) / 2.0))
+        score += vol_score
+
+    # 4. ADX 추세 강도
+    adx = latest.get("adx", 0)
+    if adx >= 25:
+        adx_score = min(1.0, (adx - 25) / 25)
+        score += adx_score
+
+    # 5. 볼린저밴드 위치 (중간~상단: 높은 점수)
+    close = latest.get("close", 0)
+    bb_lower = latest.get("bb_lower", 0)
+    bb_upper = latest.get("bb_upper", 0)
+    bb_range = bb_upper - bb_lower
+    if bb_range > 0:
+        bb_position = (close - bb_lower) / bb_range
+        # 0.5~0.8 범위가 이상적 (중간~상단)
+        if 0.4 <= bb_position <= 0.9:
+            bb_score = 1.0 - abs(bb_position - 0.65) / 0.35
+            score += max(0.0, bb_score)
+
+    return round(min(5.0, max(0.0, score)), 2)
