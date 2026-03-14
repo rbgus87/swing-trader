@@ -7,7 +7,15 @@
 import sqlite3
 from pathlib import Path
 
+from loguru import logger
 from src.models import Position, TradeRecord
+
+# update_position에서 허용하는 컬럼 화이트리스트
+_POSITION_UPDATABLE_COLUMNS = frozenset({
+    "code", "name", "entry_date", "entry_price", "quantity",
+    "stop_price", "target_price", "status", "updated_at",
+    "high_since_entry",
+})
 
 
 class DataStore:
@@ -54,6 +62,7 @@ class DataStore:
                 stop_price INTEGER NOT NULL,
                 target_price INTEGER,
                 status TEXT DEFAULT 'open',
+                high_since_entry INTEGER DEFAULT 0,
                 updated_at TEXT
             );
 
@@ -94,6 +103,14 @@ class DataStore:
                 amount INTEGER,
                 PRIMARY KEY (code, date)
             );
+
+            -- 성능 인덱스: positions.status (get_open_positions 최적화)
+            CREATE INDEX IF NOT EXISTS idx_positions_status
+                ON positions(status);
+
+            -- 성능 인덱스: trades(code, executed_at) (get_last_trade, get_trades_by_date 최적화)
+            CREATE INDEX IF NOT EXISTS idx_trades_code_executed
+                ON trades(code, executed_at);
             """
         )
         self.conn.commit()
@@ -113,8 +130,9 @@ class DataStore:
             """
             INSERT INTO positions
                 (code, name, entry_date, entry_price, quantity,
-                 stop_price, target_price, status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 stop_price, target_price, status, high_since_entry,
+                 updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 pos.code,
@@ -125,6 +143,7 @@ class DataStore:
                 pos.stop_price,
                 pos.target_price,
                 pos.status,
+                pos.high_since_entry,
                 pos.updated_at,
             ),
         )
@@ -137,9 +156,21 @@ class DataStore:
         Args:
             position_id: 대상 포지션 ID.
             **kwargs: 업데이트할 컬럼=값 쌍.
+
+        Raises:
+            ValueError: 허용되지 않은 컬럼명이 포함된 경우.
         """
         if not kwargs:
             return
+
+        # 보안: 컬럼 화이트리스트 검증 (SQL injection 방지)
+        invalid_cols = set(kwargs.keys()) - _POSITION_UPDATABLE_COLUMNS
+        if invalid_cols:
+            raise ValueError(
+                f"허용되지 않은 컬럼: {invalid_cols}. "
+                f"허용 목록: {_POSITION_UPDATABLE_COLUMNS}"
+            )
+
         set_clause = ", ".join(f"{k} = ?" for k in kwargs)
         values = list(kwargs.values()) + [position_id]
         self.conn.execute(

@@ -4,6 +4,8 @@
 모든 주문은 RiskManager.pre_check() 통과 후에만 실행되어야 한다.
 """
 
+import re
+
 from loguru import logger
 
 from src.broker.kiwoom_api import KiwoomAPI
@@ -16,6 +18,9 @@ from src.broker.tr_codes import (
     SCREEN_ORDER,
 )
 from src.models import Order, OrderResult
+
+# 종목코드 형식: 6자리 숫자
+_CODE_PATTERN = re.compile(r"^\d{6}$")
 
 
 class OrderManager:
@@ -56,6 +61,31 @@ class OrderManager:
         Returns:
             주문 실행 결과.
         """
+        # 입력 검증
+        if not _CODE_PATTERN.match(code):
+            logger.error("잘못된 종목코드 형식: {}", code)
+            return OrderResult(
+                success=False,
+                order_no="",
+                message=f"잘못된 종목코드 형식: {code} (6자리 숫자 필요)",
+            )
+
+        if qty <= 0:
+            logger.error("주문수량은 양수여야 합니다: qty={}", qty)
+            return OrderResult(
+                success=False,
+                order_no="",
+                message=f"주문수량은 양수여야 합니다: {qty}",
+            )
+
+        if price < 0:
+            logger.error("주문가격은 0 이상이어야 합니다: price={}", price)
+            return OrderResult(
+                success=False,
+                order_no="",
+                message=f"주문가격은 0 이상이어야 합니다: {price}",
+            )
+
         side = "buy" if order_type == ORDER_BUY else "sell"
         logger.info(
             "주문 실행 요청: code={}, side={}, qty={}, price={}, hoga={}",
