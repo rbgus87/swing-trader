@@ -1,11 +1,15 @@
 """공통 pytest fixture 정의."""
 
 import os
+import sys
 import tempfile
+from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.datastore import DataStore
+from src.models import Position, Tick, TradeRecord
 
 
 @pytest.fixture
@@ -70,3 +74,213 @@ def tmp_config_file(tmp_path, sample_config):
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(sample_config, f, allow_unicode=True)
     return str(config_path)
+
+
+# ── E2E 테스트용 추가 Fixture ──
+
+
+@pytest.fixture
+def mock_kiwoom():
+    """KiwoomAPI mock — PyQt5 없이 테스트 가능.
+
+    OCX 관련 메서드를 모두 MagicMock으로 대체한다.
+    """
+    mock = MagicMock()
+    mock._connected = True
+    mock.on_tick_callback = None
+    mock.on_chejan_callback = None
+    mock.connect.return_value = None
+    mock.send_order.return_value = 0
+    mock.set_real_reg.return_value = None
+    mock.set_real_remove.return_value = None
+    return mock
+
+
+@pytest.fixture
+def mock_telegram():
+    """TelegramBot mock — requests 호출 없이 알림 검증.
+
+    모든 send_* 메서드가 True를 반환한다.
+    """
+    mock = MagicMock()
+    mock.send.return_value = True
+    mock.send_with_cooldown.return_value = True
+    mock.send_signal_alert.return_value = True
+    mock.send_buy_executed.return_value = True
+    mock.send_sell_executed_profit.return_value = True
+    mock.send_sell_executed_loss.return_value = True
+    mock.send_daily_warning.return_value = True
+    mock.send_halt_alert.return_value = True
+    mock.send_daily_report.return_value = True
+    mock.send_system_error.return_value = True
+    return mock
+
+
+@pytest.fixture
+def populated_db(tmp_db):
+    """테스트 데이터가 채워진 DataStore.
+
+    포지션 2개(open), 매매기록 2개(buy)를 미리 삽입한다.
+    """
+    # 포지션 1: 삼성전자
+    pos1 = Position(
+        id=0,
+        code="005930",
+        name="삼성전자",
+        entry_date="2026-03-10",
+        entry_price=50000,
+        quantity=20,
+        stop_price=47000,
+        target_price=54000,
+        status="open",
+        high_since_entry=50000,
+    )
+    tmp_db.insert_position(pos1)
+
+    # 포지션 2: SK하이닉스
+    pos2 = Position(
+        id=0,
+        code="000660",
+        name="SK하이닉스",
+        entry_date="2026-03-12",
+        entry_price=120000,
+        quantity=5,
+        stop_price=111600,
+        target_price=129600,
+        status="open",
+        high_since_entry=120000,
+    )
+    tmp_db.insert_position(pos2)
+
+    # 매수 기록
+    trade1 = TradeRecord(
+        code="005930",
+        name="삼성전자",
+        side="buy",
+        price=50000,
+        quantity=20,
+        amount=1_000_000,
+        fee=150.0,
+        tax=0.0,
+        pnl=0.0,
+        pnl_pct=0.0,
+        reason="signal",
+        executed_at="2026-03-10 09:30:00",
+    )
+    tmp_db.record_trade(trade1)
+
+    trade2 = TradeRecord(
+        code="000660",
+        name="SK하이닉스",
+        side="buy",
+        price=120000,
+        quantity=5,
+        amount=600_000,
+        fee=90.0,
+        tax=0.0,
+        pnl=0.0,
+        pnl_pct=0.0,
+        reason="signal",
+        executed_at="2026-03-12 10:00:00",
+    )
+    tmp_db.record_trade(trade2)
+
+    return tmp_db
+
+
+@pytest.fixture
+def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
+    """모든 의존성이 mock된 TradingEngine (paper 모드).
+
+    실제 DataStore, RiskManager, PositionSizer, StopManager를 사용하고,
+    KiwoomAPI, TelegramBot, Screener, Scheduler만 mock한다.
+    """
+    # PyQt5 / apscheduler mock (이미 test_engine.py에서 설정됐을 수 있음)
+    _pyqt5_mock = MagicMock()
+    _pyqt5_modules = {
+        "PyQt5": _pyqt5_mock,
+        "PyQt5.QtWidgets": _pyqt5_mock.QtWidgets,
+        "PyQt5.QAxContainer": _pyqt5_mock.QAxContainer,
+        "PyQt5.QtCore": _pyqt5_mock.QtCore,
+    }
+    _pyqt5_mock.QAxContainer.QAxWidget = object
+
+    _apscheduler_qt_mock = MagicMock()
+    _apscheduler_modules = {
+        "apscheduler": MagicMock(),
+        "apscheduler.schedulers": MagicMock(),
+        "apscheduler.schedulers.qt": _apscheduler_qt_mock,
+    }
+    _apscheduler_qt_mock.QtScheduler = MagicMock
+
+    for mod_name, mod_mock in {**_pyqt5_modules, **_apscheduler_modules}.items():
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = mod_mock
+
+    # loguru TRADE 레벨 등록
+    from loguru import logger as _logger
+
+    try:
+        _logger.level("TRADE", no=25, color="<yellow>")
+    except (TypeError, ValueError):
+        pass  # 이미 등록된 경우
+
+    from src.risk.position_sizer import PositionSizer
+    from src.risk.risk_manager import RiskManager
+    from src.risk.stop_manager import StopManager
+
+    with (
+        patch("src.engine.KiwoomAPI", return_value=mock_kiwoom),
+        patch("src.engine.OrderManager") as MockOrderMgr,
+        patch("src.engine.RealtimeDataManager") as MockRealtime,
+        patch("src.engine.Screener") as MockScreener,
+        patch("src.engine.TelegramBot", return_value=mock_telegram),
+        patch("src.engine.QtScheduler") as MockScheduler,
+        patch("src.engine.config") as mock_config,
+        patch("src.engine.DataStore", return_value=tmp_db),
+        patch("src.engine.RiskManager", return_value=RiskManager(tmp_db, sample_config)),
+        patch("src.engine.PositionSizer", return_value=PositionSizer(max_ratio=0.15, min_ratio=0.03)),
+        patch("src.engine.StopManager") as MockStopMgr,
+    ):
+        # config mock
+        mock_config.get_env.return_value = ""
+        mock_config.data = sample_config
+
+        def config_get(key, default=None):
+            """sample_config에서 dot-notation key 조회."""
+            keys = key.split(".")
+            value = sample_config
+            for k in keys:
+                if isinstance(value, dict):
+                    value = value.get(k)
+                else:
+                    return default
+                if value is None:
+                    return default
+            return value
+
+        mock_config.get.side_effect = config_get
+
+        # StopManager — 실제 인스턴스 사용
+        stop_mgr = StopManager(
+            stop_atr_mult=1.5,
+            max_stop_pct=0.07,
+            trailing_atr_mult=2.0,
+            trailing_activate_pct=0.03,
+        )
+        MockStopMgr.return_value = stop_mgr
+
+        # OrderManager mock
+        order_instance = MockOrderMgr.return_value
+        from src.models import OrderResult
+
+        order_instance.execute_order.return_value = OrderResult(
+            success=True, order_no="ORD001", message="OK"
+        )
+
+        from src.engine import TradingEngine
+
+        eng = TradingEngine(mode="paper")
+        eng._running = True
+
+        yield eng

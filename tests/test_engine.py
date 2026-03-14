@@ -42,7 +42,7 @@ from loguru import logger as _logger
 
 try:
     _logger.level("TRADE", no=25, color="<yellow>")
-except TypeError:
+except (TypeError, ValueError):
     pass  # 이미 등록된 경우
 
 from src.models import (
