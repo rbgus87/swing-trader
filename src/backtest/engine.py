@@ -1,4 +1,4 @@
-"""vectorbt 기반 백테스트 엔진.
+"""pandas 기반 백테스트 엔진.
 
 CLI: python -m src.backtest.engine --strategy macd_rsi --period 2y
 """
@@ -39,7 +39,7 @@ class BacktestResult:
 
 
 class BacktestEngine:
-    """vectorbt 기반 백테스트 실행 엔진."""
+    """pandas 기반 백테스트 실행 엔진."""
 
     def __init__(self, initial_capital: int = 10_000_000):
         self.initial_capital = initial_capital
@@ -142,6 +142,149 @@ class BacktestEngine:
 
         return entries, exits
 
+    def _simulate_portfolio(
+        self, close: pd.Series, entries: pd.Series, exits: pd.Series
+    ) -> tuple[list[dict], pd.Series]:
+        """순수 pandas 기반 포트폴리오 시뮬레이션.
+
+        Args:
+            close: 종가 시리즈.
+            entries: 매수 신호 불리언 시리즈.
+            exits: 매도 신호 불리언 시리즈.
+
+        Returns:
+            (trades_list, equity_curve) 튜플.
+        """
+        cash = self.initial_capital
+        position = 0  # 보유 주식 수
+        entry_price = 0
+        entry_idx = 0
+        trades = []
+        equity = []
+
+        for i in range(len(close)):
+            price = int(close.iloc[i])
+
+            if position == 0 and entries.iloc[i]:
+                # 매수
+                cost_per_share = price * (1 + COMMISSION_RATE + SLIPPAGE_RATE)
+                shares = int(cash // cost_per_share)
+                if shares > 0:
+                    position = shares
+                    entry_price = price
+                    entry_idx = i
+                    cash -= shares * cost_per_share
+
+            elif position > 0 and exits.iloc[i]:
+                # 매도
+                proceeds_per_share = price * (
+                    1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE
+                )
+                cash += position * proceeds_per_share
+                pnl_pct = (price - entry_price) / entry_price
+                trades.append(
+                    {
+                        "entry_idx": entry_idx,
+                        "exit_idx": i,
+                        "entry_price": entry_price,
+                        "exit_price": price,
+                        "shares": position,
+                        "return": pnl_pct,
+                        "hold_days": i - entry_idx,
+                    }
+                )
+                position = 0
+
+            # 자산 추적
+            equity_val = cash + (position * price if position > 0 else 0)
+            equity.append(equity_val)
+
+        return trades, pd.Series(equity, index=close.index)
+
+    def _calculate_metrics(
+        self, trades: list[dict], equity: pd.Series, params: dict
+    ) -> BacktestResult:
+        """거래 내역과 자산 곡선에서 성과 지표 계산.
+
+        Args:
+            trades: 개별 거래 딕셔너리 리스트.
+            equity: 자산 곡선 시리즈.
+            params: 사용된 파라미터 딕셔너리.
+
+        Returns:
+            BacktestResult 성과 지표.
+        """
+        total_return = (
+            (equity.iloc[-1] - self.initial_capital) / self.initial_capital * 100
+        )
+
+        # MDD
+        peak = equity.cummax()
+        drawdown = (equity - peak) / peak * 100
+        max_drawdown = drawdown.min()
+
+        # Sharpe (일간 수익률, 연환산)
+        daily_returns = equity.pct_change().dropna()
+        if len(daily_returns) > 0 and daily_returns.std() > 0:
+            sharpe = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
+        else:
+            sharpe = 0.0
+
+        # Sortino (하방 편차)
+        negative_returns = daily_returns[daily_returns < 0]
+        if len(negative_returns) > 0:
+            downside_std = negative_returns.std()
+            sortino = (
+                (daily_returns.mean() / downside_std) * np.sqrt(252)
+                if downside_std > 0
+                else 0.0
+            )
+        else:
+            sortino = 0.0
+
+        # 거래 지표
+        trade_count = len(trades)
+        if trade_count > 0:
+            returns = [t["return"] for t in trades]
+            win_count = sum(1 for r in returns if r > 0)
+            win_rate = win_count / trade_count * 100
+
+            gross_profit = sum(r for r in returns if r > 0)
+            gross_loss = abs(sum(r for r in returns if r < 0))
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
+
+            avg_trade_return = np.mean(returns) * 100
+            avg_hold_days = np.mean([t["hold_days"] for t in trades])
+        else:
+            win_rate = 0.0
+            profit_factor = 0.0
+            avg_trade_return = 0.0
+            avg_hold_days = 0.0
+
+        # 연환산 수익률
+        total_days = len(equity)
+        years = total_days / 252 if total_days > 0 else 1
+        if total_return > -100:
+            annual_return = (
+                (1 + total_return / 100) ** (1 / years) - 1
+            ) * 100
+        else:
+            annual_return = -100.0
+
+        return BacktestResult(
+            total_return=round(total_return, 2),
+            annual_return=round(annual_return, 2),
+            max_drawdown=round(max_drawdown, 2),
+            sharpe_ratio=round(sharpe, 2),
+            sortino_ratio=round(sortino, 2),
+            win_rate=round(win_rate, 2),
+            profit_factor=round(profit_factor, 2),
+            avg_trade_return=round(avg_trade_return, 2),
+            trade_count=trade_count,
+            avg_hold_days=round(avg_hold_days, 1),
+            params=params,
+        )
+
     def run(
         self,
         codes: list[str],
@@ -153,11 +296,9 @@ class BacktestEngine:
 
         Steps:
         1. 데이터 로드
-        2. 지표 계산
-        3. 신호 생성 (look-ahead bias 방지)
-        4. vectorbt Portfolio.from_signals()
-        5. 성과 지표 추출
-        6. 거래세 후처리 (매도만 적용)
+        2. 지표 계산 + 신호 생성 (look-ahead bias 방지)
+        3. pandas 기반 포트폴리오 시뮬레이션
+        4. 성과 지표 계산
 
         Args:
             codes: 종목 코드 리스트.
@@ -168,8 +309,6 @@ class BacktestEngine:
         Returns:
             BacktestResult 성과 지표.
         """
-        import vectorbt as vbt
-
         price_data = self.load_price_data(codes, start_date, end_date)
         if not price_data:
             logger.error("유효한 데이터 없음, 빈 결과 반환")
@@ -203,33 +342,14 @@ class BacktestEngine:
                 df_ind = calculate_indicators(df, **indicator_params)
                 close = df_ind["close"]
 
-                # vectorbt: fees는 매수/매도 동일 적용
-                # 거래세(매도만)는 후처리
-                portfolio = vbt.Portfolio.from_signals(
-                    close=close,
-                    entries=entries,
-                    exits=exits,
-                    init_cash=self.initial_capital,
-                    fees=COMMISSION_RATE + SLIPPAGE_RATE,
-                    freq="1D",
+                # pandas 기반 시뮬레이션
+                trades, equity = self._simulate_portfolio(
+                    close, entries, exits
+                )
+                result = self._calculate_metrics(
+                    trades, equity, params or {}
                 )
 
-                result = self._extract_metrics(portfolio)
-
-                # 거래세 후처리: 매도 횟수 × 평균 매도 금액 × TAX_RATE
-                if result.trade_count > 0:
-                    trades = portfolio.trades.records_readable
-                    if len(trades) > 0:
-                        sell_amounts = trades["Exit Size"].values * trades[
-                            "Avg Exit Price"
-                        ].values
-                        total_tax = np.sum(sell_amounts) * TAX_RATE
-                        tax_impact_pct = (
-                            total_tax / self.initial_capital * 100
-                        )
-                        result.total_return -= tax_impact_pct
-
-                result.params = params or {}
                 all_results.append(result)
                 logger.info(
                     f"{code}: 수익률 {result.total_return:.2f}%, "
@@ -274,60 +394,6 @@ class BacktestEngine:
             params=params or {},
         )
         return avg_result
-
-    def _extract_metrics(self, portfolio) -> BacktestResult:
-        """vectorbt portfolio에서 성과 지표 추출.
-
-        Args:
-            portfolio: vectorbt Portfolio 객체.
-
-        Returns:
-            BacktestResult 성과 지표.
-        """
-        stats = portfolio.stats()
-
-        total_return = float(stats.get("Total Return [%]", 0.0))
-        max_dd = float(stats.get("Max Drawdown [%]", 0.0))
-        sharpe = float(stats.get("Sharpe Ratio", 0.0))
-        sortino = float(stats.get("Sortino Ratio", 0.0))
-        win_rate = float(stats.get("Win Rate [%]", 0.0))
-        profit_factor = float(stats.get("Profit Factor", 0.0))
-        trade_count = int(stats.get("Total Trades", 0))
-
-        # 연환산 수익률 계산
-        total_days = len(portfolio.close)
-        years = total_days / 252 if total_days > 0 else 1
-        if total_return > -100:
-            annual_return = (
-                (1 + total_return / 100) ** (1 / years) - 1
-            ) * 100
-        else:
-            annual_return = -100.0
-
-        # 평균 거래 수익
-        avg_trade_return = 0.0
-        avg_hold_days = 0.0
-        if trade_count > 0:
-            trades = portfolio.trades.records_readable
-            if len(trades) > 0:
-                avg_trade_return = float(trades["Return"].mean() * 100)
-                if "Duration" in trades.columns:
-                    avg_hold_days = float(
-                        trades["Duration"].dt.days.mean()
-                    )
-
-        return BacktestResult(
-            total_return=round(total_return, 2),
-            annual_return=round(annual_return, 2),
-            max_drawdown=round(-abs(max_dd), 2),
-            sharpe_ratio=round(sharpe, 2),
-            sortino_ratio=round(sortino, 2),
-            win_rate=round(win_rate, 2),
-            profit_factor=round(profit_factor, 2),
-            avg_trade_return=round(avg_trade_return, 2),
-            trade_count=trade_count,
-            avg_hold_days=round(avg_hold_days, 1),
-        )
 
 
 def _parse_period(period_str: str) -> tuple[str, str]:

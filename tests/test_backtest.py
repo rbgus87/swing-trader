@@ -1,6 +1,6 @@
 """백테스트 엔진 테스트.
 
-vectorbt 없이도 기본 테스트가 통과하도록 mock 사용.
+pandas 기반 시뮬레이션 테스트.
 """
 
 import io
@@ -181,6 +181,177 @@ class TestBacktestEngine:
         assert COMMISSION_RATE == 0.00015
         assert TAX_RATE == 0.002
         assert SLIPPAGE_RATE == 0.001
+
+
+# ── 포트폴리오 시뮬레이션 테스트 ──────────────────────────────────
+
+
+class TestSimulatePortfolio:
+    """_simulate_portfolio 메서드 테스트."""
+
+    def test_no_signals_returns_flat_equity(self, engine):
+        """신호 없으면 자산 변동 없음."""
+        close = pd.Series([10000, 10100, 10200, 10300, 10400])
+        entries = pd.Series([False, False, False, False, False])
+        exits = pd.Series([False, False, False, False, False])
+
+        trades, equity = engine._simulate_portfolio(close, entries, exits)
+
+        assert len(trades) == 0
+        assert len(equity) == 5
+        # 거래 없으므로 자산 = 초기 자본금
+        assert equity.iloc[0] == engine.initial_capital
+        assert equity.iloc[-1] == engine.initial_capital
+
+    def test_single_trade(self, engine):
+        """매수-매도 1회 거래 추적."""
+        close = pd.Series([10000, 10000, 11000, 11000, 11000])
+        entries = pd.Series([False, True, False, False, False])
+        exits = pd.Series([False, False, False, True, False])
+
+        trades, equity = engine._simulate_portfolio(close, entries, exits)
+
+        assert len(trades) == 1
+        t = trades[0]
+        assert t["entry_idx"] == 1
+        assert t["exit_idx"] == 3
+        assert t["entry_price"] == 10000
+        assert t["exit_price"] == 11000
+        assert t["hold_days"] == 2
+        assert t["return"] == pytest.approx(0.1, abs=0.001)
+
+    def test_commission_and_tax_applied(self, engine):
+        """수수료/세금이 적용되어 동일가 매매 시 손실."""
+        price = 10000
+        close = pd.Series([price, price, price, price])
+        entries = pd.Series([False, True, False, False])
+        exits = pd.Series([False, False, True, False])
+
+        trades, equity = engine._simulate_portfolio(close, entries, exits)
+
+        # 동일가 매매면 수수료+슬리피지+세금만큼 손실
+        assert equity.iloc[-1] < engine.initial_capital
+
+    def test_multiple_trades(self, engine):
+        """복수 거래 추적."""
+        close = pd.Series([10000, 10000, 11000, 11000, 10000, 10000, 12000, 12000])
+        entries = pd.Series([False, True, False, False, False, True, False, False])
+        exits = pd.Series([False, False, False, True, False, False, False, True])
+
+        trades, equity = engine._simulate_portfolio(close, entries, exits)
+
+        assert len(trades) == 2
+
+    def test_equity_curve_length(self, engine):
+        """자산 곡선 길이는 close와 동일."""
+        n = 50
+        close = pd.Series(range(10000, 10000 + n))
+        entries = pd.Series([False] * n)
+        exits = pd.Series([False] * n)
+
+        trades, equity = engine._simulate_portfolio(close, entries, exits)
+
+        assert len(equity) == n
+
+
+# ── 지표 계산 테스트 ──────────────────────────────────────────────
+
+
+class TestCalculateMetrics:
+    """_calculate_metrics 메서드 테스트."""
+
+    def test_no_trades(self, engine):
+        """거래 없을 때 기본값."""
+        equity = pd.Series([10_000_000] * 100)
+        result = engine._calculate_metrics([], equity, {})
+
+        assert result.trade_count == 0
+        assert result.win_rate == 0.0
+        assert result.profit_factor == 0.0
+        assert result.avg_trade_return == 0.0
+        assert result.avg_hold_days == 0.0
+        assert result.total_return == 0.0
+
+    def test_positive_return(self, engine):
+        """양수 수익률 계산."""
+        # 시작 1000만 → 종료 1100만 (10%)
+        equity = pd.Series(
+            np.linspace(10_000_000, 11_000_000, 100)
+        )
+        trades = [
+            {"entry_idx": 0, "exit_idx": 10, "entry_price": 10000,
+             "exit_price": 11000, "shares": 100, "return": 0.10,
+             "hold_days": 10}
+        ]
+        result = engine._calculate_metrics(trades, equity, {})
+
+        assert result.total_return == pytest.approx(10.0, abs=0.1)
+        assert result.win_rate == 100.0
+        assert result.trade_count == 1
+
+    def test_max_drawdown(self, engine):
+        """MDD 계산 검증."""
+        # 1000만 → 900만 → 1050만 (MDD = -10%)
+        equity = pd.Series([10_000_000, 9_000_000, 10_500_000])
+        result = engine._calculate_metrics([], equity, {})
+
+        assert result.max_drawdown == pytest.approx(-10.0, abs=0.1)
+
+    def test_win_rate_and_profit_factor(self, engine):
+        """승률과 손익비 계산."""
+        equity = pd.Series(np.linspace(10_000_000, 10_500_000, 50))
+        trades = [
+            {"entry_idx": 0, "exit_idx": 5, "entry_price": 10000,
+             "exit_price": 11000, "shares": 100, "return": 0.10,
+             "hold_days": 5},
+            {"entry_idx": 10, "exit_idx": 15, "entry_price": 11000,
+             "exit_price": 10500, "shares": 100, "return": -0.0455,
+             "hold_days": 5},
+        ]
+        result = engine._calculate_metrics(trades, equity, {})
+
+        assert result.win_rate == 50.0
+        assert result.trade_count == 2
+        assert result.profit_factor > 0
+
+
+# ── engine.run() 통합 테스트 ──────────────────────────────────────
+
+
+class TestEngineRun:
+    """engine.run() 통합 테스트 (load_price_data를 mock)."""
+
+    def test_run_with_mock_data(self, engine, sample_ohlcv):
+        """mock 데이터로 run() 정상 동작 확인."""
+        with patch.object(
+            engine, "load_price_data", return_value={"005930": sample_ohlcv}
+        ):
+            result = engine.run(["005930"], "20220101", "20221231")
+
+        assert isinstance(result, BacktestResult)
+        assert isinstance(result.total_return, float)
+        assert isinstance(result.trade_count, int)
+        assert result.params == {}
+
+    def test_run_empty_data(self, engine):
+        """데이터 없으면 빈 결과 반환."""
+        with patch.object(engine, "load_price_data", return_value={}):
+            result = engine.run(["999999"], "20220101", "20221231")
+
+        assert result.trade_count == 0
+        assert result.total_return == 0.0
+
+    def test_run_with_params(self, engine, sample_ohlcv):
+        """파라미터 전달 확인."""
+        params = {"macd_fast": 10, "rsi_period": 14}
+        with patch.object(
+            engine, "load_price_data", return_value={"005930": sample_ohlcv}
+        ):
+            result = engine.run(
+                ["005930"], "20220101", "20221231", params=params
+            )
+
+        assert result.params == params
 
 
 # ── ParameterOptimizer 테스트 ─────────────────────────────────────
@@ -377,15 +548,3 @@ class TestParsePeriod:
         """잘못된 형식 ValueError."""
         with pytest.raises(ValueError):
             _parse_period("2w")
-
-
-# ── vectorbt 의존 테스트 ──────────────────────────────────────────
-
-
-class TestVectorbtIntegration:
-    """vectorbt 설치 시에만 실행되는 통합 테스트."""
-
-    def test_vectorbt_importable(self):
-        """vectorbt import 가능 여부 체크."""
-        vbt = pytest.importorskip("vectorbt")
-        assert hasattr(vbt, "Portfolio")

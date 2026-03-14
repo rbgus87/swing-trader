@@ -1,8 +1,8 @@
-PyQt5==5.15.11
-pykrx==1.0.45
+# ── Core ──
+PyQt5>=5.15
+pykrx>=1.0
 pandas>=2.0
 pandas-ta>=0.3.14b
-vectorbt>=0.26
 numpy>=1.24
 APScheduler>=3.10
 loguru>=0.7
@@ -11,6 +11,14 @@ python-dotenv>=1.0
 PyYAML>=6.0
 holidays>=0.45
 pytz>=2023.3
+
+# NOTE: Python 3.14+에서는 pandas-ta를 --no-deps로 설치하세요:
+#   pip install pandas-ta --no-deps
+# pandas-ta는 numba 없이도 정상 동작합니다.
+
+# ── Dev / Test ──
 pytest>=7.4
+pytest-cov>=4.0
+requests-mock>=1.12
 black>=23.0
 ruff>=0.1
