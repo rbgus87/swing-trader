@@ -13,11 +13,12 @@ PARAM_GRID = {
     "macd_slow": [22, 24, 26],
     "macd_signal": [7, 9],
     "rsi_period": [12, 14],
-    "rsi_min": [35, 40, 45],
-    "rsi_max": [60, 65, 70],
-    "volume_multiplier": [1.2, 1.5, 2.0],
-    "stop_atr_mult": [1.0, 1.5, 2.0],
-    "target_return": [0.06, 0.08, 0.10],
+    "rsi_min": [30, 35, 40],
+    "rsi_max": [65, 70, 75],
+    "volume_multiplier": [1.0, 1.2, 1.5],
+    "stop_atr_mult": [1.5, 2.0, 2.5],
+    "target_return": [0.08, 0.10, 0.12],
+    "max_hold_days": [10, 15, 20],
 }
 
 

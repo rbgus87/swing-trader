@@ -106,8 +106,8 @@ class BacktestEngine:
         rsi_min = p.get("rsi_min", 35)
         rsi_max = p.get("rsi_max", 70)
         volume_multiplier = p.get("volume_multiplier", 1.2)
-        target_return = p.get("target_return", 0.08)
-        stop_atr_mult = p.get("stop_atr_mult", 1.5)
+        target_return = p.get("target_return", 0.10)
+        stop_atr_mult = p.get("stop_atr_mult", 2.0)
 
         # --- Entry 조건 (AND) ---
         cond_ma = df_ind["close"] > df_ind["sma20"]
@@ -167,12 +167,12 @@ class BacktestEngine:
             (trades_list, equity_curve) 튜플.
         """
         p = params or {}
-        target_return = p.get("target_return", 0.08)
-        stop_atr_mult = p.get("stop_atr_mult", 1.5)
-        trailing_atr_mult = p.get("trailing_atr_mult", 2.0)
-        trailing_activate_pct = p.get("trailing_activate_pct", 0.03)
-        max_hold_days = p.get("max_hold_days", 15)
-        max_stop_pct = p.get("max_stop_pct", 0.07)
+        target_return = p.get("target_return", 0.10)
+        stop_atr_mult = p.get("stop_atr_mult", 2.0)
+        trailing_atr_mult = p.get("trailing_atr_mult", 2.5)
+        trailing_activate_pct = p.get("trailing_activate_pct", 0.05)
+        max_hold_days = p.get("max_hold_days", 20)
+        max_stop_pct = p.get("max_stop_pct", 0.10)
 
         cash = self.initial_capital
         position = 0  # 보유 주식 수
@@ -558,6 +558,11 @@ if __name__ == "__main__":
         default=10_000_000,
         help="초기 자본금 (기본: 10,000,000원)",
     )
+    parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="파라미터 최적화 실행",
+    )
 
     args = parser.parse_args()
 
@@ -573,18 +578,41 @@ if __name__ == "__main__":
     )
 
     engine = BacktestEngine(initial_capital=args.capital)
-    result = engine.run(args.codes, start_date, end_date)
 
-    from src.backtest.report import BacktestReporter
+    if args.optimize:
+        from src.backtest.optimizer import ParameterOptimizer
 
-    reporter = BacktestReporter()
-    reporter.print_summary(result)
+        optimizer = ParameterOptimizer(engine)
+        # Use a smaller grid for faster results
+        small_grid = {
+            "rsi_min": [30, 35, 40],
+            "rsi_max": [65, 70, 75],
+            "volume_multiplier": [1.0, 1.2, 1.5],
+            "stop_atr_mult": [1.5, 2.0, 2.5],
+            "target_return": [0.08, 0.10, 0.12],
+            "max_hold_days": [10, 15, 20],
+        }
+        results = optimizer.run_grid_search(
+            args.codes, start_date, end_date, small_grid
+        )
+        if not results.empty:
+            print(f"\n최적화 완료: {len(results)}개 조합 중 상위 결과:")
+            print(results.head(10).to_string())
+        else:
+            print("\n필터 통과 조합 없음")
+    else:
+        result = engine.run(args.codes, start_date, end_date)
 
-    # Auto generate HTML report with charts
-    report_path = reporter.generate_html(
-        result,
-        output_path=f"reports/backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-        equity=engine._last_equity,
-        trades=engine._last_trades,
-    )
-    print(f"\nHTML 리포트: {report_path}")
+        from src.backtest.report import BacktestReporter
+
+        reporter = BacktestReporter()
+        reporter.print_summary(result)
+
+        # Auto generate HTML report with charts
+        report_path = reporter.generate_html(
+            result,
+            output_path=f"reports/backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+            equity=engine._last_equity,
+            trades=engine._last_trades,
+        )
+        print(f"\nHTML 리포트: {report_path}")

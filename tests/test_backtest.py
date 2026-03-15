@@ -300,7 +300,12 @@ class TestSimulatePortfolio:
         # max_stop_pct=0.07 → stop = 10000*0.93 = 9300
         # stop_price = max(9700, 9300) = 9700
         # bar 2: low=7500 <= 9700 → exit at 9700
-        params = {"max_hold_days": 100, "target_return": 0.5}
+        params = {
+            "max_hold_days": 100,
+            "target_return": 0.5,
+            "stop_atr_mult": 1.5,
+            "max_stop_pct": 0.07,
+        }
 
         trades, equity = engine._simulate_portfolio(
             close, high, low, atr, entries, exits, params
@@ -375,6 +380,10 @@ class TestSimulatePortfolio:
         params = {
             "target_return": 0.5,
             "max_hold_days": 100,
+            "stop_atr_mult": 1.5,
+            "max_stop_pct": 0.07,
+            "trailing_atr_mult": 2.0,
+            "trailing_activate_pct": 0.03,
         }
 
         trades, equity = engine._simulate_portfolio(

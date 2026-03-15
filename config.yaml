@@ -27,17 +27,17 @@ strategy:
   bb_std: 2.0
   volume_multiplier: 1.5
   ma_trend: 20
-  max_hold_days: 15
-  target_return: 0.08
+  max_hold_days: 20
+  target_return: 0.10
 
 risk:
   max_position_ratio: 0.15
   min_position_ratio: 0.03
   sizing_method: half_kelly        # half_kelly | fixed
-  stop_atr_multiplier: 1.5
-  max_stop_pct: 0.07
-  trailing_atr_multiplier: 2.0
-  trailing_activate_pct: 0.03
+  stop_atr_multiplier: 2.0
+  max_stop_pct: 0.10
+  trailing_atr_multiplier: 2.5
+  trailing_activate_pct: 0.05
   daily_loss_limit: -0.03
   daily_loss_warning: -0.02
   max_mdd: -0.20
