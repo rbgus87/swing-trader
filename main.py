@@ -1,4 +1,4 @@
-"""메인 진입점.
+"""메인 진입점 — asyncio 기반.
 
 Usage:
     python main.py --mode paper
@@ -6,12 +6,14 @@ Usage:
 """
 
 import argparse
+import asyncio
+import signal
 import sys
 
 from loguru import logger
 
 
-def main():
+async def main():
     """메인 함수."""
     parser = argparse.ArgumentParser(description="스윙 자동매매 시스템")
     parser.add_argument("--mode", choices=["paper", "live"], default="paper")
@@ -25,23 +27,32 @@ def main():
 
     # live 모드 안전 체크
     if args.mode == "live":
-        telegram_token = config.get_env("TELEGRAM_BOT_TOKEN")
-        if not telegram_token:
+        if not config.get_env("TELEGRAM_BOT_TOKEN"):
             logger.error("LIVE 모드: TELEGRAM_BOT_TOKEN 필수")
             sys.exit(1)
-
-    # PyQt5 이벤트루프
-    from PyQt5.QtWidgets import QApplication
-
-    app = QApplication(sys.argv)
 
     from src.engine import TradingEngine
 
     engine = TradingEngine(mode=args.mode)
-    engine.start()
 
-    sys.exit(app.exec_())
+    # 종료 시그널 핸들링
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(engine.stop()))
+        except NotImplementedError:
+            pass  # Windows에서 SIGTERM 미지원
+
+    try:
+        await engine.start()
+        # 실행 대기
+        while engine._running:
+            await asyncio.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("사용자 중단")
+    finally:
+        await engine.stop()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

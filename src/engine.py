@@ -1,12 +1,14 @@
 """TradingEngine — 전체 모듈 조율자.
 
 장전 스크리닝 -> 장중 실시간 파이프라인 -> 체결 이벤트 -> 장마감 리포트.
+asyncio 기반으로 동작한다.
 """
 
+import asyncio
 from datetime import datetime
 from typing import Literal
 
-from apscheduler.schedulers.qt import QtScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from loguru import logger
 
 from src.broker.kiwoom_api import KiwoomAPI
@@ -35,7 +37,16 @@ class TradingEngine:
         self._ds.connect()
         self._ds.create_tables()
 
-        self._kiwoom = KiwoomAPI()
+        # 키움 API (REST + WebSocket)
+        base_url = config.get("broker.base_url", "https://api.kiwoom.com")
+        ws_url = config.get(
+            "broker.ws_url",
+            "wss://api.kiwoom.com:10000/api/dostk/websocket",
+        )
+        appkey = config.get_env("KIWOOM_APPKEY", "")
+        secretkey = config.get_env("KIWOOM_SECRETKEY", "")
+
+        self._kiwoom = KiwoomAPI(base_url, ws_url, appkey, secretkey)
         account = config.get_env("KIWOOM_ACCOUNT", "")
         self._order_mgr = OrderManager(self._kiwoom, account)
         self._realtime = RealtimeDataManager(self._kiwoom)
@@ -57,13 +68,13 @@ class TradingEngine:
         self._max_reconnect = 5
 
         # 스케줄러
-        self._scheduler = QtScheduler()
+        self._scheduler = AsyncIOScheduler()
 
         # 콜백 등록
         self._kiwoom.on_tick_callback = self.on_price_update
         self._kiwoom.on_chejan_callback = self.on_chejan
 
-    def start(self):
+    async def start(self):
         """메인루프 시작."""
         logger.info(f"TradingEngine 시작 (mode={self.mode})")
         self._running = True
@@ -94,14 +105,13 @@ class TradingEngine:
         self._scheduler.start()
 
         # 키움 연결
-        self._kiwoom.connect()
+        await self._kiwoom.connect()
 
-    def stop(self):
+    async def stop(self):
         """시스템 중지."""
         self._running = False
         self._scheduler.shutdown(wait=False)
-        if hasattr(self._realtime, "unsubscribe_all"):
-            self._realtime.unsubscribe_all()
+        await self._kiwoom.disconnect()
         self._ds.close()
         logger.info("TradingEngine 중지")
 
@@ -113,13 +123,16 @@ class TradingEngine:
 
     # ── 장전 ──
 
-    def _pre_market_screening(self):
+    async def _pre_market_screening(self):
         """장전 스크리닝 (08:30)."""
         try:
             today = datetime.now().strftime("%Y%m%d")
-            self._candidates = self._screener.run_daily_screening(today)
+            # Screener는 pykrx 기반 sync — to_thread로 래핑
+            self._candidates = await asyncio.to_thread(
+                self._screener.run_daily_screening, today
+            )
             if self._candidates:
-                self._realtime.subscribe_list(self._candidates)
+                await self._realtime.subscribe_list(self._candidates)
                 self._telegram.send(
                     f"📊 당일 매수 후보: {len(self._candidates)}종목"
                 )
@@ -132,7 +145,7 @@ class TradingEngine:
 
     # ── 장중 실시간 ──
 
-    def on_price_update(self, tick: Tick):
+    async def on_price_update(self, tick: Tick):
         """실시간 시세 수신 콜백."""
         if not self._running or self._risk_mgr.is_halted:
             return
@@ -140,16 +153,16 @@ class TradingEngine:
             return
 
         # 1. 보유 종목 손절/트레일링/목표가 체크
-        self._check_exit_conditions(tick)
+        await self._check_exit_conditions(tick)
 
         # 2. 일일 손익 업데이트 및 한도 체크
         self._update_daily_pnl(tick)
 
         # 3. 후보 종목 진입 조건 체크
         if tick.code in self._candidates:
-            self._check_entry_conditions(tick)
+            await self._check_entry_conditions(tick)
 
-    def _check_exit_conditions(self, tick: Tick):
+    async def _check_exit_conditions(self, tick: Tick):
         """보유 종목 청산 조건 체크."""
         positions = self._ds.get_open_positions()
         for pos_dict in positions:
@@ -168,11 +181,11 @@ class TradingEngine:
 
             # 청산 체크 (간이 — 실제로는 latest 일봉 필요)
             if self._stop_mgr.is_stopped(pos, tick.price):
-                self._execute_sell(pos, tick.price, ExitReason.STOP_LOSS)
+                await self._execute_sell(pos, tick.price, ExitReason.STOP_LOSS)
             elif tick.price >= pos.target_price:
-                self._execute_sell(pos, tick.price, ExitReason.TARGET_REACHED)
+                await self._execute_sell(pos, tick.price, ExitReason.TARGET_REACHED)
 
-    def _check_entry_conditions(self, tick: Tick):
+    async def _check_entry_conditions(self, tick: Tick):
         """후보 종목 진입 조건 체크 — 간이 버전."""
         # 리스크 사전 체크
         signal = Signal(
@@ -202,20 +215,20 @@ class TradingEngine:
         if self.mode == "live":
             from src.broker.tr_codes import ORDER_BUY, PRICE_MARKET
 
-            result = self._order_mgr.execute_order(
+            result = await self._order_mgr.execute_order(
                 tick.code, qty, tick.price, ORDER_BUY, PRICE_MARKET
             )
             if result.success:
-                self._record_buy(tick, qty)
+                await self._record_buy(tick, qty)
         elif self.mode == "paper":
-            self._record_buy(tick, qty)
+            await self._record_buy(tick, qty)
 
-    def _execute_sell(self, position: Position, price: int, reason: ExitReason):
+    async def _execute_sell(self, position: Position, price: int, reason: ExitReason):
         """매도 실행."""
         if self.mode == "live":
             from src.broker.tr_codes import ORDER_SELL, PRICE_MARKET
 
-            result = self._order_mgr.execute_order(
+            result = await self._order_mgr.execute_order(
                 position.code,
                 position.quantity,
                 price,
@@ -279,7 +292,7 @@ class TradingEngine:
             f"매도 {position.code} @ {price:,} ({reason.value}), PnL: {pnl:+,}",
         )
 
-    def _record_buy(self, tick: Tick, qty: int):
+    async def _record_buy(self, tick: Tick, qty: int):
         """매수 기록."""
         atr_estimate = tick.price * 0.02  # 간이 ATR
         stop_price = self._stop_mgr.get_initial_stop(tick.price, atr_estimate)
@@ -366,7 +379,7 @@ class TradingEngine:
         self._risk_mgr.reset_daily()
         logger.info("일일 리셋 완료")
 
-    def _ensure_connection(self):
+    async def _ensure_connection(self):
         """키움 API 연결 확인/재연결 (08:45)."""
         if not self._kiwoom._connected:
             self._reconnect_count += 1
@@ -374,7 +387,7 @@ class TradingEngine:
                 logger.warning(
                     f"키움 재연결 시도 ({self._reconnect_count}/{self._max_reconnect})"
                 )
-                self._kiwoom.connect()
+                await self._kiwoom.connect()
                 self._telegram.send_system_error(
                     "ConnectionLost",
                     "kiwoom_api",
@@ -386,6 +399,6 @@ class TradingEngine:
                     "MaxReconnectExceeded", "kiwoom_api"
                 )
 
-    def on_chejan(self, data: dict):
+    async def on_chejan(self, data: dict):
         """체결 이벤트 수신."""
         logger.info(f"체결 이벤트: {data}")
