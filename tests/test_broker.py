@@ -1,12 +1,12 @@
 """브로커 레이어 테스트.
 
-Mock 기반으로 PyQt5 OCX 없이 테스트 가능하도록 구성.
+REST/WebSocket 기반 Mock 테스트.
 """
 
 import inspect
 import time
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -33,6 +33,19 @@ from src.broker.tr_codes import (
     TR_OPTKWFID,
     TR_OPW00004,
     TR_OPW00018,
+    # REST API 상수
+    API_STOCK_ORDER,
+    API_STOCK_CANCEL,
+    API_STOCK_PRICE,
+    API_STOCK_DAILY,
+    API_STOCK_MINUTE,
+    API_ACCOUNT_BALANCE,
+    EP_ORDER,
+    EP_STOCK,
+    EP_CHART,
+    EP_ACCOUNT,
+    WS_TYPE_TICK,
+    WS_TYPE_ORDER,
 )
 from src.models import Order, OrderResult, Tick
 
@@ -91,6 +104,27 @@ class TestTrCodes:
         assert ERR_CODES[-102] == "버전 처리 실패"
         assert ERR_CODES[-200] == "시세 제한 초과"
         assert ERR_CODES[-201] == "조회 과부하"
+
+    def test_rest_api_ids(self):
+        """REST API ID 상수 검증."""
+        assert API_STOCK_ORDER == "kt10000"
+        assert API_STOCK_CANCEL == "kt10001"
+        assert API_STOCK_PRICE == "ka10001"
+        assert API_STOCK_DAILY == "ka10002"
+        assert API_STOCK_MINUTE == "ka10003"
+        assert API_ACCOUNT_BALANCE == "ka10070"
+
+    def test_rest_endpoints(self):
+        """REST 엔드포인트 상수 검증."""
+        assert EP_ORDER == "/api/dostk/ordr"
+        assert EP_STOCK == "/api/dostk/stkinfo"
+        assert EP_CHART == "/api/dostk/chart"
+        assert EP_ACCOUNT == "/api/dostk/acnt"
+
+    def test_ws_types(self):
+        """WebSocket 실시간 타입 상수 검증."""
+        assert WS_TYPE_TICK == "0B"
+        assert WS_TYPE_ORDER == "00"
 
 
 # ──────────────────────────────────────────────
@@ -151,27 +185,175 @@ class TestRateLimiter:
 
 
 # ──────────────────────────────────────────────
+# KiwoomAPI 테스트
+# ──────────────────────────────────────────────
+
+
+class TestKiwoomAPI:
+    """KiwoomAPI REST/WebSocket 래퍼 테스트."""
+
+    def _make_api(self):
+        """Mock REST/WS 클라이언트로 KiwoomAPI 생성."""
+        from src.broker.kiwoom_api import KiwoomAPI
+
+        api = KiwoomAPI(
+            base_url="https://test.api.com",
+            ws_url="wss://test.ws.com",
+            appkey="test_appkey",
+            secretkey="test_secretkey",
+        )
+        return api
+
+    @pytest.mark.asyncio
+    async def test_connect(self):
+        """connect 시 REST 인증 + WS 연결."""
+        api = self._make_api()
+        api._rest = AsyncMock()
+        api._rest.authenticate = AsyncMock(return_value="test_token")
+        api._rest.get_ws_key = AsyncMock(return_value="test_ws_key")
+
+        with patch("src.broker.kiwoom_api.KiwoomWebSocketClient") as MockWS:
+            mock_ws_instance = AsyncMock()
+            MockWS.return_value = mock_ws_instance
+
+            await api.connect()
+
+            api._rest.authenticate.assert_awaited_once()
+            api._rest.get_ws_key.assert_awaited_once()
+            MockWS.assert_called_once_with("wss://test.ws.com", "test_ws_key")
+            mock_ws_instance.connect.assert_awaited_once()
+            assert api.connected is True
+
+    @pytest.mark.asyncio
+    async def test_disconnect(self):
+        """disconnect 시 WS + REST 종료."""
+        api = self._make_api()
+        api._rest = AsyncMock()
+        api._ws = AsyncMock()
+        api._connected = True
+
+        await api.disconnect()
+
+        api._ws.disconnect.assert_awaited_once()
+        api._rest.close.assert_awaited_once()
+        assert api.connected is False
+
+    @pytest.mark.asyncio
+    async def test_send_order(self):
+        """send_order가 REST 클라이언트에 위임."""
+        api = self._make_api()
+        api._rest = AsyncMock()
+        api._rest.send_order = AsyncMock(
+            return_value={"return_code": 0, "ord_no": "12345"}
+        )
+
+        result = await api.send_order(
+            code="005930", qty=10, price=0,
+            order_type=ORDER_BUY, hoga_type=PRICE_MARKET,
+            account="1234567890"
+        )
+
+        assert result["return_code"] == 0
+        assert result["ord_no"] == "12345"
+        api._rest.send_order.assert_awaited_once_with(
+            "005930", 10, 0, ORDER_BUY, PRICE_MARKET, "1234567890"
+        )
+
+    @pytest.mark.asyncio
+    async def test_subscribe_realtime(self):
+        """subscribe_realtime이 WS 클라이언트에 위임."""
+        api = self._make_api()
+        api._ws = AsyncMock()
+
+        await api.subscribe_realtime(["005930", "000660"])
+
+        api._ws.subscribe.assert_awaited_once_with(["005930", "000660"], "0B")
+
+    @pytest.mark.asyncio
+    async def test_subscribe_realtime_no_ws(self):
+        """WS 미연결 시 subscribe_realtime은 아무것도 안 함."""
+        api = self._make_api()
+        api._ws = None
+
+        # 에러 없이 실행되어야 함
+        await api.subscribe_realtime(["005930"])
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_realtime(self):
+        """unsubscribe_realtime이 WS 클라이언트에 위임."""
+        api = self._make_api()
+        api._ws = AsyncMock()
+
+        await api.unsubscribe_realtime(["005930"])
+
+        api._ws.unsubscribe.assert_awaited_once_with(["005930"], "0B")
+
+    @pytest.mark.asyncio
+    async def test_get_daily_ohlcv(self):
+        """get_daily_ohlcv가 REST 클라이언트에 위임."""
+        api = self._make_api()
+        api._rest = AsyncMock()
+        api._rest.get_daily_ohlcv = AsyncMock(return_value=[{"date": "20240101"}])
+
+        result = await api.get_daily_ohlcv("005930", "20240101", "20240131")
+
+        assert result == [{"date": "20240101"}]
+        api._rest.get_daily_ohlcv.assert_awaited_once_with(
+            "005930", "20240101", "20240131"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_account_info(self):
+        """get_account_info가 REST 클라이언트에 위임."""
+        api = self._make_api()
+        api._rest = AsyncMock()
+        api._rest.get_account_balance = AsyncMock(
+            return_value={"balance": 1000000}
+        )
+
+        result = await api.get_account_info("1234567890")
+
+        assert result["balance"] == 1000000
+
+    @pytest.mark.asyncio
+    async def test_cancel_order(self):
+        """cancel_order가 REST 클라이언트에 위임."""
+        api = self._make_api()
+        api._rest = AsyncMock()
+        api._rest.cancel_order = AsyncMock(
+            return_value={"return_code": 0}
+        )
+
+        result = await api.cancel_order("ORD001", "005930", 10, "1234567890")
+
+        assert result["return_code"] == 0
+
+
+# ──────────────────────────────────────────────
 # OrderManager 테스트
 # ──────────────────────────────────────────────
 
 
 class TestOrderManager:
-    """OrderManager Mock 기반 테스트."""
+    """OrderManager async Mock 기반 테스트."""
 
     def _make_manager(self):
         """Mock KiwoomAPI로 OrderManager 생성."""
         from src.broker.order_manager import OrderManager
 
-        mock_api = MagicMock()
+        mock_api = AsyncMock()
         manager = OrderManager(kiwoom_api=mock_api, account="1234567890")
         return manager, mock_api
 
-    def test_execute_order_success(self):
+    @pytest.mark.asyncio
+    async def test_execute_order_success(self):
         """주문 성공 시 OrderResult.success=True."""
         manager, mock_api = self._make_manager()
-        mock_api.send_order.return_value = 0
+        mock_api.send_order = AsyncMock(
+            return_value={"return_code": 0, "ord_no": "ORD001"}
+        )
 
-        result = manager.execute_order(
+        result = await manager.execute_order(
             code="005930",
             qty=10,
             price=0,
@@ -180,15 +362,18 @@ class TestOrderManager:
         )
 
         assert result.success is True
-        assert result.order_no != ""
-        mock_api.send_order.assert_called_once()
+        assert result.order_no == "ORD001"
+        mock_api.send_order.assert_awaited_once()
 
-    def test_execute_order_failure(self):
+    @pytest.mark.asyncio
+    async def test_execute_order_failure(self):
         """주문 실패 시 OrderResult.success=False."""
         manager, mock_api = self._make_manager()
-        mock_api.send_order.return_value = -1
+        mock_api.send_order = AsyncMock(
+            return_value={"return_code": -1, "ord_no": ""}
+        )
 
-        result = manager.execute_order(
+        result = await manager.execute_order(
             code="005930",
             qty=10,
             price=0,
@@ -197,12 +382,15 @@ class TestOrderManager:
 
         assert result.success is False
 
-    def test_execute_order_adds_to_pending(self):
+    @pytest.mark.asyncio
+    async def test_execute_order_adds_to_pending(self):
         """주문 성공 시 미체결 목록에 추가된다."""
         manager, mock_api = self._make_manager()
-        mock_api.send_order.return_value = 0
+        mock_api.send_order = AsyncMock(
+            return_value={"return_code": 0, "ord_no": "ORD001"}
+        )
 
-        manager.execute_order(
+        await manager.execute_order(
             code="005930", qty=10, price=0, order_type=ORDER_BUY
         )
 
@@ -210,34 +398,87 @@ class TestOrderManager:
         assert len(pending) == 1
         assert pending[0].code == "005930"
 
-    def test_cancel_order_not_found(self):
+    @pytest.mark.asyncio
+    async def test_execute_order_invalid_code(self):
+        """잘못된 종목코드 형식이면 실패."""
+        manager, mock_api = self._make_manager()
+
+        result = await manager.execute_order(
+            code="12345",  # 5자리 — 잘못된 형식
+            qty=10,
+            price=0,
+            order_type=ORDER_BUY,
+        )
+
+        assert result.success is False
+        assert "종목코드" in result.message
+        mock_api.send_order.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_execute_order_zero_qty(self):
+        """주문수량이 0이면 실패."""
+        manager, mock_api = self._make_manager()
+
+        result = await manager.execute_order(
+            code="005930", qty=0, price=0, order_type=ORDER_BUY
+        )
+
+        assert result.success is False
+        assert "양수" in result.message
+
+    @pytest.mark.asyncio
+    async def test_execute_order_negative_price(self):
+        """주문가격이 음수이면 실패."""
+        manager, mock_api = self._make_manager()
+
+        result = await manager.execute_order(
+            code="005930", qty=10, price=-100, order_type=ORDER_BUY
+        )
+
+        assert result.success is False
+        assert "0 이상" in result.message
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_not_found(self):
         """없는 주문번호 취소 시 False 반환."""
         manager, mock_api = self._make_manager()
-        assert manager.cancel_order("nonexistent") is False
+        result = await manager.cancel_order("nonexistent")
+        assert result is False
 
-    def test_cancel_order_success(self):
+    @pytest.mark.asyncio
+    async def test_cancel_order_success(self):
         """미체결 주문 취소 성공 테스트."""
         manager, mock_api = self._make_manager()
-        mock_api.send_order.return_value = 0
+        mock_api.send_order = AsyncMock(
+            return_value={"return_code": 0, "ord_no": "ORD001"}
+        )
+        mock_api.cancel_order = AsyncMock(
+            return_value={"return_code": 0}
+        )
 
-        result = manager.execute_order(
+        result = await manager.execute_order(
             code="005930", qty=10, price=0, order_type=ORDER_BUY
         )
         order_no = result.order_no
 
-        assert manager.cancel_order(order_no) is True
+        assert await manager.cancel_order(order_no) is True
 
-    def test_on_chejan_removes_filled_order(self):
+    @pytest.mark.asyncio
+    async def test_on_chejan_removes_filled_order(self):
         """체결 이벤트로 미체결 목록에서 제거된다."""
         manager, mock_api = self._make_manager()
-        mock_api.send_order.return_value = 0
+        mock_api.send_order = AsyncMock(
+            return_value={"return_code": 0, "ord_no": "ORD001"}
+        )
 
-        result = manager.execute_order(
+        result = await manager.execute_order(
             code="005930", qty=10, price=0, order_type=ORDER_BUY
         )
         order_no = result.order_no
 
-        manager.on_chejan({"order_no": order_no, "status": "체결", "code": "005930"})
+        await manager.on_chejan(
+            {"order_no": order_no, "status": "체결", "code": "005930"}
+        )
 
         assert len(manager.get_pending_orders()) == 0
 
@@ -255,53 +496,58 @@ class TestOrderManager:
 
 
 class TestRealtimeDataManager:
-    """RealtimeDataManager Mock 기반 테스트."""
+    """RealtimeDataManager async Mock 기반 테스트."""
 
     def _make_manager(self):
         """Mock KiwoomAPI로 RealtimeDataManager 생성."""
         from src.broker.realtime_data import RealtimeDataManager
 
-        mock_api = MagicMock()
+        mock_api = AsyncMock()
         manager = RealtimeDataManager(kiwoom_api=mock_api)
         return manager, mock_api
 
-    def test_subscribe(self):
+    @pytest.mark.asyncio
+    async def test_subscribe(self):
         """종목 구독 시 subscribed_codes에 추가된다."""
         manager, mock_api = self._make_manager()
-        manager.subscribe("005930")
+        await manager.subscribe("005930")
 
         assert "005930" in manager.subscribed_codes
-        mock_api.set_real_reg.assert_called_once()
+        mock_api.subscribe_realtime.assert_awaited_once_with(["005930"])
 
-    def test_subscribe_duplicate(self):
+    @pytest.mark.asyncio
+    async def test_subscribe_duplicate(self):
         """이미 구독 중인 종목 재구독 시 중복 호출 안 함."""
         manager, mock_api = self._make_manager()
-        manager.subscribe("005930")
-        manager.subscribe("005930")
+        await manager.subscribe("005930")
+        await manager.subscribe("005930")
 
-        assert mock_api.set_real_reg.call_count == 1
+        assert mock_api.subscribe_realtime.await_count == 1
 
-    def test_unsubscribe(self):
+    @pytest.mark.asyncio
+    async def test_unsubscribe(self):
         """종목 해제 시 subscribed_codes에서 제거된다."""
         manager, mock_api = self._make_manager()
-        manager.subscribe("005930")
-        manager.unsubscribe("005930")
+        await manager.subscribe("005930")
+        await manager.unsubscribe("005930")
 
         assert "005930" not in manager.subscribed_codes
-        mock_api.set_real_remove.assert_called_once()
+        mock_api.unsubscribe_realtime.assert_awaited_once_with(["005930"])
 
-    def test_unsubscribe_not_subscribed(self):
+    @pytest.mark.asyncio
+    async def test_unsubscribe_not_subscribed(self):
         """구독하지 않은 종목 해제 시 아무 일도 안 함."""
         manager, mock_api = self._make_manager()
-        manager.unsubscribe("005930")
+        await manager.unsubscribe("005930")
 
-        mock_api.set_real_remove.assert_not_called()
+        mock_api.unsubscribe_realtime.assert_not_awaited()
 
-    def test_subscribe_list(self):
+    @pytest.mark.asyncio
+    async def test_subscribe_list(self):
         """복수 종목 구독 테스트."""
         manager, mock_api = self._make_manager()
         codes = ["005930", "000660", "035720"]
-        manager.subscribe_list(codes)
+        await manager.subscribe_list(codes)
 
         assert manager.subscribed_codes == set(codes)
 
@@ -334,13 +580,14 @@ class TestRealtimeDataManager:
         assert manager.get_current_price("005930") == 72000
         assert manager.get_current_price("000660") == 130000
 
-    def test_unsubscribe_clears_price(self):
+    @pytest.mark.asyncio
+    async def test_unsubscribe_clears_price(self):
         """구독 해제 시 현재가 캐시도 제거된다."""
         manager, _ = self._make_manager()
-        manager.subscribe("005930")
+        await manager.subscribe("005930")
         manager.on_tick(
             Tick(code="005930", price=72000, volume=100, timestamp=datetime.now())
         )
 
-        manager.unsubscribe("005930")
+        await manager.unsubscribe("005930")
         assert manager.get_current_price("005930") == 0

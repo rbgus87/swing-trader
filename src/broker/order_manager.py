@@ -1,6 +1,6 @@
 """주문 관리.
 
-키움 API를 통한 주문 실행, 취소, 체결 상태 관리를 담당한다.
+키움 REST API를 통한 주문 실행, 취소, 체결 상태 관리를 담당한다.
 모든 주문은 RiskManager.pre_check() 통과 후에만 실행되어야 한다.
 """
 
@@ -15,7 +15,6 @@ from src.broker.tr_codes import (
     ORDER_SELL,
     ORDER_SELL_CANCEL,
     PRICE_MARKET,
-    SCREEN_ORDER,
 )
 from src.models import Order, OrderResult
 
@@ -39,7 +38,7 @@ class OrderManager:
         self._pending_orders: dict[str, Order] = {}
 
     # RISK_CHECK_REQUIRED
-    def execute_order(
+    async def execute_order(
         self,
         code: str,
         qty: int,
@@ -96,19 +95,15 @@ class OrderManager:
             hoga_type,
         )
 
-        rq_name = f"{side}_{code}"
-        result_code = self._api.send_order(
-            rq_name=rq_name,
-            screen_no=SCREEN_ORDER,
-            account=self._account,
-            order_type=order_type,
-            code=code,
-            qty=qty,
-            price=price,
-            hoga_type=hoga_type,
+        result = await self._api.send_order(
+            code, qty, price, order_type, hoga_type, self._account
         )
 
-        if result_code == 0:
+        # REST API는 dict 반환: {"return_code": 0, "ord_no": "..."}
+        return_code = result.get("return_code", -1)
+        ord_no = result.get("ord_no", "")
+
+        if return_code == 0:
             order = Order(
                 code=code,
                 side=side,
@@ -117,22 +112,22 @@ class OrderManager:
                 order_type="market" if hoga_type == PRICE_MARKET else "limit",
                 hoga_type=hoga_type,
             )
-            self._pending_orders[rq_name] = order
-            logger.info("주문 접수 성공: {}", rq_name)
+            self._pending_orders[ord_no] = order
+            logger.info("주문 접수 성공: {}", ord_no)
             return OrderResult(
                 success=True,
-                order_no=rq_name,
+                order_no=ord_no,
                 message="주문 접수 성공",
             )
 
-        logger.error("주문 접수 실패: code={}, result={}", code, result_code)
+        logger.error("주문 접수 실패: code={}, result={}", code, return_code)
         return OrderResult(
             success=False,
             order_no="",
-            message=f"주문 접수 실패 (에러코드: {result_code})",
+            message=f"주문 접수 실패 (에러코드: {return_code})",
         )
 
-    def cancel_order(self, order_no: str) -> bool:
+    async def cancel_order(self, order_no: str) -> bool:
         """미체결 주문 취소.
 
         Args:
@@ -146,27 +141,17 @@ class OrderManager:
             logger.warning("취소할 주문을 찾을 수 없음: {}", order_no)
             return False
 
-        cancel_type = (
-            ORDER_BUY_CANCEL if order.side == "buy" else ORDER_SELL_CANCEL
+        result = await self._api.cancel_order(
+            order_no, order.code, order.quantity, self._account
         )
 
-        result_code = self._api.send_order(
-            rq_name=f"cancel_{order_no}",
-            screen_no=SCREEN_ORDER,
-            account=self._account,
-            order_type=cancel_type,
-            code=order.code,
-            qty=order.quantity,
-            price=0,
-            hoga_type=order.hoga_type,
-            org_order_no=order_no,
-        )
+        return_code = result.get("return_code", -1)
 
-        if result_code == 0:
+        if return_code == 0:
             logger.info("주문 취소 접수 성공: {}", order_no)
             return True
 
-        logger.error("주문 취소 실패: order_no={}, result={}", order_no, result_code)
+        logger.error("주문 취소 실패: order_no={}, result={}", order_no, return_code)
         return False
 
     def get_pending_orders(self) -> list[Order]:
@@ -177,7 +162,7 @@ class OrderManager:
         """
         return list(self._pending_orders.values())
 
-    def on_chejan(self, data: dict) -> None:
+    async def on_chejan(self, data: dict) -> None:
         """체결 이벤트 처리.
 
         체결 완료 시 미체결 주문 목록에서 제거한다.
