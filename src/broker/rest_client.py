@@ -15,6 +15,8 @@ class KiwoomRestClient:
     """키움 REST API HTTP 클라이언트."""
 
     def __init__(self, base_url: str, appkey: str, secretkey: str):
+        if base_url and not base_url.startswith("https://"):
+            raise ValueError("base_url은 https://로 시작해야 합니다 (보안)")
         self._base_url = base_url
         self._appkey = appkey
         self._secretkey = secretkey
@@ -34,6 +36,7 @@ class KiwoomRestClient:
         Body: {"appkey": ..., "secretkey": ...}
         Returns: access_token string
         """
+        await self._rate_limiter.wait()
         response = await self._client.post(
             "/api/auth/token",
             json={"appkey": self._appkey, "secretkey": self._secretkey}
@@ -53,6 +56,7 @@ class KiwoomRestClient:
         Returns: ws_key string
         """
         await self._ensure_token()
+        await self._rate_limiter.wait()
         response = await self._client.post(
             "/api/auth/websocket",
             headers=self._auth_headers()
