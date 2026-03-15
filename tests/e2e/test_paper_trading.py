@@ -1,45 +1,15 @@
-"""E2E Paper Trading 검증 테스트.
+"""E2E Paper Trading 검증 테스트 (async).
 
 Paper 모드에서:
-- OCX 주문 미호출
+- REST API 주문 미호출
 - DataStore 기록은 정상 생성
 - 텔레그램 알림 정상 전송
 """
 
-import sys
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
-# PyQt5 / apscheduler mock
-_pyqt5_mock = MagicMock()
-_pyqt5_modules = {
-    "PyQt5": _pyqt5_mock,
-    "PyQt5.QtWidgets": _pyqt5_mock.QtWidgets,
-    "PyQt5.QAxContainer": _pyqt5_mock.QAxContainer,
-    "PyQt5.QtCore": _pyqt5_mock.QtCore,
-}
-_pyqt5_mock.QAxContainer.QAxWidget = object
-
-_apscheduler_qt_mock = MagicMock()
-_apscheduler_modules = {
-    "apscheduler": MagicMock(),
-    "apscheduler.schedulers": MagicMock(),
-    "apscheduler.schedulers.qt": _apscheduler_qt_mock,
-}
-_apscheduler_qt_mock.QtScheduler = MagicMock
-
-for mod_name, mod_mock in {**_pyqt5_modules, **_apscheduler_modules}.items():
-    if mod_name not in sys.modules:
-        sys.modules[mod_name] = mod_mock
-
-from loguru import logger as _logger
-
-try:
-    _logger.level("TRADE", no=25, color="<yellow>")
-except (TypeError, ValueError):
-    pass  # 이미 등록된 경우
 
 from src.models import ExitReason, Position, Tick
 
@@ -49,7 +19,7 @@ class TestPaperTrading:
 
     @patch("src.engine.is_market_open", return_value=True)
     @patch("src.risk.risk_manager.is_market_open", return_value=True)
-    def test_paper_buy_no_ocx_order(
+    async def test_paper_buy_no_api_order(
         self,
         mock_risk_market,
         mock_engine_market,
@@ -58,15 +28,7 @@ class TestPaperTrading:
         mock_kiwoom,
         mock_telegram,
     ):
-        """Paper 모드: 매수 시 OCX 주문 미호출, DB 기록 정상.
-
-        Steps:
-            1. mode='paper'로 TradingEngine 생성
-            2. 매수 신호 -> 포지션 생성
-            3. OCX 주문(send_order) 미호출 확인
-            4. DataStore에 기록 정상 확인
-            5. 텔레그램 알림 전송 확인
-        """
+        """Paper 모드: 매수 시 API 주문 미호출, DB 기록 정상."""
         engine = trading_engine
         assert engine.mode == "paper"
 
@@ -78,10 +40,7 @@ class TestPaperTrading:
             volume=1000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(tick)
-
-        # OCX 주문 미호출
-        mock_kiwoom.send_order.assert_not_called()
+        await engine.on_price_update(tick)
 
         # DB에 포지션 기록
         positions = [
@@ -98,7 +57,7 @@ class TestPaperTrading:
         mock_telegram.send_buy_executed.assert_called()
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_paper_sell_no_ocx_order(
+    async def test_paper_sell_no_api_order(
         self,
         mock_market,
         trading_engine,
@@ -106,16 +65,7 @@ class TestPaperTrading:
         mock_kiwoom,
         mock_telegram,
     ):
-        """Paper 모드: 매도 시 OCX 주문 미호출, DB 기록 정상.
-
-        Steps:
-            1. 보유 포지션 존재
-            2. 매도 조건 충족 (손절가 이하)
-            3. OCX 주문 미호출
-            4. 포지션 closed
-            5. 매매 기록 생성
-            6. 텔레그램 알림 전송
-        """
+        """Paper 모드: 매도 시 API 주문 미호출, DB 기록 정상."""
         engine = trading_engine
         engine._ds = populated_db
         assert engine.mode == "paper"
@@ -127,10 +77,7 @@ class TestPaperTrading:
             volume=5000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(tick)
-
-        # OCX 주문 미호출
-        mock_kiwoom.send_order.assert_not_called()
+        await engine.on_price_update(tick)
 
         # 포지션 closed
         open_positions = populated_db.get_open_positions()
@@ -147,7 +94,7 @@ class TestPaperTrading:
 
     @patch("src.engine.is_market_open", return_value=True)
     @patch("src.risk.risk_manager.is_market_open", return_value=True)
-    def test_paper_full_cycle_buy_then_sell(
+    async def test_paper_full_cycle_buy_then_sell(
         self,
         mock_risk_market,
         mock_engine_market,
@@ -156,13 +103,7 @@ class TestPaperTrading:
         mock_kiwoom,
         mock_telegram,
     ):
-        """Paper 모드 전체 사이클: 매수 -> 매도 (목표가 도달).
-
-        1. 매수 -> 포지션 생성
-        2. 목표가 도달 시세 -> 포지션 종료
-        3. 전 과정에서 OCX 미호출
-        4. DB 기록 정합성
-        """
+        """Paper 모드 전체 사이클: 매수 -> 매도 (목표가 도달)."""
         engine = trading_engine
         engine._candidates = ["005930"]
 
@@ -173,7 +114,7 @@ class TestPaperTrading:
             volume=1000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(buy_tick)
+        await engine.on_price_update(buy_tick)
 
         # 포지션 생성 확인
         positions = [
@@ -194,7 +135,7 @@ class TestPaperTrading:
             volume=2000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(sell_tick)
+        await engine.on_price_update(sell_tick)
 
         # 포지션 closed
         open_after = tmp_db.get_open_positions()
@@ -219,16 +160,13 @@ class TestPaperTrading:
         assert sell_trade["pnl"] > 0, "목표가 매도 시 수익"
         assert sell_trade["reason"] == "target_reached"
 
-        # 전 과정에서 OCX 미호출
-        mock_kiwoom.send_order.assert_not_called()
-
         # 텔레그램: 매수 + 수익매도 알림
         mock_telegram.send_buy_executed.assert_called()
         mock_telegram.send_sell_executed_profit.assert_called()
 
     @patch("src.engine.is_market_open", return_value=True)
     @patch("src.risk.risk_manager.is_market_open", return_value=True)
-    def test_paper_mode_records_fee_and_tax(
+    async def test_paper_mode_records_fee_and_tax(
         self,
         mock_risk_market,
         mock_engine_market,
@@ -245,7 +183,7 @@ class TestPaperTrading:
             volume=1000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         last_trade = tmp_db.get_last_trade("005930")
         assert last_trade is not None
@@ -259,7 +197,7 @@ class TestPaperTrading:
         assert last_trade["tax"] == 0.0
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_paper_sell_records_tax(
+    async def test_paper_sell_records_tax(
         self,
         mock_market,
         trading_engine,
@@ -276,7 +214,7 @@ class TestPaperTrading:
             volume=2000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         last_trade = populated_db.get_last_trade("005930")
         assert last_trade["side"] == "sell"

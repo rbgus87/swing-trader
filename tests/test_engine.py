@@ -1,43 +1,17 @@
-"""TradingEngine 통합 테스트 — Mock 기반.
+"""TradingEngine 통합 테스트 — Mock 기반 (async).
 
 모든 외부 의존성(KiwoomAPI, DataStore, TelegramBot 등)을 mock하여
 TradingEngine의 조율 로직을 검증한다.
 
-PyQt5/OCX 없는 환경에서도 실행 가능하도록
-sys.modules 레벨에서 PyQt5를 mock한 후 engine 모듈을 임포트한다.
+asyncio 기반 engine에 맞추어 모든 테스트가 async로 동작한다.
 """
 
-import sys
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# PyQt5 mock (OCX 없는 환경 지원)
-_pyqt5_mock = MagicMock()
-_pyqt5_modules = {
-    "PyQt5": _pyqt5_mock,
-    "PyQt5.QtWidgets": _pyqt5_mock.QtWidgets,
-    "PyQt5.QAxContainer": _pyqt5_mock.QAxContainer,
-    "PyQt5.QtCore": _pyqt5_mock.QtCore,
-}
-# QAxWidget을 일반 object로 설정하여 상속 가능하게
-_pyqt5_mock.QAxContainer.QAxWidget = object
-
-# apscheduler QtScheduler mock
-_apscheduler_qt_mock = MagicMock()
-_apscheduler_modules = {
-    "apscheduler": MagicMock(),
-    "apscheduler.schedulers": MagicMock(),
-    "apscheduler.schedulers.qt": _apscheduler_qt_mock,
-}
-_apscheduler_qt_mock.QtScheduler = MagicMock
-
-for mod_name, mod_mock in {**_pyqt5_modules, **_apscheduler_modules}.items():
-    if mod_name not in sys.modules:
-        sys.modules[mod_name] = mod_mock
-
-# loguru TRADE 커스텀 레벨 등록 (logger.py의 setup_logger 없이 사용)
+# loguru TRADE 커스텀 레벨 등록
 from loguru import logger as _logger
 
 try:
@@ -72,7 +46,7 @@ def mock_deps():
         patch("src.engine.PositionSizer") as MockSizer,
         patch("src.engine.StopManager") as MockStopMgr,
         patch("src.engine.TelegramBot") as MockTelegram,
-        patch("src.engine.QtScheduler") as MockScheduler,
+        patch("src.engine.AsyncIOScheduler") as MockScheduler,
         patch("src.engine.config") as mock_config,
     ):
         # config mock
@@ -86,11 +60,13 @@ def mock_deps():
         ds_instance.insert_position.return_value = 1
         ds_instance.record_trade.return_value = 1
 
-        # KiwoomAPI mock
+        # KiwoomAPI mock (async)
         kiwoom_instance = MockKiwoom.return_value
         kiwoom_instance._connected = False
         kiwoom_instance.on_tick_callback = None
         kiwoom_instance.on_chejan_callback = None
+        kiwoom_instance.connect = AsyncMock(return_value=None)
+        kiwoom_instance.disconnect = AsyncMock(return_value=None)
 
         # RiskManager mock
         risk_instance = MockRiskMgr.return_value
@@ -107,13 +83,19 @@ def mock_deps():
         sizer_instance = MockSizer.return_value
         sizer_instance.calculate.return_value = 1_000_000
 
-        # OrderManager mock
+        # OrderManager mock (async execute_order)
         order_instance = MockOrderMgr.return_value
-        order_instance.execute_order.return_value = OrderResult(
-            success=True, order_no="ORD001", message="OK"
+        order_instance.execute_order = AsyncMock(
+            return_value=OrderResult(
+                success=True, order_no="ORD001", message="OK"
+            )
         )
 
-        # TelegramBot mock
+        # RealtimeDataManager mock (async subscribe_list)
+        realtime_instance = MockRealtime.return_value
+        realtime_instance.subscribe_list = AsyncMock(return_value=None)
+
+        # TelegramBot mock (sync)
         telegram_instance = MockTelegram.return_value
         telegram_instance.send.return_value = True
         telegram_instance.send_buy_executed.return_value = True
@@ -129,7 +111,7 @@ def mock_deps():
             "ds": ds_instance,
             "kiwoom": kiwoom_instance,
             "order_mgr": order_instance,
-            "realtime": MockRealtime.return_value,
+            "realtime": realtime_instance,
             "screener": MockScreener.return_value,
             "risk_mgr": risk_instance,
             "sizer": sizer_instance,
@@ -194,14 +176,14 @@ def _make_position_dict(
 class TestEngineCreation:
     """TradingEngine 생성 테스트."""
 
-    def test_create_paper_mode(self, engine, mock_deps):
+    async def test_create_paper_mode(self, engine, mock_deps):
         """paper 모드로 정상 생성."""
         assert engine.mode == "paper"
         assert engine._running is False
         mock_deps["ds"].connect.assert_called_once()
         mock_deps["ds"].create_tables.assert_called_once()
 
-    def test_create_live_mode(self, engine_live, mock_deps):
+    async def test_create_live_mode(self, engine_live, mock_deps):
         """live 모드로 정상 생성."""
         assert engine_live.mode == "live"
 
@@ -212,42 +194,42 @@ class TestEngineCreation:
 class TestOnPriceUpdate:
     """실시간 시세 수신 콜백 테스트."""
 
-    def test_ignored_when_not_running(self, engine, mock_deps):
+    async def test_ignored_when_not_running(self, engine, mock_deps):
         """_running=False이면 무시."""
         engine._running = False
         tick = _make_tick()
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
         mock_deps["ds"].get_open_positions.assert_not_called()
 
-    def test_ignored_when_halted(self, engine, mock_deps):
+    async def test_ignored_when_halted(self, engine, mock_deps):
         """halt 상태에서 무시."""
         engine._running = True
         mock_deps["risk_mgr"].is_halted = True
         tick = _make_tick()
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
         mock_deps["ds"].get_open_positions.assert_not_called()
 
     @patch("src.engine.is_market_open", return_value=False)
-    def test_ignored_outside_market_hours(self, mock_market, engine, mock_deps):
+    async def test_ignored_outside_market_hours(self, mock_market, engine, mock_deps):
         """장 시간 외에는 무시."""
         engine._running = True
         tick = _make_tick()
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
         mock_deps["ds"].get_open_positions.assert_not_called()
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_calls_exit_check_for_positions(self, mock_market, engine, mock_deps):
+    async def test_calls_exit_check_for_positions(self, mock_market, engine, mock_deps):
         """보유 종목에 대해 청산 조건 체크 호출."""
         engine._running = True
         mock_deps["ds"].get_open_positions.return_value = [
             _make_position_dict()
         ]
         tick = _make_tick(code="005930", price=10000)
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
         mock_deps["ds"].get_open_positions.assert_called()
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_stop_loss_triggers_sell(self, mock_market, engine, mock_deps):
+    async def test_stop_loss_triggers_sell(self, mock_market, engine, mock_deps):
         """손절 조건 시 매도 실행."""
         engine._running = True
         pos_dict = _make_position_dict(stop_price=9500)
@@ -256,7 +238,7 @@ class TestOnPriceUpdate:
         mock_deps["stop_mgr"].update_trailing_stop.return_value = 9500
 
         tick = _make_tick(code="005930", price=9000)
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         # 포지션이 closed로 업데이트
         mock_deps["ds"].update_position.assert_called()
@@ -264,7 +246,7 @@ class TestOnPriceUpdate:
         mock_deps["ds"].record_trade.assert_called()
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_target_reached_triggers_sell(self, mock_market, engine, mock_deps):
+    async def test_target_reached_triggers_sell(self, mock_market, engine, mock_deps):
         """목표가 도달 시 매도."""
         engine._running = True
         pos_dict = _make_position_dict(target_price=10800)
@@ -273,13 +255,13 @@ class TestOnPriceUpdate:
         mock_deps["stop_mgr"].update_trailing_stop.return_value = 9300
 
         tick = _make_tick(code="005930", price=11000)
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         mock_deps["ds"].update_position.assert_called()
         mock_deps["ds"].record_trade.assert_called()
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_entry_check_for_candidate(self, mock_market, engine, mock_deps):
+    async def test_entry_check_for_candidate(self, mock_market, engine, mock_deps):
         """후보 종목에 대해 진입 조건 체크."""
         engine._running = True
         engine._candidates = ["005930"]
@@ -289,7 +271,7 @@ class TestOnPriceUpdate:
         mock_deps["config"].get.return_value = 10_000_000
 
         tick = _make_tick(code="005930", price=10000)
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         mock_deps["risk_mgr"].pre_check.assert_called()
 
@@ -300,24 +282,24 @@ class TestOnPriceUpdate:
 class TestRecordBuy:
     """매수 기록 테스트."""
 
-    def test_record_buy_creates_position_and_trade(self, engine, mock_deps):
+    async def test_record_buy_creates_position_and_trade(self, engine, mock_deps):
         """매수 시 포지션과 매매기록 모두 생성."""
         mock_deps["config"].get.return_value = 0.08
         tick = _make_tick(code="005930", price=10000)
 
-        engine._record_buy(tick, qty=10)
+        await engine._record_buy(tick, qty=10)
 
         mock_deps["ds"].insert_position.assert_called_once()
         mock_deps["ds"].record_trade.assert_called_once()
         mock_deps["telegram"].send_buy_executed.assert_called_once()
 
-    def test_record_buy_position_has_stop_and_target(self, engine, mock_deps):
+    async def test_record_buy_position_has_stop_and_target(self, engine, mock_deps):
         """매수 기록의 포지션에 손절가/목표가 설정 확인."""
         mock_deps["config"].get.return_value = 0.08
         mock_deps["stop_mgr"].get_initial_stop.return_value = 9700
 
         tick = _make_tick(code="005930", price=10000)
-        engine._record_buy(tick, qty=5)
+        await engine._record_buy(tick, qty=5)
 
         call_args = mock_deps["ds"].insert_position.call_args
         pos = call_args[0][0]
@@ -331,7 +313,7 @@ class TestRecordBuy:
 class TestExecuteSell:
     """매도 실행 테스트."""
 
-    def test_sell_closes_position_and_records_trade(self, engine, mock_deps):
+    async def test_sell_closes_position_and_records_trade(self, engine, mock_deps):
         """매도 시 포지션 종료 + 매매기록 생성."""
         pos = Position(
             id=1,
@@ -345,7 +327,7 @@ class TestExecuteSell:
             high_since_entry=10000,
         )
 
-        engine._execute_sell(pos, price=10800, reason=ExitReason.TARGET_REACHED)
+        await engine._execute_sell(pos, price=10800, reason=ExitReason.TARGET_REACHED)
 
         mock_deps["ds"].update_position.assert_called_once_with(
             1, status="closed"
@@ -354,7 +336,7 @@ class TestExecuteSell:
         # 수익이므로 send_sell_executed_profit 호출
         mock_deps["telegram"].send_sell_executed_profit.assert_called_once()
 
-    def test_sell_loss_sends_loss_alert(self, engine, mock_deps):
+    async def test_sell_loss_sends_loss_alert(self, engine, mock_deps):
         """손실 매도 시 손실 알림 발송."""
         pos = Position(
             id=2,
@@ -368,14 +350,14 @@ class TestExecuteSell:
             high_since_entry=10000,
         )
 
-        engine._execute_sell(pos, price=9000, reason=ExitReason.STOP_LOSS)
+        await engine._execute_sell(pos, price=9000, reason=ExitReason.STOP_LOSS)
 
         mock_deps["ds"].update_position.assert_called_once_with(
             2, status="closed"
         )
         mock_deps["telegram"].send_sell_executed_loss.assert_called_once()
 
-    def test_sell_trade_record_has_correct_pnl(self, engine, mock_deps):
+    async def test_sell_trade_record_has_correct_pnl(self, engine, mock_deps):
         """매매기록의 손익 계산 검증."""
         pos = Position(
             id=3,
@@ -389,7 +371,7 @@ class TestExecuteSell:
             high_since_entry=10000,
         )
 
-        engine._execute_sell(pos, price=11000, reason=ExitReason.TARGET_REACHED)
+        await engine._execute_sell(pos, price=11000, reason=ExitReason.TARGET_REACHED)
 
         call_args = mock_deps["ds"].record_trade.call_args
         trade = call_args[0][0]
@@ -405,18 +387,18 @@ class TestExecuteSell:
 class TestPaperVsLive:
     """Paper/Live 모드 차이 검증."""
 
-    def test_paper_mode_no_ocx_order_on_buy(self, engine, mock_deps):
-        """paper 모드에서 OCX 주문 미호출 (매수)."""
+    async def test_paper_mode_no_ocx_order_on_buy(self, engine, mock_deps):
+        """paper 모드에서 주문 미호출 (매수)."""
         mock_deps["config"].get.return_value = 0.08
         tick = _make_tick(code="005930", price=10000)
 
-        engine._record_buy(tick, qty=10)
+        await engine._record_buy(tick, qty=10)
 
         # OrderManager.execute_order가 호출되지 않음
         mock_deps["order_mgr"].execute_order.assert_not_called()
 
-    def test_paper_mode_no_ocx_order_on_sell(self, engine, mock_deps):
-        """paper 모드에서 OCX 주문 미호출 (매도)."""
+    async def test_paper_mode_no_ocx_order_on_sell(self, engine, mock_deps):
+        """paper 모드에서 주문 미호출 (매도)."""
         pos = Position(
             id=1,
             code="005930",
@@ -429,12 +411,12 @@ class TestPaperVsLive:
             high_since_entry=10000,
         )
 
-        engine._execute_sell(pos, price=10800, reason=ExitReason.TARGET_REACHED)
+        await engine._execute_sell(pos, price=10800, reason=ExitReason.TARGET_REACHED)
 
         mock_deps["order_mgr"].execute_order.assert_not_called()
 
-    def test_live_mode_calls_ocx_order_on_sell(self, engine_live, mock_deps):
-        """live 모드에서 OCX 주문 호출 (매도)."""
+    async def test_live_mode_calls_order_on_sell(self, engine_live, mock_deps):
+        """live 모드에서 주문 호출 (매도)."""
         pos = Position(
             id=1,
             code="005930",
@@ -447,13 +429,13 @@ class TestPaperVsLive:
             high_since_entry=10000,
         )
 
-        engine_live._execute_sell(
+        await engine_live._execute_sell(
             pos, price=10800, reason=ExitReason.TARGET_REACHED
         )
 
         mock_deps["order_mgr"].execute_order.assert_called_once()
 
-    def test_live_sell_failure_aborts(self, engine_live, mock_deps):
+    async def test_live_sell_failure_aborts(self, engine_live, mock_deps):
         """live 모드에서 주문 실패 시 포지션 유지."""
         mock_deps["order_mgr"].execute_order.return_value = OrderResult(
             success=False, order_no="", message="주문 실패"
@@ -471,7 +453,7 @@ class TestPaperVsLive:
             high_since_entry=10000,
         )
 
-        engine_live._execute_sell(
+        await engine_live._execute_sell(
             pos, price=10800, reason=ExitReason.TARGET_REACHED
         )
 
@@ -486,21 +468,21 @@ class TestPaperVsLive:
 class TestHaltAndStop:
     """매매 중단/시스템 중지 테스트."""
 
-    def test_halt_calls_risk_halt_and_telegram(self, engine, mock_deps):
+    async def test_halt_calls_risk_halt_and_telegram(self, engine, mock_deps):
         """halt() 호출 시 RiskManager.halt + 텔레그램 알림."""
         engine.halt()
         mock_deps["risk_mgr"].halt.assert_called_once()
         mock_deps["telegram"].send_halt_alert.assert_called_once()
 
-    def test_stop_sets_running_false(self, engine, mock_deps):
+    async def test_stop_sets_running_false(self, engine, mock_deps):
         """stop() 호출 시 _running=False."""
         engine._running = True
-        engine.stop()
+        await engine.stop()
         assert engine._running is False
         mock_deps["scheduler"].shutdown.assert_called_once()
         mock_deps["ds"].close.assert_called()
 
-    def test_start_sets_running_true(self, engine, mock_deps):
+    async def test_start_sets_running_true(self, engine, mock_deps):
         """start() 호출 시 _running=True, 스케줄러 시작."""
         mock_deps["config"].get.side_effect = lambda key, default=None: {
             "schedule.screening_time": "08:30",
@@ -508,7 +490,7 @@ class TestHaltAndStop:
             "schedule.reconnect_time": "08:45",
         }.get(key, default)
 
-        engine.start()
+        await engine.start()
         assert engine._running is True
         mock_deps["scheduler"].start.assert_called_once()
         mock_deps["kiwoom"].connect.assert_called()
@@ -520,14 +502,14 @@ class TestHaltAndStop:
 class TestPreMarketScreening:
     """장전 스크리닝 테스트."""
 
-    def test_screening_success(self, engine, mock_deps):
+    async def test_screening_success(self, engine, mock_deps):
         """스크리닝 성공 시 후보 등록 + 구독."""
         mock_deps["screener"].run_daily_screening.return_value = [
             "005930",
             "000660",
         ]
 
-        engine._pre_market_screening()
+        await engine._pre_market_screening()
 
         assert engine._candidates == ["005930", "000660"]
         mock_deps["realtime"].subscribe_list.assert_called_once_with(
@@ -535,13 +517,13 @@ class TestPreMarketScreening:
         )
         mock_deps["telegram"].send.assert_called()
 
-    def test_screening_failure_sends_error(self, engine, mock_deps):
+    async def test_screening_failure_sends_error(self, engine, mock_deps):
         """스크리닝 실패 시 텔레그램 에러 알림."""
         mock_deps["screener"].run_daily_screening.side_effect = RuntimeError(
             "pykrx error"
         )
 
-        engine._pre_market_screening()
+        await engine._pre_market_screening()
 
         mock_deps["telegram"].send_system_error.assert_called()
 
@@ -552,25 +534,25 @@ class TestPreMarketScreening:
 class TestEnsureConnection:
     """키움 API 연결 확인/재연결 테스트."""
 
-    def test_reconnect_when_disconnected(self, engine, mock_deps):
+    async def test_reconnect_when_disconnected(self, engine, mock_deps):
         """연결 끊김 시 재연결 시도."""
         mock_deps["kiwoom"]._connected = False
-        engine._ensure_connection()
+        await engine._ensure_connection()
         mock_deps["kiwoom"].connect.assert_called()
         assert engine._reconnect_count == 1
 
-    def test_max_reconnect_exceeded(self, engine, mock_deps):
+    async def test_max_reconnect_exceeded(self, engine, mock_deps):
         """최대 재연결 횟수 초과 시 에러."""
         mock_deps["kiwoom"]._connected = False
         engine._reconnect_count = 5
-        engine._ensure_connection()
+        await engine._ensure_connection()
         mock_deps["telegram"].send_system_error.assert_called()
 
-    def test_no_reconnect_when_connected(self, engine, mock_deps):
+    async def test_no_reconnect_when_connected(self, engine, mock_deps):
         """연결 정상이면 재연결 안 함."""
         mock_deps["kiwoom"]._connected = True
         initial_count = engine._reconnect_count
-        engine._ensure_connection()
+        await engine._ensure_connection()
         assert engine._reconnect_count == initial_count
 
 
@@ -580,7 +562,7 @@ class TestEnsureConnection:
 class TestDailyReset:
     """일일 리셋 테스트."""
 
-    def test_daily_reset_calls_risk_reset(self, engine, mock_deps):
+    async def test_daily_reset_calls_risk_reset(self, engine, mock_deps):
         """일일 리셋 시 RiskManager.reset_daily 호출."""
         engine._daily_reset()
         mock_deps["risk_mgr"].reset_daily.assert_called_once()
@@ -592,10 +574,10 @@ class TestDailyReset:
 class TestOnChejan:
     """체결 이벤트 수신 테스트."""
 
-    def test_on_chejan_logs_data(self, engine):
+    async def test_on_chejan_logs_data(self, engine):
         """체결 이벤트 수신 시 예외 없이 실행."""
         data = {"order_no": "ORD001", "code": "005930", "status": "체결"}
-        engine.on_chejan(data)
+        await engine.on_chejan(data)
 
 
 # ── dict_to_position 변환 테스트 ──
@@ -604,7 +586,7 @@ class TestOnChejan:
 class TestDictToPosition:
     """dict -> Position 변환 테스트."""
 
-    def test_conversion(self, engine):
+    async def test_conversion(self, engine):
         """dict에서 Position 올바르게 변환."""
         d = _make_position_dict(
             id=5,
@@ -631,7 +613,7 @@ class TestTrailingStopUpdate:
     """트레일링스탑 업데이트 로직 테스트."""
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_trailing_stop_updated_in_db(self, mock_market, engine, mock_deps):
+    async def test_trailing_stop_updated_in_db(self, mock_market, engine, mock_deps):
         """트레일링스탑 변경 시 DB 업데이트."""
         engine._running = True
         pos_dict = _make_position_dict(stop_price=9300)
@@ -640,12 +622,12 @@ class TestTrailingStopUpdate:
         mock_deps["stop_mgr"].is_stopped.return_value = False
 
         tick = _make_tick(code="005930", price=10200)
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         mock_deps["ds"].update_position.assert_called_with(1, stop_price=9500)
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_trailing_stop_unchanged_no_db_call(
+    async def test_trailing_stop_unchanged_no_db_call(
         self, mock_market, engine, mock_deps
     ):
         """트레일링스탑 변경 없으면 DB 업데이트 안 함."""
@@ -656,6 +638,6 @@ class TestTrailingStopUpdate:
         mock_deps["stop_mgr"].is_stopped.return_value = False
 
         tick = _make_tick(code="005930", price=10000)
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         mock_deps["ds"].update_position.assert_not_called()

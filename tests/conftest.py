@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -81,18 +81,17 @@ def tmp_config_file(tmp_path, sample_config):
 
 @pytest.fixture
 def mock_kiwoom():
-    """KiwoomAPI mock — PyQt5 없이 테스트 가능.
+    """KiwoomAPI AsyncMock — REST/WebSocket 기반 async 메서드.
 
-    OCX 관련 메서드를 모두 MagicMock으로 대체한다.
+    모든 async 메서드를 AsyncMock으로 설정한다.
     """
-    mock = MagicMock()
+    mock = AsyncMock()
     mock._connected = True
     mock.on_tick_callback = None
     mock.on_chejan_callback = None
-    mock.connect.return_value = None
-    mock.send_order.return_value = 0
-    mock.set_real_reg.return_value = None
-    mock.set_real_remove.return_value = None
+    # async 메서드
+    mock.connect = AsyncMock(return_value=None)
+    mock.disconnect = AsyncMock(return_value=None)
     return mock
 
 
@@ -100,7 +99,7 @@ def mock_kiwoom():
 def mock_telegram():
     """TelegramBot mock — requests 호출 없이 알림 검증.
 
-    모든 send_* 메서드가 True를 반환한다.
+    TelegramBot은 동기 코드이므로 MagicMock을 사용한다.
     """
     mock = MagicMock()
     mock.send.return_value = True
@@ -194,29 +193,8 @@ def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
 
     실제 DataStore, RiskManager, PositionSizer, StopManager를 사용하고,
     KiwoomAPI, TelegramBot, Screener, Scheduler만 mock한다.
+    AsyncIOScheduler를 MagicMock으로 교체한다.
     """
-    # PyQt5 / apscheduler mock (이미 test_engine.py에서 설정됐을 수 있음)
-    _pyqt5_mock = MagicMock()
-    _pyqt5_modules = {
-        "PyQt5": _pyqt5_mock,
-        "PyQt5.QtWidgets": _pyqt5_mock.QtWidgets,
-        "PyQt5.QAxContainer": _pyqt5_mock.QAxContainer,
-        "PyQt5.QtCore": _pyqt5_mock.QtCore,
-    }
-    _pyqt5_mock.QAxContainer.QAxWidget = object
-
-    _apscheduler_qt_mock = MagicMock()
-    _apscheduler_modules = {
-        "apscheduler": MagicMock(),
-        "apscheduler.schedulers": MagicMock(),
-        "apscheduler.schedulers.qt": _apscheduler_qt_mock,
-    }
-    _apscheduler_qt_mock.QtScheduler = MagicMock
-
-    for mod_name, mod_mock in {**_pyqt5_modules, **_apscheduler_modules}.items():
-        if mod_name not in sys.modules:
-            sys.modules[mod_name] = mod_mock
-
     # loguru TRADE 레벨 등록
     from loguru import logger as _logger
 
@@ -229,13 +207,31 @@ def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
     from src.risk.risk_manager import RiskManager
     from src.risk.stop_manager import StopManager
 
+    # OrderManager mock — execute_order는 async
+    mock_order_mgr = MagicMock()
+    mock_order_mgr.execute_order = AsyncMock()
+    from src.models import OrderResult
+    mock_order_mgr.execute_order.return_value = OrderResult(
+        success=True, order_no="ORD001", message="OK"
+    )
+
+    # RealtimeDataManager mock — subscribe_list는 async
+    mock_realtime = MagicMock()
+    mock_realtime.subscribe_list = AsyncMock(return_value=None)
+
+    # Screener mock (동기)
+    mock_screener = MagicMock()
+
+    # AsyncIOScheduler mock
+    mock_scheduler = MagicMock()
+
     with (
         patch("src.engine.KiwoomAPI", return_value=mock_kiwoom),
-        patch("src.engine.OrderManager") as MockOrderMgr,
-        patch("src.engine.RealtimeDataManager") as MockRealtime,
-        patch("src.engine.Screener") as MockScreener,
+        patch("src.engine.OrderManager", return_value=mock_order_mgr),
+        patch("src.engine.RealtimeDataManager", return_value=mock_realtime),
+        patch("src.engine.Screener", return_value=mock_screener),
         patch("src.engine.TelegramBot", return_value=mock_telegram),
-        patch("src.engine.QtScheduler") as MockScheduler,
+        patch("src.engine.AsyncIOScheduler", return_value=mock_scheduler),
         patch("src.engine.config") as mock_config,
         patch("src.engine.DataStore", return_value=tmp_db),
         patch("src.engine.RiskManager", return_value=RiskManager(tmp_db, sample_config)),
@@ -269,14 +265,6 @@ def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
             trailing_activate_pct=0.03,
         )
         MockStopMgr.return_value = stop_mgr
-
-        # OrderManager mock
-        order_instance = MockOrderMgr.return_value
-        from src.models import OrderResult
-
-        order_instance.execute_order.return_value = OrderResult(
-            success=True, order_no="ORD001", message="OK"
-        )
 
         from src.engine import TradingEngine
 

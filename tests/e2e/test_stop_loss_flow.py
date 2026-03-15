@@ -1,44 +1,14 @@
-"""E2E 손절 시나리오 테스트.
+"""E2E 손절 시나리오 테스트 (async).
 
 보유 포지션이 손절가 이하로 하락 시:
 포지션 종료 -> 매매 기록(pnl 음수) -> 텔레그램 손실 알림
 전 과정을 실제 내부 모듈 연동으로 검증한다.
 """
 
-import sys
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
-# PyQt5 / apscheduler mock
-_pyqt5_mock = MagicMock()
-_pyqt5_modules = {
-    "PyQt5": _pyqt5_mock,
-    "PyQt5.QtWidgets": _pyqt5_mock.QtWidgets,
-    "PyQt5.QAxContainer": _pyqt5_mock.QAxContainer,
-    "PyQt5.QtCore": _pyqt5_mock.QtCore,
-}
-_pyqt5_mock.QAxContainer.QAxWidget = object
-
-_apscheduler_qt_mock = MagicMock()
-_apscheduler_modules = {
-    "apscheduler": MagicMock(),
-    "apscheduler.schedulers": MagicMock(),
-    "apscheduler.schedulers.qt": _apscheduler_qt_mock,
-}
-_apscheduler_qt_mock.QtScheduler = MagicMock
-
-for mod_name, mod_mock in {**_pyqt5_modules, **_apscheduler_modules}.items():
-    if mod_name not in sys.modules:
-        sys.modules[mod_name] = mod_mock
-
-from loguru import logger as _logger
-
-try:
-    _logger.level("TRADE", no=25, color="<yellow>")
-except (TypeError, ValueError):
-    pass  # 이미 등록된 경우
 
 from src.models import Position, Tick
 
@@ -47,27 +17,15 @@ class TestStopLossFlow:
     """손절 E2E 시나리오."""
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_stop_loss_closes_position(
+    async def test_stop_loss_closes_position(
         self,
         mock_market,
         trading_engine,
         populated_db,
         mock_telegram,
     ):
-        """손절가 이하 시 포지션 종료, 매매 기록, 텔레그램 손실 알림.
-
-        Setup:
-            - 보유 포지션: entry_price=50000, stop_price=47000
-        Action:
-            - 실시간 시세: price=46500 (손절가 이하)
-        Expected:
-            - 포지션 status='closed'
-            - 매매 기록: side='sell', reason='stop_loss', pnl 음수
-            - 텔레그램 손실 알림 전송
-        """
+        """손절가 이하 시 포지션 종료, 매매 기록, 텔레그램 손실 알림."""
         engine = trading_engine
-        # trading_engine fixture는 별도 tmp_db를 쓰므로,
-        # populated_db의 데이터를 engine의 DataStore에 직접 세팅
         engine._ds = populated_db
 
         # 초기 상태: open 포지션 존재
@@ -83,7 +41,7 @@ class TestStopLossFlow:
             volume=5000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         # 포지션이 closed로 변경
         open_after = populated_db.get_open_positions()
@@ -106,7 +64,7 @@ class TestStopLossFlow:
         mock_telegram.send_sell_executed_loss.assert_called_once()
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_stop_loss_does_not_trigger_above_stop(
+    async def test_stop_loss_does_not_trigger_above_stop(
         self,
         mock_market,
         trading_engine,
@@ -124,7 +82,7 @@ class TestStopLossFlow:
             volume=3000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         # 포지션 유지
         open_positions = populated_db.get_open_positions()
@@ -136,22 +94,14 @@ class TestStopLossFlow:
         mock_telegram.send_sell_executed_loss.assert_not_called()
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_target_reached_closes_with_profit(
+    async def test_target_reached_closes_with_profit(
         self,
         mock_market,
         trading_engine,
         populated_db,
         mock_telegram,
     ):
-        """목표가 도달 시 수익 매도.
-
-        Setup:
-            - entry_price=50000, target_price=54000
-        Action:
-            - price=55000 (목표가 초과)
-        Expected:
-            - 포지션 closed, pnl 양수, 수익 알림
-        """
+        """목표가 도달 시 수익 매도."""
         engine = trading_engine
         engine._ds = populated_db
 
@@ -161,7 +111,7 @@ class TestStopLossFlow:
             volume=2000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         # 포지션 closed
         open_after = populated_db.get_open_positions()
@@ -182,7 +132,7 @@ class TestStopLossFlow:
         mock_telegram.send_sell_executed_profit.assert_called_once()
 
     @patch("src.engine.is_market_open", return_value=True)
-    def test_multiple_positions_independent(
+    async def test_multiple_positions_independent(
         self,
         mock_market,
         trading_engine,
@@ -200,7 +150,7 @@ class TestStopLossFlow:
             volume=5000,
             timestamp=datetime.now(),
         )
-        engine.on_price_update(tick)
+        await engine.on_price_update(tick)
 
         # 005930은 closed, 000660은 여전히 open
         open_positions = populated_db.get_open_positions()
