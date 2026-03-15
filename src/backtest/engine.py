@@ -143,29 +143,136 @@ class BacktestEngine:
         return entries, exits
 
     def _simulate_portfolio(
-        self, close: pd.Series, entries: pd.Series, exits: pd.Series
+        self,
+        close: pd.Series,
+        high: pd.Series,
+        low: pd.Series,
+        atr: pd.Series,
+        entries: pd.Series,
+        exits: pd.Series,
+        params: dict | None = None,
     ) -> tuple[list[dict], pd.Series]:
-        """순수 pandas 기반 포트폴리오 시뮬레이션.
+        """포트폴리오 시뮬레이션 (손절/트레일링/목표가/최대보유 포함).
 
         Args:
             close: 종가 시리즈.
+            high: 고가 시리즈.
+            low: 저가 시리즈.
+            atr: ATR 시리즈.
             entries: 매수 신호 불리언 시리즈.
             exits: 매도 신호 불리언 시리즈.
+            params: 전략 파라미터 딕셔너리.
 
         Returns:
             (trades_list, equity_curve) 튜플.
         """
+        p = params or {}
+        target_return = p.get("target_return", 0.08)
+        stop_atr_mult = p.get("stop_atr_mult", 1.5)
+        trailing_atr_mult = p.get("trailing_atr_mult", 2.0)
+        trailing_activate_pct = p.get("trailing_activate_pct", 0.03)
+        max_hold_days = p.get("max_hold_days", 15)
+        max_stop_pct = p.get("max_stop_pct", 0.07)
+
         cash = self.initial_capital
         position = 0  # 보유 주식 수
         entry_price = 0
         entry_idx = 0
+        stop_price = 0
+        target_price_val = 0
+        high_since_entry = 0
         trades = []
         equity = []
 
         for i in range(len(close)):
             price = int(close.iloc[i])
+            bar_high = (
+                int(high.iloc[i]) if not pd.isna(high.iloc[i]) else price
+            )
+            bar_low = (
+                int(low.iloc[i]) if not pd.isna(low.iloc[i]) else price
+            )
+            current_atr = (
+                float(atr.iloc[i])
+                if not pd.isna(atr.iloc[i])
+                else price * 0.02
+            )
 
-            if position == 0 and entries.iloc[i]:
+            if position > 0:
+                # Update high since entry
+                high_since_entry = max(high_since_entry, bar_high)
+
+                # Check exit conditions (priority order)
+                should_exit = False
+                exit_price = price
+
+                # 1. Stop loss
+                if bar_low <= stop_price:
+                    should_exit = True
+                    exit_price = stop_price
+
+                # 2. Target reached
+                elif bar_high >= target_price_val:
+                    should_exit = True
+                    exit_price = target_price_val
+
+                # 3. Trailing stop update & check
+                else:
+                    unrealized_pct = (price - entry_price) / entry_price
+                    if unrealized_pct >= trailing_activate_pct:
+                        trailing = int(
+                            high_since_entry
+                            - current_atr * trailing_atr_mult
+                        )
+                        trailing = max(trailing, stop_price)  # no retreat
+                        if trailing > stop_price:
+                            stop_price = trailing
+                        if bar_low <= stop_price:
+                            should_exit = True
+                            exit_price = stop_price
+
+                # 4. Max hold days
+                if not should_exit and (i - entry_idx) >= max_hold_days:
+                    should_exit = True
+                    exit_price = price
+
+                # 5. Signal-based exit (from generate_signals)
+                if not should_exit and exits.iloc[i]:
+                    should_exit = True
+                    exit_price = price
+
+                if should_exit:
+                    proceeds = exit_price * (
+                        1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE
+                    )
+                    cash += position * proceeds
+                    pnl_pct = (exit_price - entry_price) / entry_price
+                    entry_date = (
+                        str(close.index[entry_idx].strftime("%Y-%m-%d"))
+                        if hasattr(close.index[entry_idx], "strftime")
+                        else str(close.index[entry_idx])
+                    )
+                    exit_date = (
+                        str(close.index[i].strftime("%Y-%m-%d"))
+                        if hasattr(close.index[i], "strftime")
+                        else str(close.index[i])
+                    )
+                    trades.append(
+                        {
+                            "entry_idx": entry_idx,
+                            "exit_idx": i,
+                            "entry_date": entry_date,
+                            "exit_date": exit_date,
+                            "entry_price": entry_price,
+                            "exit_price": exit_price,
+                            "shares": position,
+                            "return": pnl_pct,
+                            "hold_days": i - entry_idx,
+                        }
+                    )
+                    position = 0
+
+            elif position == 0 and entries.iloc[i]:
                 # 매수
                 cost_per_share = price * (1 + COMMISSION_RATE + SLIPPAGE_RATE)
                 shares = int(cash // cost_per_share)
@@ -173,39 +280,13 @@ class BacktestEngine:
                     position = shares
                     entry_price = price
                     entry_idx = i
+                    high_since_entry = bar_high
+                    # Initial stop price
+                    atr_stop = int(price - current_atr * stop_atr_mult)
+                    pct_stop = int(price * (1 - max_stop_pct))
+                    stop_price = max(atr_stop, pct_stop)  # tighter of two
+                    target_price_val = int(price * (1 + target_return))
                     cash -= shares * cost_per_share
-
-            elif position > 0 and exits.iloc[i]:
-                # 매도
-                proceeds_per_share = price * (
-                    1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE
-                )
-                cash += position * proceeds_per_share
-                pnl_pct = (price - entry_price) / entry_price
-                entry_date = (
-                    str(close.index[entry_idx].strftime("%Y-%m-%d"))
-                    if hasattr(close.index[entry_idx], "strftime")
-                    else str(close.index[entry_idx])
-                )
-                exit_date = (
-                    str(close.index[i].strftime("%Y-%m-%d"))
-                    if hasattr(close.index[i], "strftime")
-                    else str(close.index[i])
-                )
-                trades.append(
-                    {
-                        "entry_idx": entry_idx,
-                        "exit_idx": i,
-                        "entry_date": entry_date,
-                        "exit_date": exit_date,
-                        "entry_price": entry_price,
-                        "exit_price": price,
-                        "shares": position,
-                        "return": pnl_pct,
-                        "hold_days": i - entry_idx,
-                    }
-                )
-                position = 0
 
             # 자산 추적
             equity_val = cash + (position * price if position > 0 else 0)
@@ -356,10 +437,13 @@ class BacktestEngine:
                 }
                 df_ind = calculate_indicators(df, **indicator_params)
                 close = df_ind["close"]
+                high = df_ind["high"]
+                low = df_ind["low"]
+                atr_series = df_ind["atr"]
 
                 # pandas 기반 시뮬레이션
                 trades, equity = self._simulate_portfolio(
-                    close, entries, exits
+                    close, high, low, atr_series, entries, exits, params
                 )
                 result = self._calculate_metrics(
                     trades, equity, params or {}
@@ -397,6 +481,14 @@ class BacktestEngine:
         if len(all_results) == 1:
             return all_results[0]
 
+        # profit_factor: inf 제외 후 평균 (한 종목에서 손실 0이면 inf)
+        pf_values = [
+            r.profit_factor
+            for r in all_results
+            if r.profit_factor != float("inf")
+        ]
+        avg_pf = float(np.mean(pf_values)) if pf_values else 0.0
+
         avg_result = BacktestResult(
             total_return=np.mean([r.total_return for r in all_results]),
             annual_return=np.mean([r.annual_return for r in all_results]),
@@ -404,7 +496,7 @@ class BacktestEngine:
             sharpe_ratio=np.mean([r.sharpe_ratio for r in all_results]),
             sortino_ratio=np.mean([r.sortino_ratio for r in all_results]),
             win_rate=np.mean([r.win_rate for r in all_results]),
-            profit_factor=np.mean([r.profit_factor for r in all_results]),
+            profit_factor=round(avg_pf, 2),
             avg_trade_return=np.mean(
                 [r.avg_trade_return for r in all_results]
             ),

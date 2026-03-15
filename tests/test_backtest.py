@@ -189,27 +189,45 @@ class TestBacktestEngine:
 class TestSimulatePortfolio:
     """_simulate_portfolio 메서드 테스트."""
 
+    @staticmethod
+    def _make_series(close_vals):
+        """close 값에서 high/low/atr 시리즈를 생성하는 헬퍼."""
+        close = pd.Series(close_vals)
+        high = pd.Series([int(c * 1.01) for c in close_vals])
+        low = pd.Series([int(c * 0.99) for c in close_vals])
+        atr = pd.Series([float(c * 0.02) for c in close_vals])
+        return close, high, low, atr
+
     def test_no_signals_returns_flat_equity(self, engine):
         """신호 없으면 자산 변동 없음."""
-        close = pd.Series([10000, 10100, 10200, 10300, 10400])
+        close, high, low, atr = self._make_series(
+            [10000, 10100, 10200, 10300, 10400]
+        )
         entries = pd.Series([False, False, False, False, False])
         exits = pd.Series([False, False, False, False, False])
 
-        trades, equity = engine._simulate_portfolio(close, entries, exits)
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits
+        )
 
         assert len(trades) == 0
         assert len(equity) == 5
-        # 거래 없으므로 자산 = 초기 자본금
         assert equity.iloc[0] == engine.initial_capital
         assert equity.iloc[-1] == engine.initial_capital
 
     def test_single_trade(self, engine):
-        """매수-매도 1회 거래 추적."""
-        close = pd.Series([10000, 10000, 11000, 11000, 11000])
+        """매수-매도 1회 거래 추적 (signal exit)."""
+        close, high, low, atr = self._make_series(
+            [10000, 10000, 11000, 11000, 11000]
+        )
         entries = pd.Series([False, True, False, False, False])
         exits = pd.Series([False, False, False, True, False])
+        # max_hold_days를 크게 설정하여 signal exit만 테스트
+        params = {"max_hold_days": 100, "target_return": 0.5}
 
-        trades, equity = engine._simulate_portfolio(close, entries, exits)
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits, params
+        )
 
         assert len(trades) == 1
         t = trades[0]
@@ -223,35 +241,150 @@ class TestSimulatePortfolio:
     def test_commission_and_tax_applied(self, engine):
         """수수료/세금이 적용되어 동일가 매매 시 손실."""
         price = 10000
-        close = pd.Series([price, price, price, price])
+        close, high, low, atr = self._make_series([price] * 4)
         entries = pd.Series([False, True, False, False])
         exits = pd.Series([False, False, True, False])
+        params = {"max_hold_days": 100, "target_return": 0.5}
 
-        trades, equity = engine._simulate_portfolio(close, entries, exits)
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits, params
+        )
 
-        # 동일가 매매면 수수료+슬리피지+세금만큼 손실
         assert equity.iloc[-1] < engine.initial_capital
 
     def test_multiple_trades(self, engine):
         """복수 거래 추적."""
-        close = pd.Series([10000, 10000, 11000, 11000, 10000, 10000, 12000, 12000])
-        entries = pd.Series([False, True, False, False, False, True, False, False])
-        exits = pd.Series([False, False, False, True, False, False, False, True])
+        close, high, low, atr = self._make_series(
+            [10000, 10000, 11000, 11000, 10000, 10000, 12000, 12000]
+        )
+        entries = pd.Series(
+            [False, True, False, False, False, True, False, False]
+        )
+        exits = pd.Series(
+            [False, False, False, True, False, False, False, True]
+        )
+        params = {"max_hold_days": 100, "target_return": 0.5}
 
-        trades, equity = engine._simulate_portfolio(close, entries, exits)
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits, params
+        )
 
         assert len(trades) == 2
 
     def test_equity_curve_length(self, engine):
         """자산 곡선 길이는 close와 동일."""
         n = 50
-        close = pd.Series(range(10000, 10000 + n))
+        close, high, low, atr = self._make_series(
+            list(range(10000, 10000 + n))
+        )
         entries = pd.Series([False] * n)
         exits = pd.Series([False] * n)
 
-        trades, equity = engine._simulate_portfolio(close, entries, exits)
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits
+        )
 
         assert len(equity) == n
+
+    def test_stop_loss_exit(self, engine):
+        """손절가 도달 시 자동 청산."""
+        # Entry at 10000, price drops sharply
+        close_vals = [10000, 10000, 8000, 8000, 8000]
+        close = pd.Series(close_vals)
+        high = pd.Series([10100, 10100, 8100, 8100, 8100])
+        low = pd.Series([9900, 9900, 7500, 7900, 7900])
+        atr = pd.Series([200.0] * 5)  # ATR=200
+        entries = pd.Series([False, True, False, False, False])
+        exits = pd.Series([False, False, False, False, False])
+        # stop_atr_mult=1.5 → stop = 10000 - 200*1.5 = 9700
+        # max_stop_pct=0.07 → stop = 10000*0.93 = 9300
+        # stop_price = max(9700, 9300) = 9700
+        # bar 2: low=7500 <= 9700 → exit at 9700
+        params = {"max_hold_days": 100, "target_return": 0.5}
+
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits, params
+        )
+
+        assert len(trades) == 1
+        t = trades[0]
+        assert t["exit_price"] == 9700
+        assert t["return"] < 0  # 손실
+
+    def test_target_price_exit(self, engine):
+        """목표가 도달 시 자동 청산."""
+        # Entry at 10000, target_return=0.08 → target = 10800
+        close_vals = [10000, 10000, 10500, 11000, 11000]
+        close = pd.Series(close_vals)
+        high = pd.Series([10100, 10100, 10600, 11200, 11100])
+        low = pd.Series([9900, 9900, 10400, 10900, 10900])
+        atr = pd.Series([200.0] * 5)
+        entries = pd.Series([False, True, False, False, False])
+        exits = pd.Series([False, False, False, False, False])
+        params = {
+            "target_return": 0.08,
+            "max_hold_days": 100,
+        }
+
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits, params
+        )
+
+        assert len(trades) == 1
+        t = trades[0]
+        assert t["exit_price"] == 10800  # int(10000 * 1.08)
+        assert t["return"] == pytest.approx(0.08, abs=0.001)
+
+    def test_max_hold_days_exit(self, engine):
+        """최대 보유일 초과 시 자동 청산."""
+        n = 10
+        close_vals = [10000] * n
+        close, high, low, atr = self._make_series(close_vals)
+        entries = pd.Series([False, True] + [False] * (n - 2))
+        exits = pd.Series([False] * n)
+        params = {
+            "max_hold_days": 5,
+            "target_return": 0.5,  # high target so it won't trigger
+        }
+
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits, params
+        )
+
+        assert len(trades) == 1
+        t = trades[0]
+        assert t["hold_days"] == 5  # exit at bar 6 (index 6), entry at bar 1
+
+    def test_trailing_stop_activation(self, engine):
+        """트레일링 스톱 활성화 후 하락 시 청산."""
+        # Entry at 10000, rises to 10500 (+5% > 3% activate threshold)
+        # then drops → trailing stop triggers
+        close_vals = [10000, 10000, 10400, 10500, 10100, 10100]
+        close = pd.Series(close_vals)
+        high = pd.Series([10100, 10100, 10500, 10600, 10200, 10200])
+        low = pd.Series([9900, 9900, 10300, 10400, 9800, 10000])
+        atr = pd.Series([200.0] * 6)
+        entries = pd.Series([False, True, False, False, False, False])
+        exits = pd.Series([False, False, False, False, False, False])
+        # trailing_activate_pct=0.03, trailing_atr_mult=2.0
+        # At bar 3: high_since_entry = 10600, unrealized = (10500-10000)/10000 = 0.05 >= 0.03
+        # trailing = 10600 - 200*2 = 10200
+        # initial stop = max(10000-200*1.5, 10000*0.93) = max(9700, 9300) = 9700
+        # trailing(10200) > stop(9700) → stop_price = 10200
+        # bar 4: low=9800 <= 10200 → exit at stop_price=10200
+        params = {
+            "target_return": 0.5,
+            "max_hold_days": 100,
+        }
+
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits, params
+        )
+
+        assert len(trades) == 1
+        t = trades[0]
+        assert t["exit_price"] == 10200
+        assert t["return"] == pytest.approx(0.02, abs=0.001)
 
 
 # ── 지표 계산 테스트 ──────────────────────────────────────────────
@@ -598,14 +731,20 @@ class TestSimulatePortfolioDates:
         engine = BacktestEngine(initial_capital=10_000_000)
         dates = pd.date_range("2023-01-01", periods=5, freq="B")
         close = pd.Series([10000, 10000, 11000, 11000, 11000], index=dates)
+        high = pd.Series([10100, 10100, 11100, 11100, 11100], index=dates)
+        low = pd.Series([9900, 9900, 10900, 10900, 10900], index=dates)
+        atr = pd.Series([200.0] * 5, index=dates)
         entries = pd.Series(
             [False, True, False, False, False], index=dates
         )
         exits = pd.Series(
             [False, False, False, True, False], index=dates
         )
+        params = {"max_hold_days": 100, "target_return": 0.5}
 
-        trades, equity = engine._simulate_portfolio(close, entries, exits)
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits, params
+        )
 
         assert len(trades) == 1
         t = trades[0]
@@ -618,10 +757,16 @@ class TestSimulatePortfolioDates:
         """정수 인덱스에서도 entry_date/exit_date가 문자열로 포함."""
         engine = BacktestEngine(initial_capital=10_000_000)
         close = pd.Series([10000, 10000, 11000, 11000, 11000])
+        high = pd.Series([10100, 10100, 11100, 11100, 11100])
+        low = pd.Series([9900, 9900, 10900, 10900, 10900])
+        atr = pd.Series([200.0] * 5)
         entries = pd.Series([False, True, False, False, False])
         exits = pd.Series([False, False, False, True, False])
+        params = {"max_hold_days": 100, "target_return": 0.5}
 
-        trades, equity = engine._simulate_portfolio(close, entries, exits)
+        trades, equity = engine._simulate_portfolio(
+            close, high, low, atr, entries, exits, params
+        )
 
         assert len(trades) == 1
         t = trades[0]
