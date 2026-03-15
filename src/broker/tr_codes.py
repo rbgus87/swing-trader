@@ -45,3 +45,25 @@ ERR_CODES = {
     -200: "시세 제한 초과",
     -201: "조회 과부하",
 }
+
+# ── REST API IDs ──
+API_AUTH_TOKEN = "au10001"
+API_STOCK_ORDER = "kt10000"
+API_STOCK_CANCEL = "kt10001"
+API_STOCK_PRICE = "ka10001"
+API_STOCK_DAILY = "ka10002"
+API_STOCK_MINUTE = "ka10003"
+API_ACCOUNT_BALANCE = "ka10070"
+API_STOCK_LIST = "ka10100"
+
+# ── REST Endpoints ──
+EP_AUTH = "/api/auth/token"
+EP_ORDER = "/api/dostk/ordr"
+EP_STOCK = "/api/dostk/stkinfo"
+EP_CHART = "/api/dostk/chart"
+EP_ACCOUNT = "/api/dostk/acnt"
+
+# ── WebSocket 실시간 타입 ──
+WS_TYPE_TICK = "0B"
+WS_TYPE_ORDERBOOK = "0D"
+WS_TYPE_ORDER = "00"

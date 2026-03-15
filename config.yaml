@@ -48,6 +48,12 @@ backtest:
   slippage: 0.001
   initial_capital: 10_000_000
 
+broker:
+  type: rest
+  base_url: "https://api.kiwoom.com"
+  ws_url: "wss://api.kiwoom.com:10000/api/dostk/websocket"
+  environment: paper
+
 schedule:
   screening_time: "08:30"
   daily_report_time: "16:00"
