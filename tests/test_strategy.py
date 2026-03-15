@@ -237,6 +237,64 @@ class TestCheckEntrySignal:
 
         assert check_entry_signal(df, df_60m) is False
 
+    def test_entry_signal_without_60m(self):
+        """use_60m=False일 때 60분봉 조건 무시하고 정상 동작."""
+        df = pd.DataFrame(
+            {
+                "close": [10000, 10200],
+                "sma20": [9800, 9900],
+                "macd_hist": [-0.5, 0.3],
+                "rsi": [55, 52],
+                "volume": [500000, 600000],
+                "volume_sma20": [300000, 350000],
+            }
+        )
+        # 60분봉 하향이지만 use_60m=False이므로 무시
+        df_60m = pd.DataFrame({"sma5": [9800], "sma20": [9900]})
+
+        assert check_entry_signal(df, df_60m, use_60m=False) is True
+
+    def test_entry_signal_with_none_60m(self):
+        """df_60m=None일 때 60분봉 조건 스킵하고 정상 동작."""
+        df = pd.DataFrame(
+            {
+                "close": [10000, 10200],
+                "sma20": [9800, 9900],
+                "macd_hist": [-0.5, 0.3],
+                "rsi": [55, 52],
+                "volume": [500000, 600000],
+                "volume_sma20": [300000, 350000],
+            }
+        )
+
+        assert check_entry_signal(df, None) is True
+        assert check_entry_signal(df) is True
+
+    def test_relaxed_rsi_range(self):
+        """RSI 35~70 범위에서 더 많은 신호 발생 확인."""
+        # RSI 38: 기존 범위(40~65)에서는 False, 완화 범위(35~70)에서는 True
+        df = pd.DataFrame(
+            {
+                "close": [10000, 10200],
+                "sma20": [9800, 9900],
+                "macd_hist": [-0.5, 0.3],
+                "rsi": [55, 38],
+                "volume": [500000, 600000],
+                "volume_sma20": [300000, 350000],
+            }
+        )
+
+        # 기존 범위에서는 False
+        assert check_entry_signal(df, None, rsi_entry_min=40, rsi_entry_max=65) is False
+        # 완화된 범위에서는 True
+        assert check_entry_signal(df, None, rsi_entry_min=35, rsi_entry_max=70) is True
+
+        # RSI 68도 동일하게 확인
+        df2 = df.copy()
+        df2.loc[1, "rsi"] = 68
+        assert check_entry_signal(df2, None, rsi_entry_min=40, rsi_entry_max=65) is False
+        assert check_entry_signal(df2, None, rsi_entry_min=35, rsi_entry_max=70) is True
+
 
 class TestCheckExitSignal:
     """check_exit_signal 테스트 — OR 조건 + 우선순위."""

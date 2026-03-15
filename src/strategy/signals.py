@@ -118,8 +118,9 @@ def calculate_indicators(
 
 def check_entry_signal(
     df: pd.DataFrame,
-    df_60m: pd.DataFrame,
+    df_60m: pd.DataFrame | None = None,
     *,
+    use_60m: bool = True,
     ma_trend: int = 20,
     rsi_entry_min: float = 40,
     rsi_entry_max: float = 65,
@@ -132,11 +133,12 @@ def check_entry_signal(
     2. MACD 히스토그램 양전환 (전일 음 → 당일 양)
     3. RSI 40~65 (모멘텀 구간)
     4. 거래량 >= 20일 평균 × 1.5배
-    5. 60분봉 SMA5 > SMA20 (단기 상향)
+    5. 60분봉 SMA5 > SMA20 (단기 상향) — use_60m=True이고 df_60m 유효 시만
 
     Args:
         df: 일봉 지표 계산 완료된 DataFrame (최소 2행 이상).
-        df_60m: 60분봉 DataFrame (sma5, sma20 컬럼 포함).
+        df_60m: 60분봉 DataFrame (sma5, sma20 컬럼 포함). None이면 조건 스킵.
+        use_60m: 60분봉 조건 사용 여부 (기본 True).
         ma_trend: 추세 판단용 이평 기간 (sma{N} 컬럼 필요).
         rsi_entry_min: RSI 하한.
         rsi_entry_max: RSI 상한.
@@ -147,12 +149,9 @@ def check_entry_signal(
     """
     if len(df) < 2:
         return False
-    if len(df_60m) < 1:
-        return False
 
     latest = df.iloc[-1]
     prev = df.iloc[-2]
-    latest_60m = df_60m.iloc[-1]
 
     sma_col = f"sma{ma_trend}"
 
@@ -172,9 +171,11 @@ def check_entry_signal(
     if latest["volume"] < latest["volume_sma20"] * volume_multiplier:
         return False
 
-    # 5. 60분봉 SMA5 > SMA20
-    if latest_60m["sma5"] <= latest_60m["sma20"]:
-        return False
+    # 5. 60분봉 SMA5 > SMA20 (옵션)
+    if use_60m and df_60m is not None and len(df_60m) >= 1:
+        latest_60m = df_60m.iloc[-1]
+        if latest_60m["sma5"] <= latest_60m["sma20"]:
+            return False
 
     return True
 

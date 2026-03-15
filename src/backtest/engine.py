@@ -103,9 +103,9 @@ class BacktestEngine:
         df_ind = calculate_indicators(df, **indicator_params)
 
         # 신호 파라미터
-        rsi_min = p.get("rsi_min", 40)
-        rsi_max = p.get("rsi_max", 65)
-        volume_multiplier = p.get("volume_multiplier", 1.5)
+        rsi_min = p.get("rsi_min", 35)
+        rsi_max = p.get("rsi_max", 70)
+        volume_multiplier = p.get("volume_multiplier", 1.2)
         target_return = p.get("target_return", 0.08)
         stop_atr_mult = p.get("stop_atr_mult", 1.5)
 
@@ -251,7 +251,7 @@ class BacktestEngine:
 
             gross_profit = sum(r for r in returns if r > 0)
             gross_loss = abs(sum(r for r in returns if r < 0))
-            profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
 
             avg_trade_return = np.mean(returns) * 100
             avg_hold_days = np.mean([t["hold_days"] for t in trades])
