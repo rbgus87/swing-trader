@@ -12,6 +12,7 @@ python-dotenv>=1.0
 PyYAML>=6.0
 holidays>=0.45
 pytz>=2023.3
+matplotlib>=3.7
 
 # NOTE: Python 3.14+에서는 pandas-ta를 --no-deps로 설치하세요:
 #   pip install pandas-ta --no-deps

@@ -182,10 +182,22 @@ class BacktestEngine:
                 )
                 cash += position * proceeds_per_share
                 pnl_pct = (price - entry_price) / entry_price
+                entry_date = (
+                    str(close.index[entry_idx].strftime("%Y-%m-%d"))
+                    if hasattr(close.index[entry_idx], "strftime")
+                    else str(close.index[entry_idx])
+                )
+                exit_date = (
+                    str(close.index[i].strftime("%Y-%m-%d"))
+                    if hasattr(close.index[i], "strftime")
+                    else str(close.index[i])
+                )
                 trades.append(
                     {
                         "entry_idx": entry_idx,
                         "exit_idx": i,
+                        "entry_date": entry_date,
+                        "exit_date": exit_date,
                         "entry_price": entry_price,
                         "exit_price": price,
                         "shares": position,
@@ -309,6 +321,9 @@ class BacktestEngine:
         Returns:
             BacktestResult 성과 지표.
         """
+        self._last_trades: list[dict] = []
+        self._last_equity: pd.Series | None = None
+
         price_data = self.load_price_data(codes, start_date, end_date)
         if not price_data:
             logger.error("유효한 데이터 없음, 빈 결과 반환")
@@ -349,6 +364,10 @@ class BacktestEngine:
                 result = self._calculate_metrics(
                     trades, equity, params or {}
                 )
+
+                self._last_trades.extend(trades)
+                if self._last_equity is None:
+                    self._last_equity = equity
 
                 all_results.append(result)
                 logger.info(
@@ -468,3 +487,12 @@ if __name__ == "__main__":
 
     reporter = BacktestReporter()
     reporter.print_summary(result)
+
+    # Auto generate HTML report with charts
+    report_path = reporter.generate_html(
+        result,
+        output_path=f"reports/backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+        equity=engine._last_equity,
+        trades=engine._last_trades,
+    )
+    print(f"\nHTML 리포트: {report_path}")

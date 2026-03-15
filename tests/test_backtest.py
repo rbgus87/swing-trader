@@ -585,3 +585,103 @@ class TestParsePeriod:
         """잘못된 형식 ValueError."""
         with pytest.raises(ValueError):
             _parse_period("2w")
+
+
+# ── 날짜 포함 거래 내역 테스트 ─────────────────────────────────────
+
+
+class TestSimulatePortfolioDates:
+    """_simulate_portfolio 거래 내역에 날짜 포함 확인."""
+
+    def test_simulate_portfolio_includes_dates(self):
+        """trades에 entry_date/exit_date 키가 포함되는지 확인."""
+        engine = BacktestEngine(initial_capital=10_000_000)
+        dates = pd.date_range("2023-01-01", periods=5, freq="B")
+        close = pd.Series([10000, 10000, 11000, 11000, 11000], index=dates)
+        entries = pd.Series(
+            [False, True, False, False, False], index=dates
+        )
+        exits = pd.Series(
+            [False, False, False, True, False], index=dates
+        )
+
+        trades, equity = engine._simulate_portfolio(close, entries, exits)
+
+        assert len(trades) == 1
+        t = trades[0]
+        assert "entry_date" in t
+        assert "exit_date" in t
+        assert "2023-01-0" in t["entry_date"]
+        assert "2023-01-0" in t["exit_date"]
+
+    def test_simulate_portfolio_dates_integer_index(self):
+        """정수 인덱스에서도 entry_date/exit_date가 문자열로 포함."""
+        engine = BacktestEngine(initial_capital=10_000_000)
+        close = pd.Series([10000, 10000, 11000, 11000, 11000])
+        entries = pd.Series([False, True, False, False, False])
+        exits = pd.Series([False, False, False, True, False])
+
+        trades, equity = engine._simulate_portfolio(close, entries, exits)
+
+        assert len(trades) == 1
+        t = trades[0]
+        assert "entry_date" in t
+        assert "exit_date" in t
+        assert isinstance(t["entry_date"], str)
+        assert isinstance(t["exit_date"], str)
+
+
+# ── 차트 포함 HTML 리포트 테스트 ──────────────────────────────────
+
+
+class TestReporterWithCharts:
+    """차트/거래 테이블 포함 HTML 리포트 테스트."""
+
+    def test_reporter_generate_html_with_charts(self, sample_result, tmp_path):
+        """equity/trades 전달 시 HTML에 차트 이미지가 포함되는지 확인."""
+        reporter = BacktestReporter()
+        dates = pd.date_range("2023-01-01", periods=100, freq="B")
+        equity = pd.Series(
+            np.linspace(10_000_000, 11_000_000, 100), index=dates
+        )
+        trades = [
+            {
+                "entry_idx": 0,
+                "exit_idx": 10,
+                "entry_date": "2023-01-02",
+                "exit_date": "2023-01-16",
+                "entry_price": 10000,
+                "exit_price": 11000,
+                "shares": 100,
+                "return": 0.10,
+                "hold_days": 10,
+            }
+        ]
+
+        output = str(tmp_path / "chart_report.html")
+        result_path = reporter.generate_html(
+            sample_result, output, equity=equity, trades=trades
+        )
+
+        assert result_path == output
+        with open(output, encoding="utf-8") as f:
+            html = f.read()
+        # base64 차트 이미지 확인
+        assert "data:image/png;base64," in html
+        # 거래 테이블 확인
+        assert "매수일" in html
+        assert "매도일" in html
+        assert "2023-01-02" in html
+        assert "+10.00%" in html
+
+    def test_reporter_generate_html_without_charts(self, sample_result, tmp_path):
+        """equity/trades 없이도 HTML 리포트가 정상 생성."""
+        reporter = BacktestReporter()
+        output = str(tmp_path / "no_chart_report.html")
+        result_path = reporter.generate_html(sample_result, output)
+
+        assert result_path == output
+        with open(output, encoding="utf-8") as f:
+            html = f.read()
+        assert "백테스트" in html
+        assert "data:image/png;base64," not in html
