@@ -22,7 +22,11 @@
 2. 기술 스택 결정 (또는 PROJECT.md 참조)
 3. 작업 분해 (Task Breakdown)
 4. 필요한 전문가 식별
-5. 실행 계획 수립
+5. **매크로 커맨드 라우팅** — Story 단위로 `/team` 방향 또는 `/ralph-loop` 방향 결정
+6. 실행 계획 수립
+
+> **2단계 커맨드 라우팅**: Orchestrator는 Story 단위 방향만 결정 (매크로).
+> 각 전문가는 Task 실행 중 상황에 맞게 커맨드를 자율 판단 (마이크로).
 
 **출력 형식**:
 ```markdown
@@ -39,11 +43,16 @@
 | Frontend | [기술] | [이유] |
 | Backend | [기술] | [이유] |
 
-### 작업 분배
-| 순서 | 작업 | 담당 | 의존성 |
-|------|------|------|--------|
-| 1 | [작업] | @bootstrapper | - |
-| 2 | [작업] | @frontend | #1 |
+### 작업 분배 (매크로 커맨드 라우팅)
+| 순서 | Story | 담당 | 방향 | 의존성 |
+|------|-------|------|------|--------|
+| 1 | [프로젝트 초기화] | @bootstrapper | → `/team` | - |
+| 2 | [핵심 모듈 구현] | @backend | → `/team` | #1 |
+| 3 | [UI 구현] | @frontend | → `/team` | #1 |
+| 4 | [테스트 보강] | @qa | → `/ralph-loop` (max 10) | #2,#3 |
+| 5 | [성능 최적화] | @performance | → `/ralph-loop` (max 5) | #2,#3 |
+
+> 전문가는 실행 중 Task 단위로 자율 전환 가능 (마이크로 라우팅)
 ```
 
 **모드별 동작**:
@@ -119,34 +128,38 @@
 
 ---
 
-### Phase 5: 지속적 개선 (자동 실행 시 반복 제한 필수)
+### Phase 5: 품질 강화 (2단계 커맨드 라우팅)
 
 > ⚠️ **반복 제한 필수**: `/ralph-loop` 실행 시 `--max-iterations`를 반드시 포함해야 합니다.
 > 미설정 시 무제한 반복으로 비용이 폭증할 수 있습니다. 기본 권장값: **10회**.
 
-**진입 조건**: Phase 4 완료 후 자동 또는 수동 진입
+**진입 조건**: Phase 4 완료 후, 매크로 라우팅에서 `/ralph-loop` 방향 Story가 있으면 자동 진입
+
+**2단계 커맨드 라우팅 흐름**:
+```
+Phase 1: Orchestrator 매크로 라우팅 (Story 단위 방향 결정)
+    │
+    ├── /team 방향 Story들 (Phase 2-4)
+    │   ├── 프로젝트 초기화
+    │   ├── 핵심 모듈 구현
+    │   └── 통합 검증
+    │   └── (전문가 자율: Task 중 반복 개선 필요 시 /ralph-loop 전환 가능)
+    │
+    └── /ralph-loop 방향 Story들 (Phase 5)
+        ├── 테스트 보강 (max 10)
+        ├── 성능 최적화 (max 5, completion-promise)
+        └── 보안 강화 (max 5)
+        └── (전문가 자율: 기반 구조 부재 시 /team 먼저 실행 가능)
+```
+
+**전문가 마이크로 라우팅 규칙**:
+- Story 방향을 **기본값**으로 따르되, Task 실행 중 다른 커맨드가 더 적합하면 **자율 전환**
+- `/ralph-loop` 전환 시 반드시 `--max-iterations` 포함
+- 전환 사유를 실행 보고에 포함
 
 **필수 안전 설정**:
 - `--max-iterations N`: 최대 반복 횟수 (기본: 10, 최대 권장: 30, **무제한 실행 금지**)
 - `--completion-promise 'TEXT'`: 자동 종료 조건 (선택)
-
-```
-Phase 4 완료 후 /ralph-loop 자동 실행:
-  /ralph-loop "지속적 개선" --max-iterations 10
-  /ralph-loop "성능 최적화" --max-iterations 10 --completion-promise 'All optimized'
-    │
-    ├── 역할 관점 개선 요청
-    │   ├── "UI/UX 개선해줘" → Designer
-    │   ├── "성능 최적화해줘" → Performance Architect
-    │   ├── "접근성 검토해줘" → Accessibility Architect
-    │   ├── "보안 점검해줘" → Security Engineer
-    │   └── "테스트 보강해줘" → QA Engineer
-    │
-    ├── 반복 (--max-iterations 범위 내)
-    │
-    ├── 자동 종료: max-iterations 도달 또는 completion-promise 충족
-    └── 수동 조기 종료: /cancel-ralph
-```
 
 **관련 커맨드**:
 - `/ralph-loop`: 지속적 개선 루프 진입 (**`--max-iterations 10` 기본 포함 필수**)
@@ -158,18 +171,20 @@ Phase 4 완료 후 /ralph-loop 자동 실행:
 
 ### `--mode auto` (완전 자동)
 ```
-분석 → 설정 → 개발 → 테스트 → 완료 → 지속적 개선
-        (모든 단계 자동 진행, Phase 5는 --max-iterations 10 기본 포함)
+분석(+매크로 라우팅) → /team 방향 Story → /ralph-loop 방향 Story → 완료
+  (전문가 마이크로 라우팅 자율, /ralph-loop는 --max-iterations 포함)
 ```
 
 ### `--mode step` (단계별 확인)
 ```
-분석 → [확인] → 설정 → [확인] → 개발 → [확인] → 테스트 → [확인] → 완료
+분석(+매크로 라우팅) → [확인] → /team Story → [확인] → /ralph-loop Story → [확인] → 완료
+  (전문가 마이크로 전환 시에도 확인)
 ```
 
 ### `--mode hybrid` (기본값, 중요 결정만 확인)
 ```
-분석 → [기술 스택 확인] → 설정 → 개발 → [구조 변경 시 확인] → 테스트 → 완료
+분석(+매크로 라우팅) → [기술 스택 확인] → /team Story → /ralph-loop Story → 완료
+  (전문가 마이크로 라우팅은 자율)
 ```
 
 ---

@@ -24,19 +24,29 @@ class KiwoomAPI:
         self.on_tick_callback = None     # async callable
         self.on_chejan_callback = None   # async callable
 
-    async def connect(self):
-        """인증 + WebSocket 연결."""
+    async def connect(self, use_websocket: bool = False):
+        """인증 + (선택적) WebSocket 연결.
+
+        Args:
+            use_websocket: True면 WebSocket도 연결 (실시간 시세용).
+                          paper 모드에서는 False로 REST만 사용.
+        """
         # 1. REST 인증
         await self._rest.authenticate()
-        # 2. WebSocket 접속키 발급
-        ws_key = await self._rest.get_ws_key()
-        # 3. WebSocket 연결
-        self._ws = KiwoomWebSocketClient(self._ws_url, ws_key)
-        self._ws.on_tick_callback = self.on_tick_callback
-        self._ws.on_order_callback = self.on_chejan_callback
-        await self._ws.connect()
         self._connected = True
-        logger.info("키움 API 연결 완료 (REST + WebSocket)")
+        logger.info("키움 API 연결 완료 (REST)")
+
+        # 2. WebSocket 연결 (선택)
+        if use_websocket and self._ws_url:
+            try:
+                ws_key = await self._rest.get_ws_key()
+                self._ws = KiwoomWebSocketClient(self._ws_url, ws_key)
+                self._ws.on_tick_callback = self.on_tick_callback
+                self._ws.on_order_callback = self.on_chejan_callback
+                await self._ws.connect()
+                logger.info("WebSocket 연결 완료")
+            except Exception as e:
+                logger.warning(f"WebSocket 연결 실패 (REST만 사용): {e}")
 
     async def disconnect(self):
         """연결 종료."""

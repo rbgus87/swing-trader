@@ -117,8 +117,9 @@ class TradingEngine:
 
         self._scheduler.start()
 
-        # 키움 연결
-        await self._kiwoom.connect()
+        # 키움 연결 (simulate/live에서만 WebSocket 사용)
+        use_ws = self.mode in ("simulate", "live")
+        await self._kiwoom.connect(use_websocket=use_ws)
 
     async def stop(self):
         """시스템 중지."""

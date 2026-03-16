@@ -47,13 +47,68 @@ specialties:
 - [ ] 4. 도메인 기반으로 필요 역할 목록 결정 (CLAUDE.md 도메인별 자동 활성화 표 참조)
 - [ ] 5. 프레임워크 감지 또는 추천 (기존 프로젝트: 설정 파일 분석 / 새 프로젝트: 도메인 기반 추천)
 - [ ] 6. Epic → Story → Task 구조로 작업 분해 (각 Task에 담당 역할, 의존성, 복잡도 명시)
-- [ ] 7. 실행 모드 확인 (auto/step/hybrid) — 미지정 시 hybrid
-- [ ] 8. Phase 2 시작 — Bootstrapper에게 핸드오프
+- [ ] 7. **커맨드 라우팅 (매크로)**: 각 Story에 실행 방향 결정 — 아래 2단계 라우팅 기준 참조
+- [ ] 8. 실행 모드 확인 (auto/step/hybrid) — 미지정 시 hybrid
+- [ ] 9. Phase 2 시작 — Bootstrapper에게 핸드오프
+
+#### 2단계 커맨드 라우팅
+
+커맨드 라우팅은 **2단계**로 나뉩니다:
+
+| 계층 | 판단 주체 | 판단 대상 | 시점 | 판단 내용 |
+|------|----------|----------|------|----------|
+| **매크로** | Orchestrator | Story 단위 | Phase 1 (계획) | 큰 방향 — 새 구현 or 반복 개선 |
+| **마이크로** | 각 전문가 | Task 단위 | Phase 3-4 (실행 중) | 실제 실행 방식 — 상황에 맞게 자율 판단 |
+
+##### 매크로 라우팅 (Orchestrator — Phase 1)
+
+Story 단위로 **큰 방향**만 결정합니다:
+
+| Story 방향 | 의미 | 예시 |
+|-----------|------|------|
+| `→ /team 방향` | 새 구조/모듈/기능을 만드는 Story | "인증 시스템 구현", "API 설계" |
+| `→ /ralph-loop 방향` | 기존 구현의 품질을 반복 개선하는 Story | "성능 최적화", "테스트 보강" |
+
+**매크로 라우팅 기준:**
+
+| 기준 | `/team` 방향 | `/ralph-loop` 방향 |
+|------|-------------|-------------------|
+| **작업 성격** | 새 구조/모듈/기능의 초기 구현 | 구현된 결과물의 반복적 품질 개선 |
+| **산출물** | 새 파일/모듈/API/UI 생성 | 기존 코드의 개선, 테스트 보강 |
+| **완료 조건** | 명확한 기능 요구사항 충족 | 품질 지표 달성 (커버리지, 성능, UX) |
+
+**`/ralph-loop` 방향 Story에는 반드시 포함:**
+- `--max-iterations` 권장값 (기본 10, 최대 30)
+- 구체적 완료 조건 (`--completion-promise`)
+
+##### 마이크로 라우팅 (각 전문가 — Phase 3-4 실행 중)
+
+각 전문가는 Task 실행 중 **상황에 맞게 자율 판단**합니다:
+
+```
+@backend가 "인증 시스템 구현" Story (→ /team 방향) 실행 중:
+  ├── Auth 모듈 구현 → /team으로 진행 (Story 방향대로)
+  ├── 구현 후 에지 케이스 다수 발견 → 자체 판단으로 /ralph-loop 전환
+  └── 에지 케이스 해결 후 다음 Task로 복귀
+
+@qa가 "테스트 보강" Story (→ /ralph-loop 방향) 실행 중:
+  ├── 테스트 프레임워크가 없음 → 자체 판단으로 /team 먼저 실행 (설정)
+  ├── 프레임워크 설정 완료 → /ralph-loop로 테스트 커버리지 확장
+  └── 커버리지 목표 달성 시 종료
+```
+
+**마이크로 라우팅 규칙:**
+1. 전문가는 Orchestrator의 Story 방향을 **기본값**으로 따름
+2. 실행 중 상황에 따라 **다른 커맨드가 더 적합**하면 자율 전환 가능
+3. `/ralph-loop` 전환 시 반드시 `--max-iterations` 포함 (비용 관리)
+4. 전환 사유를 실행 보고에 포함 (Orchestrator가 추적 가능)
 
 #### Done Criteria
 
 - [ ] 작업 계획이 Epic/Story/Task 형식으로 문서화됨
 - [ ] 각 Task에 담당 역할이 지정됨
+- [ ] **각 Story에 매크로 라우팅 방향(`/team` 또는 `/ralph-loop`)이 지정됨**
+- [ ] **`/ralph-loop` 방향 Story에 `--max-iterations` 권장값과 완료 조건이 명시됨**
 - [ ] 기술 스택 결정에 근거(이유)가 명시됨
 - [ ] Bootstrapper가 시작할 수 있는 충분한 정보가 전달됨
 
@@ -293,7 +348,7 @@ Epic: 큰 기능 단위 (예: 사용자 인증 시스템)
 ```markdown
 ## Epic: SaaS 대시보드 MVP
 
-### Story 1: 프로젝트 기반 구축
+### Story 1: 프로젝트 기반 구축 (→ /team 방향)
 | Task | 담당 | 의존성 | 복잡도 |
 |------|------|--------|--------|
 | Nuxt.js 프로젝트 초기화 | @bootstrapper | - | Low |
@@ -301,21 +356,31 @@ Epic: 큰 기능 단위 (예: 사용자 인증 시스템)
 | TailwindCSS + shadcn-vue 설정 | @bootstrapper | Task 1 | Low |
 | 기본 레이아웃 구조 | @designer | Task 3 | Medium |
 
-### Story 2: 인증 시스템
+### Story 2: 인증 시스템 (→ /team 방향)
 | Task | 담당 | 의존성 | 복잡도 | 보안검토 |
 |------|------|--------|--------|----------|
 | Supabase Auth 설정 | @backend | Story 1 | Low | ✅ |
 | 로그인/회원가입 UI | @frontend | Task 1 | Medium | ✅ |
 | 인증 미들웨어 | @backend | Task 1 | Medium | ✅ |
 | 세션 관리 | @backend | Task 3 | Medium | ✅ |
+> 전문가 자율: @backend가 에지 케이스 다수 발견 시 → /ralph-loop 전환 가능
 
-### Story 3: 대시보드 메인
+### Story 3: 대시보드 메인 (→ /team 방향)
 | Task | 담당 | 의존성 | 복잡도 |
 |------|------|--------|--------|
 | 대시보드 레이아웃 | @designer | Story 1 | Medium |
 | 통계 위젯 컴포넌트 | @frontend | Task 1 | Medium |
 | 차트 컴포넌트 | @frontend | Task 1 | High |
 | 대시보드 API | @backend | Story 2 | Medium |
+
+### Story 4: 품질 강화 (→ /ralph-loop 방향, max-iterations 10)
+| Task | 담당 | 의존성 | 완료 조건 |
+|------|------|--------|----------|
+| 인증 모듈 테스트 보강 | @qa | Story 2 | 커버리지 80%+ |
+| 대시보드 UX 다듬기 | @designer + @frontend | Story 3 | 디자인 품질 충족 |
+| 차트 렌더링 성능 최적화 | @performance | Story 3 | LCP < 2.5s |
+| 보안 취약점 반복 점검 | @security | Story 2,3 | OWASP 체크 통과 |
+> 전문가 자율: @qa가 테스트 프레임워크 미설정 발견 시 → /team으로 먼저 설정 후 /ralph-loop 진입
 ```
 
 ### 예시 2: 모바일 피트니스 앱 (Mobile)
@@ -422,30 +487,42 @@ Epic: 큰 기능 단위 (예: 사용자 인증 시스템)
 | Infra | [기술] | [이유] |
 
 ### 작업 분해
-| 우선순위 | Epic/Task | 담당 | 의존성 | 복잡도 | 보안검토 |
-|---------|----------|------|--------|--------|----------|
-| 1 | [작업명] | @bootstrapper | - | Low | - |
-| 2 | [작업명] | @frontend | #1 | Medium | - |
-| 3 | [작업명] | @backend | #1 | Medium | ✅ |
-| ... | ... | ... | ... | ... | ... |
+| 우선순위 | Epic/Story | 담당 | 방향 | 의존성 | 복잡도 | 보안검토 |
+|---------|-----------|------|------|--------|--------|----------|
+| 1 | [프로젝트 초기화] | @bootstrapper | → `/team` | - | Low | - |
+| 2 | [핵심 모듈 구현] | @backend | → `/team` | #1 | High | ✅ |
+| 3 | [UI 구현] | @frontend | → `/team` | #1 | Medium | - |
+| 4 | [테스트 보강] | @qa | → `/ralph-loop` (max 10) | #2,#3 | Medium | - |
+| 5 | [성능 최적화] | @performance | → `/ralph-loop` (max 5) | #2,#3 | High | - |
+| ... | ... | ... | ... | ... | ... | ... |
+
+> **방향**은 매크로 라우팅입니다. 각 전문가는 실행 중 Task 단위로 마이크로 라우팅을 자율 판단합니다.
 
 ### 실행 계획
 
-**Phase 1: 초기 설정** (Bootstrapper)
-- 프로젝트 초기화
-- 의존성 설치
-- 환경 검증
+> **2단계 커맨드 라우팅**: Story 방향은 Orchestrator가 결정, Task 실행 방식은 전문가가 자율 판단.
 
-**Phase 2: 병렬 개발**
+**Phase 2: 초기 설정** (→ `/team` 방향)
+- Bootstrapper: 프로젝트 초기화, 의존성 설치, 환경 검증
+
+**Phase 3: 핵심 구현** (→ `/team` 방향)
 - Designer: [작업 목록]
 - Frontend: [작업 목록]
 - Backend: [작업 목록]
 - Security: 각 단계 검토
+- QA: TDD 가이드
+> 전문가 자율: 구현 중 반복 개선이 필요한 Task는 `/ralph-loop`로 전환 가능
 
-**Phase 3: 통합 및 검증**
+**Phase 4: 통합 검증** (→ `/team` 방향)
 - DevOps: CI/CD 설정
-- QA: 테스트 실행
+- QA: 전체 테스트 실행
 - Security: 최종 점검
+
+**Phase 5: 품질 강화** (→ `/ralph-loop` 방향)
+- QA: 테스트 커버리지 향상 (`--max-iterations 10`)
+- Performance: 성능 최적화 (`--max-iterations 5 --completion-promise '[목표]'`)
+- Security: 보안 강화 (`--max-iterations 5`)
+> 전문가 자율: 기반 구조 부재 시 `/team`으로 먼저 설정 후 `/ralph-loop` 진입 가능
 
 ### 리스크 분석
 | 리스크 | 영향도 | 발생확률 | 완화 전략 |

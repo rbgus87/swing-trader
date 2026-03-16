@@ -205,8 +205,20 @@ class TestKiwoomAPI:
         return api
 
     @pytest.mark.asyncio
-    async def test_connect(self):
-        """connect 시 REST 인증 + WS 연결."""
+    async def test_connect_rest_only(self):
+        """connect(use_websocket=False) 시 REST 인증만."""
+        api = self._make_api()
+        api._rest = AsyncMock()
+        api._rest.authenticate = AsyncMock(return_value="test_token")
+
+        await api.connect(use_websocket=False)
+
+        api._rest.authenticate.assert_awaited_once()
+        assert api.connected is True
+
+    @pytest.mark.asyncio
+    async def test_connect_with_websocket(self):
+        """connect(use_websocket=True) 시 REST + WS 연결."""
         api = self._make_api()
         api._rest = AsyncMock()
         api._rest.authenticate = AsyncMock(return_value="test_token")
@@ -216,7 +228,7 @@ class TestKiwoomAPI:
             mock_ws_instance = AsyncMock()
             MockWS.return_value = mock_ws_instance
 
-            await api.connect()
+            await api.connect(use_websocket=True)
 
             api._rest.authenticate.assert_awaited_once()
             api._rest.get_ws_key.assert_awaited_once()

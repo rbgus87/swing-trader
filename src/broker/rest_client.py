@@ -49,6 +49,10 @@ class KiwoomRestClient:
         data = response.json()
         self._access_token = data.get("token", "")
 
+        if not self._access_token:
+            logger.error(f"토큰 발급 실패 — 응답: {data}")
+            raise ValueError(f"토큰이 비어있음. 응답: {data}")
+
         # Parse expiry from "expires_dt" (format: YYYYMMDDHHmmss)
         expires_str = data.get("expires_dt", "")
         if expires_str:
@@ -56,7 +60,7 @@ class KiwoomRestClient:
         else:
             self._token_expires = datetime.now() + timedelta(hours=23)
 
-        logger.info("접근토큰 발급 완료")
+        logger.info(f"접근토큰 발급 완료 (만료: {self._token_expires})")
         return self._access_token
 
     async def get_ws_key(self) -> str:
