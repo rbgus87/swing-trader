@@ -372,7 +372,33 @@ class TradingEngine:
 
     def _daily_report(self):
         """일간 리포트 (16:00)."""
-        pass  # 텔레그램 일간 리포트 전송
+        today = datetime.now().strftime("%Y-%m-%d")
+        trades = self._ds.get_trades_by_date(today)
+        positions = self._ds.get_open_positions()
+
+        buy_count = sum(1 for t in trades if t["side"] == "buy")
+        sell_count = sum(1 for t in trades if t["side"] == "sell")
+        total_pnl = sum(t.get("pnl", 0) for t in trades if t["side"] == "sell")
+
+        initial_capital = config.get("backtest.initial_capital", 1_000_000)
+        pnl_pct = total_pnl / initial_capital * 100 if initial_capital > 0 else 0.0
+
+        self._telegram.send_daily_report(
+            date=today,
+            buy_count=buy_count,
+            sell_count=sell_count,
+            realized_pnl=int(total_pnl),
+            realized_pnl_pct=pnl_pct,
+            position_count=len(positions),
+            unrealized_pnl=0,
+            initial_capital=initial_capital,
+            current_capital=initial_capital + int(total_pnl),
+            total_return_pct=pnl_pct,
+            current_mdd=0.0,
+        )
+        logger.info(
+            f"일간 리포트 발송: 매수{buy_count}/매도{sell_count}/PnL{int(total_pnl):+,}"
+        )
 
     def _daily_reset(self):
         """일일 리셋 (09:00)."""

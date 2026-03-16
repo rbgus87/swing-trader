@@ -116,6 +116,59 @@ def calculate_indicators(
     return result
 
 
+def check_golden_cross_entry(
+    df: pd.DataFrame,
+    adx_threshold: int = 20,
+    volume_multiplier: float = 1.0,
+) -> bool:
+    """골든크로스 매수 신호 — AND 조건.
+
+    1. SMA5 > SMA20 크로스 (전일 SMA5 <= SMA20, 당일 SMA5 > SMA20)
+    2. RSI >= 50
+    3. ADX >= adx_threshold
+    4. 거래량 >= 20일 평균 × volume_multiplier
+
+    Args:
+        df: 지표 계산 완료된 DataFrame (최소 2행 이상).
+        adx_threshold: ADX 추세 강도 기준.
+        volume_multiplier: 거래량 배수 기준.
+
+    Returns:
+        모든 조건 충족 시 True.
+    """
+    if len(df) < 2:
+        return False
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    cond_cross = (latest["sma5"] > latest["sma20"]) and (
+        prev["sma5"] <= prev["sma20"]
+    )
+    cond_rsi = latest["rsi"] >= 50
+    cond_adx = latest["adx"] >= adx_threshold
+    cond_vol = latest["volume"] >= latest["volume_sma20"] * volume_multiplier
+
+    return all([cond_cross, cond_rsi, cond_adx, cond_vol])
+
+
+def check_golden_cross_exit(df: pd.DataFrame) -> bool:
+    """골든크로스 매도 신호 — 데드크로스.
+
+    SMA5 < SMA20 크로스 (전일 SMA5 >= SMA20, 당일 SMA5 < SMA20)
+
+    Args:
+        df: 지표 계산 완료된 DataFrame (최소 2행 이상).
+
+    Returns:
+        데드크로스 발생 시 True.
+    """
+    if len(df) < 2:
+        return False
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    return (latest["sma5"] < latest["sma20"]) and (prev["sma5"] >= prev["sma20"])
+
+
 def check_entry_signal(
     df: pd.DataFrame,
     df_60m: pd.DataFrame | None = None,

@@ -14,6 +14,8 @@ from src.strategy.signals import (
     calculate_signal_score,
     check_entry_signal,
     check_exit_signal,
+    check_golden_cross_entry,
+    check_golden_cross_exit,
 )
 
 
@@ -469,3 +471,147 @@ class TestCalculateSignalScore:
         )
         score = calculate_signal_score(df)
         assert score < 1.5
+
+
+class TestGoldenCrossEntry:
+    """check_golden_cross_entry 테스트."""
+
+    def test_golden_cross_entry_basic(self):
+        """모든 AND 조건 충족 시 True."""
+        df = pd.DataFrame(
+            {
+                "sma5": [9900, 10100],    # 전일 SMA5 <= SMA20, 당일 SMA5 > SMA20
+                "sma20": [10000, 10000],
+                "rsi": [55, 55],          # RSI >= 50
+                "adx": [25, 25],          # ADX >= 20
+                "volume": [500000, 600000],
+                "volume_sma20": [400000, 500000],  # 600000 >= 500000 * 1.0
+            }
+        )
+        assert check_golden_cross_entry(df) is True
+
+    def test_golden_cross_entry_no_cross(self):
+        """SMA5/20 크로스 없음 → False."""
+        df = pd.DataFrame(
+            {
+                "sma5": [10100, 10200],   # 전일도 SMA5 > SMA20 (크로스 아님)
+                "sma20": [10000, 10000],
+                "rsi": [55, 55],
+                "adx": [25, 25],
+                "volume": [500000, 600000],
+                "volume_sma20": [400000, 500000],
+            }
+        )
+        assert check_golden_cross_entry(df) is False
+
+    def test_golden_cross_entry_low_rsi(self):
+        """RSI < 50 → False."""
+        df = pd.DataFrame(
+            {
+                "sma5": [9900, 10100],
+                "sma20": [10000, 10000],
+                "rsi": [55, 45],          # RSI < 50
+                "adx": [25, 25],
+                "volume": [500000, 600000],
+                "volume_sma20": [400000, 500000],
+            }
+        )
+        assert check_golden_cross_entry(df) is False
+
+    def test_golden_cross_entry_low_adx(self):
+        """ADX < threshold → False."""
+        df = pd.DataFrame(
+            {
+                "sma5": [9900, 10100],
+                "sma20": [10000, 10000],
+                "rsi": [55, 55],
+                "adx": [15, 15],          # ADX < 20
+                "volume": [500000, 600000],
+                "volume_sma20": [400000, 500000],
+            }
+        )
+        assert check_golden_cross_entry(df) is False
+
+    def test_golden_cross_entry_low_volume(self):
+        """거래량 부족 → False."""
+        df = pd.DataFrame(
+            {
+                "sma5": [9900, 10100],
+                "sma20": [10000, 10000],
+                "rsi": [55, 55],
+                "adx": [25, 25],
+                "volume": [500000, 400000],  # 400000 < 500000 * 1.0
+                "volume_sma20": [400000, 500000],
+            }
+        )
+        assert check_golden_cross_entry(df) is False
+
+    def test_golden_cross_entry_empty_df(self):
+        """빈 DataFrame → False."""
+        df = pd.DataFrame(columns=["sma5", "sma20", "rsi", "adx", "volume", "volume_sma20"])
+        assert check_golden_cross_entry(df) is False
+
+    def test_golden_cross_entry_single_row(self):
+        """1행만 있는 DataFrame → False."""
+        df = pd.DataFrame(
+            {
+                "sma5": [10100],
+                "sma20": [10000],
+                "rsi": [55],
+                "adx": [25],
+                "volume": [600000],
+                "volume_sma20": [500000],
+            }
+        )
+        assert check_golden_cross_entry(df) is False
+
+    def test_golden_cross_entry_custom_adx_threshold(self):
+        """커스텀 ADX threshold 적용."""
+        df = pd.DataFrame(
+            {
+                "sma5": [9900, 10100],
+                "sma20": [10000, 10000],
+                "rsi": [55, 55],
+                "adx": [25, 25],
+                "volume": [500000, 600000],
+                "volume_sma20": [400000, 500000],
+            }
+        )
+        # ADX=25 >= threshold=30 → False
+        assert check_golden_cross_entry(df, adx_threshold=30) is False
+        # ADX=25 >= threshold=20 → True
+        assert check_golden_cross_entry(df, adx_threshold=20) is True
+
+
+class TestGoldenCrossExit:
+    """check_golden_cross_exit 테스트."""
+
+    def test_golden_cross_exit_dead_cross(self):
+        """데드크로스 발생 시 True."""
+        df = pd.DataFrame(
+            {
+                "sma5": [10100, 9900],    # 전일 SMA5 >= SMA20, 당일 SMA5 < SMA20
+                "sma20": [10000, 10000],
+            }
+        )
+        assert check_golden_cross_exit(df)
+
+    def test_golden_cross_exit_no_dead_cross(self):
+        """데드크로스 없음 → False."""
+        df = pd.DataFrame(
+            {
+                "sma5": [9900, 9800],     # 전일도 SMA5 < SMA20
+                "sma20": [10000, 10000],
+            }
+        )
+        assert not check_golden_cross_exit(df)
+
+    def test_golden_cross_exit_empty_df(self):
+        """빈 DataFrame → False."""
+        df = pd.DataFrame(columns=["sma5", "sma20"])
+        assert check_golden_cross_exit(df) is False
+
+    def test_golden_cross_exit_single_row(self):
+        """1행만 있는 DataFrame → False."""
+        df = pd.DataFrame({"sma5": [9900], "sma20": [10000]})
+        assert check_golden_cross_exit(df) is False

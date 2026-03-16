@@ -103,6 +103,7 @@ def mock_deps():
         telegram_instance.send_sell_executed_loss.return_value = True
         telegram_instance.send_halt_alert.return_value = True
         telegram_instance.send_system_error.return_value = True
+        telegram_instance.send_daily_report.return_value = True
 
         # Scheduler mock
         scheduler_instance = MockScheduler.return_value
@@ -557,6 +558,44 @@ class TestEnsureConnection:
 
 
 # ── 일일 리셋 테스트 ──
+
+
+class TestDailyReport:
+    """일간 리포트 테스트."""
+
+    async def test_daily_report_sends_telegram(self, engine, mock_deps):
+        """일간 리포트 시 텔레그램 전송."""
+        mock_deps["ds"].get_trades_by_date.return_value = [
+            {"side": "buy", "pnl": 0},
+            {"side": "sell", "pnl": 5000},
+        ]
+        mock_deps["ds"].get_open_positions.return_value = [
+            {"code": "005930"},
+        ]
+        mock_deps["config"].get.return_value = 1_000_000
+
+        engine._daily_report()
+
+        mock_deps["telegram"].send_daily_report.assert_called_once()
+        call_kwargs = mock_deps["telegram"].send_daily_report.call_args
+        # buy_count=1, sell_count=1, realized_pnl=5000
+        assert call_kwargs[1]["buy_count"] == 1
+        assert call_kwargs[1]["sell_count"] == 1
+        assert call_kwargs[1]["realized_pnl"] == 5000
+
+    async def test_daily_report_no_trades(self, engine, mock_deps):
+        """거래 없는 날 리포트."""
+        mock_deps["ds"].get_trades_by_date.return_value = []
+        mock_deps["ds"].get_open_positions.return_value = []
+        mock_deps["config"].get.return_value = 1_000_000
+
+        engine._daily_report()
+
+        mock_deps["telegram"].send_daily_report.assert_called_once()
+        call_kwargs = mock_deps["telegram"].send_daily_report.call_args
+        assert call_kwargs[1]["buy_count"] == 0
+        assert call_kwargs[1]["sell_count"] == 0
+        assert call_kwargs[1]["realized_pnl"] == 0
 
 
 class TestDailyReset:

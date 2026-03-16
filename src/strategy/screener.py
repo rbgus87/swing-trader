@@ -15,6 +15,7 @@ from src.strategy.signals import (
     calculate_indicators,
     calculate_signal_score,
     check_entry_signal,
+    check_golden_cross_entry,
 )
 
 
@@ -34,6 +35,8 @@ class Screener:
         self.top_n = screening.get("top_n", 30)
         self.universe = config.get("trading", {}).get("universe", "kospi_kosdaq")
         self.strategy_config = config.get("strategy", {})
+        self.watchlist = config.get("watchlist", [])
+        self.strategy_type = self.strategy_config.get("type", "golden_cross")
 
     def get_all_codes(self, market: str | None = None) -> list[str]:
         """전종목 코드 수집.
@@ -80,8 +83,13 @@ class Screener:
             datetime.strptime(date, "%Y%m%d") - timedelta(days=200)
         ).strftime("%Y%m%d")
 
-        codes = self.get_all_codes()
-        logger.info(f"스크리닝 시작: 전체 {len(codes)}종목, 기준일 {date}")
+        # 고정 종목 리스트가 있으면 watchlist 우선 사용
+        if self.watchlist:
+            codes = self.watchlist
+            logger.info(f"스크리닝 시작: watchlist {len(codes)}종목, 기준일 {date}")
+        else:
+            codes = self.get_all_codes()
+            logger.info(f"스크리닝 시작: 전체 {len(codes)}종목, 기준일 {date}")
 
         candidates: list[tuple[str, float]] = []
 
@@ -112,25 +120,35 @@ class Screener:
                 if df_with_ind.empty:
                     continue
 
-                # 60분봉 데이터 (pykrx는 분봉을 직접 제공하지 않으므로
-                # 일봉 기반 근사치 사용: sma5, sma20 컬럼을 일봉에서 참조)
-                df_60m = pd.DataFrame(
-                    {
-                        "sma5": [df_with_ind.iloc[-1]["sma5"]],
-                        "sma20": [df_with_ind.iloc[-1]["sma20"]],
-                    }
-                )
+                # 매수 신호 체크 (전략 타입에 따라 분기)
+                has_signal = False
+                if self.strategy_type == "golden_cross":
+                    has_signal = check_golden_cross_entry(
+                        df_with_ind,
+                        adx_threshold=self.strategy_config.get("adx_threshold", 20),
+                        volume_multiplier=self.strategy_config.get(
+                            "volume_multiplier", 1.0
+                        ),
+                    )
+                else:
+                    # MACD-RSI 전략 (레거시)
+                    df_60m = pd.DataFrame(
+                        {
+                            "sma5": [df_with_ind.iloc[-1]["sma5"]],
+                            "sma20": [df_with_ind.iloc[-1]["sma20"]],
+                        }
+                    )
+                    has_signal = check_entry_signal(
+                        df_with_ind,
+                        df_60m,
+                        rsi_entry_min=self.strategy_config.get("rsi_entry_min", 40),
+                        rsi_entry_max=self.strategy_config.get("rsi_entry_max", 65),
+                        volume_multiplier=self.strategy_config.get(
+                            "volume_multiplier", 1.5
+                        ),
+                    )
 
-                # 매수 신호 체크
-                if check_entry_signal(
-                    df_with_ind,
-                    df_60m,
-                    rsi_entry_min=self.strategy_config.get("rsi_entry_min", 40),
-                    rsi_entry_max=self.strategy_config.get("rsi_entry_max", 65),
-                    volume_multiplier=self.strategy_config.get(
-                        "volume_multiplier", 1.5
-                    ),
-                ):
+                if has_signal:
                     score = calculate_signal_score(df_with_ind)
                     candidates.append((code, score))
 
