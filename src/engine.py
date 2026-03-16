@@ -28,7 +28,7 @@ from src.utils.market_calendar import is_market_open
 class TradingEngine:
     """매매 시스템 핵심 조율자."""
 
-    def __init__(self, mode: Literal["paper", "live"] = "paper"):
+    def __init__(self, mode: Literal["paper", "simulate", "live"] = "paper"):
         self.mode = mode
         self._running = False
 
@@ -38,11 +38,24 @@ class TradingEngine:
         self._ds.create_tables()
 
         # 키움 API (REST + WebSocket)
-        base_url = config.get("broker.base_url", "https://api.kiwoom.com")
-        ws_url = config.get(
-            "broker.ws_url",
-            "wss://api.kiwoom.com:10000/api/dostk/websocket",
-        )
+        if mode == "simulate":
+            base_url = config.get("broker.mock_base_url", "https://mockapi.kiwoom.com")
+            ws_url = config.get(
+                "broker.mock_ws_url",
+                "wss://mockapi.kiwoom.com:10000/api/dostk/websocket",
+            )
+        elif mode == "live":
+            base_url = config.get("broker.base_url", "https://api.kiwoom.com")
+            ws_url = config.get(
+                "broker.ws_url",
+                "wss://api.kiwoom.com:10000/api/dostk/websocket",
+            )
+        else:  # paper
+            base_url = config.get("broker.base_url", "https://api.kiwoom.com")
+            ws_url = config.get(
+                "broker.ws_url",
+                "wss://api.kiwoom.com:10000/api/dostk/websocket",
+            )
         appkey = config.get_env("KIWOOM_APPKEY", "")
         secretkey = config.get_env("KIWOOM_SECRETKEY", "")
 
@@ -212,7 +225,7 @@ class TradingEngine:
             return
 
         # 주문 실행  # RISK_CHECK_REQUIRED
-        if self.mode == "live":
+        if self.mode in ("live", "simulate"):
             from src.broker.tr_codes import ORDER_BUY, PRICE_MARKET
 
             result = await self._order_mgr.execute_order(
@@ -225,7 +238,7 @@ class TradingEngine:
 
     async def _execute_sell(self, position: Position, price: int, reason: ExitReason):
         """매도 실행."""
-        if self.mode == "live":
+        if self.mode in ("live", "simulate"):
             from src.broker.tr_codes import ORDER_SELL, PRICE_MARKET
 
             result = await self._order_mgr.execute_order(

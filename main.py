@@ -2,6 +2,7 @@
 
 Usage:
     python main.py --mode paper
+    python main.py --mode simulate
     python main.py --mode live
 """
 
@@ -16,7 +17,7 @@ from loguru import logger
 async def main():
     """메인 함수."""
     parser = argparse.ArgumentParser(description="스윙 자동매매 시스템")
-    parser.add_argument("--mode", choices=["paper", "live"], default="paper")
+    parser.add_argument("--mode", choices=["paper", "simulate", "live"], default="paper")
     args = parser.parse_args()
 
     # 로거 초기화

@@ -43,6 +43,14 @@ LOG_LEVEL=INFO                     # 로그 레벨 (선택)
 python main.py --mode paper
 ```
 
+### 모의투자 (Simulate)
+
+키움 모의투자 서버에서 실제 체결됩니다. 실거래 전 검증 단계로 사용합니다.
+
+```bash
+python main.py --mode simulate
+```
+
 ### 실거래
 
 키움 REST API를 통해 실제 주문을 실행합니다. 텔레그램 봇 설정이 필수입니다.
@@ -232,7 +240,8 @@ python scripts/portfolio_backtest.py     # 4. 백테스트 실행
 python scripts/portfolio_backtest.py     # 1. 최종 백테스트 확인
 python main.py --mode paper              # 2. 모의매매 (2주 이상 검증)
 # 텔레그램으로 일간 리포트 확인           # 3. 실시간 모니터링
-python main.py --mode live               # 4. 실거래 전환 (소액부터)
+python main.py --mode simulate           # 4. 모의투자 서버에서 실제 체결 테스트
+python main.py --mode live               # 5. 실거래 전환 (소액부터)
 ```
 
 ### 전략 파라미터 변경 시

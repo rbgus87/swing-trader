@@ -141,6 +141,15 @@ def engine_live(mock_deps):
     return eng
 
 
+@pytest.fixture
+def engine_simulate(mock_deps):
+    """Mock 의존성으로 초기화된 TradingEngine (simulate 모드)."""
+    from src.engine import TradingEngine
+
+    eng = TradingEngine(mode="simulate")
+    return eng
+
+
 def _make_tick(code="005930", price=10000, volume=100):
     """테스트용 Tick 생성 헬퍼."""
     return Tick(code=code, price=price, volume=volume, timestamp=datetime.now())
@@ -187,6 +196,12 @@ class TestEngineCreation:
     async def test_create_live_mode(self, engine_live, mock_deps):
         """live 모드로 정상 생성."""
         assert engine_live.mode == "live"
+
+    async def test_create_simulate_mode(self, engine_simulate, mock_deps):
+        """simulate 모드로 정상 생성."""
+        assert engine_simulate.mode == "simulate"
+        mock_deps["ds"].connect.assert_called()
+        mock_deps["ds"].create_tables.assert_called()
 
 
 # ── on_price_update 테스트 ──
@@ -431,6 +446,26 @@ class TestPaperVsLive:
         )
 
         await engine_live._execute_sell(
+            pos, price=10800, reason=ExitReason.TARGET_REACHED
+        )
+
+        mock_deps["order_mgr"].execute_order.assert_called_once()
+
+    async def test_simulate_mode_calls_order_on_sell(self, engine_simulate, mock_deps):
+        """simulate 모드에서 주문 호출 (매도) — mock 서버로 전송."""
+        pos = Position(
+            id=1,
+            code="005930",
+            name="삼성전자",
+            entry_date="2026-03-10",
+            entry_price=10000,
+            quantity=10,
+            stop_price=9300,
+            target_price=10800,
+            high_since_entry=10000,
+        )
+
+        await engine_simulate._execute_sell(
             pos, price=10800, reason=ExitReason.TARGET_REACHED
         )
 
