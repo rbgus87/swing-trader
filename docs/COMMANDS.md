@@ -115,6 +115,20 @@ python scripts/optimize_gc.py
 
 ---
 
+## 대시보드 실행
+
+```bash
+# 터미널 1: 엔진 실행
+python main.py --mode paper
+
+# 터미널 2: 대시보드 실행 (별도 터미널)
+streamlit run dashboard.py
+```
+
+대시보드는 브라우저에서 자동으로 열립니다 (기본 http://localhost:8501).
+
+---
+
 ## 테스트
 
 ### 전체 테스트 실행
