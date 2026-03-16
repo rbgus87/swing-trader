@@ -57,7 +57,7 @@ API_ACCOUNT_BALANCE = "ka10070"
 API_STOCK_LIST = "ka10100"
 
 # ── REST Endpoints ──
-EP_AUTH = "/api/auth/token"
+EP_AUTH = "/oauth2/token"
 EP_ORDER = "/api/dostk/ordr"
 EP_STOCK = "/api/dostk/stkinfo"
 EP_CHART = "/api/dostk/chart"

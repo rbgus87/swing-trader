@@ -32,20 +32,30 @@ class KiwoomRestClient:
     async def authenticate(self) -> str:
         """접근토큰 발급.
 
-        POST /api/auth/token
-        Body: {"appkey": ..., "secretkey": ...}
-        Returns: access_token string
+        POST /oauth2/token
+        Body: {"grant_type": "client_credentials", "appkey": ..., "secretkey": ...}
+        Returns: token string
         """
         await self._rate_limiter.wait()
         response = await self._client.post(
-            "/api/auth/token",
-            json={"appkey": self._appkey, "secretkey": self._secretkey}
+            "/oauth2/token",
+            json={
+                "grant_type": "client_credentials",
+                "appkey": self._appkey,
+                "secretkey": self._secretkey,
+            }
         )
         response.raise_for_status()
         data = response.json()
-        self._access_token = data.get("access_token", "")
-        # 토큰 만료: 보통 24시간, 안전하게 23시간으로 설정
-        self._token_expires = datetime.now() + timedelta(hours=23)
+        self._access_token = data.get("token", "")
+
+        # Parse expiry from "expires_dt" (format: YYYYMMDDHHmmss)
+        expires_str = data.get("expires_dt", "")
+        if expires_str:
+            self._token_expires = datetime.strptime(expires_str, "%Y%m%d%H%M%S")
+        else:
+            self._token_expires = datetime.now() + timedelta(hours=23)
+
         logger.info("접근토큰 발급 완료")
         return self._access_token
 
@@ -68,18 +78,16 @@ class KiwoomRestClient:
         return self._ws_key
 
     async def _ensure_token(self):
-        """토큰 만료 시 자동 갱신 (만료 5분 전 선제 갱신)."""
+        """토큰 만료 시 자동 갱신 (만료 10분 전 선제 갱신)."""
         if (self._token_expires is None or
-            datetime.now() >= self._token_expires - timedelta(minutes=5)):
+            datetime.now() >= self._token_expires - timedelta(minutes=10)):
             await self.authenticate()
 
     def _auth_headers(self) -> dict:
         """인증 헤더 생성."""
         return {
+            "Content-Type": "application/json;charset=UTF-8",
             "Authorization": f"Bearer {self._access_token}",
-            "Content-Type": "application/json",
-            "appkey": self._appkey,
-            "secretkey": self._secretkey,
         }
 
     async def request(self, method: str, endpoint: str, api_id: str,
@@ -93,6 +101,8 @@ class KiwoomRestClient:
 
         headers = self._auth_headers()
         headers["api-id"] = api_id
+        headers["cont-yn"] = "N"
+        headers["next-key"] = ""
 
         try:
             if method.upper() == "GET":

@@ -33,7 +33,7 @@ class TestKiwoomRestClient:
     async def test_authenticate(self, client):
         """토큰 발급 성공."""
         mock_response = MagicMock()
-        mock_response.json.return_value = {"access_token": "test_token_123"}
+        mock_response.json.return_value = {"token": "test_token_123", "expires_dt": "20260318120000"}
         mock_response.raise_for_status = MagicMock()
 
         with patch.object(client._client, "post", new_callable=AsyncMock, return_value=mock_response):
@@ -42,6 +42,7 @@ class TestKiwoomRestClient:
         assert token == "test_token_123"
         assert client._access_token == "test_token_123"
         assert client._token_expires is not None
+        assert client._token_expires == datetime(2026, 3, 18, 12, 0, 0)
 
     @pytest.mark.asyncio
     async def test_ensure_token_refreshes_expired(self, client):
@@ -49,7 +50,7 @@ class TestKiwoomRestClient:
         client._token_expires = datetime.now() - timedelta(hours=1)
 
         mock_response = MagicMock()
-        mock_response.json.return_value = {"access_token": "new_token"}
+        mock_response.json.return_value = {"token": "new_token"}
         mock_response.raise_for_status = MagicMock()
 
         with patch.object(client._client, "post", new_callable=AsyncMock, return_value=mock_response):
