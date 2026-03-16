@@ -1,60 +1,88 @@
+# ============================================================================
 # config.yaml — 스윙 자동매매 시스템 설정
-# 민감 정보(.env)는 이 파일에 포함하지 않음
+# ============================================================================
+# 민감 정보(API키, 계좌번호 등)는 .env 파일에서 관리합니다.
+# 이 파일은 git에 커밋되므로 비밀번호/토큰을 절대 포함하지 마세요.
 
+# --- 매매 기본 설정 ---
 trading:
-  mode: paper                      # paper | live (실거래 시 live로 변경)
-  universe: kospi_kosdaq
-  max_positions: 5
-  reentry_cooldown_days: 3
+  mode: paper                       # paper: 모의매매 | live: 실거래 (실거래 시 텔레그램 필수)
+  universe: kospi_kosdaq            # 매매 대상 시장 (kospi | kosdaq | kospi_kosdaq)
+  max_positions: 3                  # 동시에 보유할 수 있는 최대 종목 수 (자본금에 따라 조절)
+  reentry_cooldown_days: 3          # 같은 종목을 매도 후 다시 매수하기까지 대기 영업일
 
+# --- 종목 스크리닝 (장 시작 전 후보 선별) ---
 screening:
-  min_daily_amount: 5_000_000_000  # 50억
-  min_market_cap: 30_000_000_000   # 300억
-  min_price: 1000
-  max_price: 500000
-  top_n: 30
+  min_daily_amount: 5_000_000_000   # 최소 일 거래대금 (원) — 50억 미만 종목 제외 (유동성 확보)
+  min_market_cap: 30_000_000_000    # 최소 시가총액 (원) — 300억 미만 종목 제외 (소형주 제외)
+  min_price: 1000                   # 최소 주가 (원) — 1,000원 미만 동전주 제외
+  max_price: 500000                 # 최대 주가 (원) — 50만원 초과 고가주 제외
+  top_n: 30                         # 스크리닝 결과 상위 N종목까지만 매수 후보로 선정
 
+# --- 매매 전략 파라미터 ---
+# 현재 전략: 골든크로스 변형 (SMA5/20 크로스 + RSI + ADX + 거래량)
 strategy:
-  timeframe_primary: D
-  timeframe_entry: 60
-  macd_fast: 12
-  macd_slow: 26
-  macd_signal: 9
-  rsi_period: 14
-  rsi_entry_min: 40
-  rsi_entry_max: 65
-  bb_period: 20
-  bb_std: 2.0
-  volume_multiplier: 1.5
-  ma_trend: 20
-  max_hold_days: 20
-  target_return: 0.10
+  timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
+  timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)
 
+  # 이동평균선 (Moving Average)
+  macd_fast: 12                     # MACD 빠른선 기간 (기본 12일)
+  macd_slow: 26                     # MACD 느린선 기간 (기본 26일)
+  macd_signal: 9                    # MACD 시그널선 기간 (기본 9일)
+  ma_trend: 20                      # 추세 판단용 이동평균 기간 (20일선)
+
+  # RSI (Relative Strength Index, 상대강도지수)
+  rsi_period: 14                    # RSI 계산 기간 (14일)
+  rsi_entry_min: 40                 # 매수 허용 RSI 하한 (40 미만이면 하락세로 판단)
+  rsi_entry_max: 65                 # 매수 허용 RSI 상한 (65 초과면 과매수로 판단)
+
+  # 볼린저밴드 (Bollinger Bands)
+  bb_period: 20                     # 볼린저밴드 기간 (20일)
+  bb_std: 2.0                       # 볼린저밴드 표준편차 배수 (2.0σ)
+
+  # 거래량 필터
+  volume_multiplier: 1.0            # 20일 평균 거래량 대비 배수 (1.0 = 평균 이상이면 OK)
+
+  # 청산 조건
+  max_hold_days: 15                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도
+  target_return: 0.10               # 목표 수익률 (0.10 = +10%) — 도달 시 자동 매도
+
+# --- 리스크 관리 ---
 risk:
-  max_position_ratio: 0.15
-  min_position_ratio: 0.03
-  sizing_method: half_kelly        # half_kelly | fixed
-  stop_atr_multiplier: 2.0
-  max_stop_pct: 0.10
-  trailing_atr_multiplier: 2.5
-  trailing_activate_pct: 0.05
-  daily_loss_limit: -0.03
-  daily_loss_warning: -0.02
-  max_mdd: -0.20
+  # 포지션 사이징
+  max_position_ratio: 0.15          # 종목당 최대 투자 비율 (총 자본의 15%)
+  min_position_ratio: 0.03          # 종목당 최소 투자 비율 (총 자본의 3%)
+  sizing_method: half_kelly         # 포지션 크기 결정 방식 (half_kelly | fixed)
 
+  # 손절 (Stop Loss)
+  stop_atr_multiplier: 2.5          # 초기 손절가 = 진입가 - ATR × 이 값 (ATR: 평균진폭)
+  max_stop_pct: 0.10                # 최대 손절 비율 (0.10 = -10%) — ATR 손절이 이보다 넓으면 이 값 적용
+
+  # 트레일링 스톱 (수익 보호)
+  trailing_atr_multiplier: 2.5      # 트레일링 = 고점 - ATR × 이 값
+  trailing_activate_pct: 0.07       # 트레일링 활성화 수익률 (0.07 = +7% 이상 수익 시 시작)
+
+  # 일일 손실 관리
+  daily_loss_limit: -0.03           # 일일 손실 한도 (-0.03 = -3%) — 초과 시 당일 매매 중단
+  daily_loss_warning: -0.02         # 일일 손실 경고 (-0.02 = -2%) — 텔레그램 경고 발송
+  max_mdd: -0.20                    # 최대 낙폭 한도 (-0.20 = -20%) — 초과 시 전략 중단
+
+# --- 백테스트 비용 모델 ---
 backtest:
-  commission: 0.00015
-  tax: 0.002
-  slippage: 0.001
-  initial_capital: 10_000_000
+  commission: 0.00015               # 수수료 (0.015%, 매수/매도 각각 적용)
+  tax: 0.002                        # 거래세 (0.2%, 매도 시에만 적용)
+  slippage: 0.001                   # 슬리피지 (0.1%, 체결가 불리함 가정)
+  initial_capital: 1_000_000        # 백테스트 초기 자본금 (원)
 
+# --- 브로커 연결 설정 (키움 REST API) ---
 broker:
-  type: rest
-  base_url: "https://api.kiwoom.com"
-  ws_url: "wss://api.kiwoom.com:10000/api/dostk/websocket"
-  environment: paper
+  type: rest                        # 브로커 연결 방식 (rest: REST API, ocx: 레거시 OCX)
+  base_url: "https://api.kiwoom.com"                              # REST API 기본 URL
+  ws_url: "wss://api.kiwoom.com:10000/api/dostk/websocket"        # WebSocket URL (실시간 시세)
+  environment: paper                # paper: 모의투자 서버 | live: 실거래 서버
 
+# --- 스케줄러 (자동 작업 시간) ---
 schedule:
-  screening_time: "08:30"
-  daily_report_time: "16:00"
-  reconnect_time: "08:45"
+  screening_time: "08:30"           # 장전 스크리닝 실행 시간 (08:30 → 장 시작 전 후보 선별)
+  daily_report_time: "16:00"        # 일간 리포트 발송 시간 (16:00 → 장 마감 후 텔레그램 발송)
+  reconnect_time: "08:45"           # 키움 API 재연결 확인 시간 (08:45 → 장 시작 전 연결 보장)
