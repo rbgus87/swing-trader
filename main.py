@@ -16,12 +16,13 @@ from loguru import logger
 
 async def main():
     """메인 함수."""
-    parser = argparse.ArgumentParser(description="스윙 자동매매 시스템")
-    parser.add_argument("--mode", choices=["paper", "simulate", "live"], default="paper")
-    args = parser.parse_args()
-
-    # 로거 초기화
+    # config 먼저 로드
     from src.utils.config import config
+
+    # 명령줄 인자 — --mode 미지정 시 config.yaml의 trading.mode 사용
+    config_mode = config.get("trading.mode", "paper")
+    parser = argparse.ArgumentParser(description="스윙 자동매매 시스템")
+    parser.add_argument("--mode", choices=["paper", "simulate", "live"], default=config_mode)
     from src.utils.logger import setup_logger
 
     setup_logger(log_level=config.get_env("LOG_LEVEL", "INFO"))
