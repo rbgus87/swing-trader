@@ -23,6 +23,8 @@ async def main():
     config_mode = config.get("trading.mode", "paper")
     parser = argparse.ArgumentParser(description="스윙 자동매매 시스템")
     parser.add_argument("--mode", choices=["paper", "simulate", "live"], default=config_mode)
+    args = parser.parse_args()
+
     from src.utils.logger import setup_logger
 
     setup_logger(log_level=config.get_env("LOG_LEVEL", "INFO"))
