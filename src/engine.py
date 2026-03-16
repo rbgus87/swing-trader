@@ -50,11 +50,14 @@ class TradingEngine:
                 "broker.ws_url",
                 "wss://api.kiwoom.com:10000/api/dostk/websocket",
             )
-        else:  # paper
-            base_url = config.get("broker.base_url", "https://api.kiwoom.com")
+        else:  # paper — 모의투자 appkey 사용 시 mock 서버 필요
+            base_url = config.get(
+                "broker.mock_base_url",
+                config.get("broker.base_url", "https://mockapi.kiwoom.com"),
+            )
             ws_url = config.get(
-                "broker.ws_url",
-                "wss://api.kiwoom.com:10000/api/dostk/websocket",
+                "broker.mock_ws_url",
+                "wss://mockapi.kiwoom.com:10000/api/dostk/websocket",
             )
         appkey = config.get_env("KIWOOM_APPKEY", "")
         secretkey = config.get_env("KIWOOM_SECRETKEY", "")
