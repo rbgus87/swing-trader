@@ -5,7 +5,7 @@
 전 과정을 실제 내부 모듈 연동으로 검증한다.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +13,23 @@ import pytest
 from src.models import Position, Tick
 
 
+def _seed_ohlcv(db, code="005930", price=50000):
+    """테스트용 OHLCV 캐시 데이터 생성 (30일+)."""
+    base = datetime.now() - timedelta(days=40)
+    records = []
+    for i in range(35):
+        d = (base + timedelta(days=i)).strftime("%Y-%m-%d")
+        records.append({
+            "date": d, "open": price - 1000, "high": price + 1000,
+            "low": price - 1500, "close": price, "volume": 100000, "amount": 0,
+        })
+    db.cache_ohlcv(code, records)
+
+
+# signals 함수를 mock — E2E 테스트는 엔진 파이프라인 검증이 목적
+@patch("src.strategy.signals.check_entry_signal", return_value=True)
+@patch("src.strategy.signals.calculate_signal_score", return_value=3.0)
+@patch("src.strategy.signals.calculate_indicators", side_effect=lambda df, **kw: df)
 class TestStopLossFlow:
     """손절 E2E 시나리오."""
 
@@ -20,6 +37,9 @@ class TestStopLossFlow:
     async def test_stop_loss_closes_position(
         self,
         mock_market,
+        mock_calc_ind,
+        mock_score,
+        mock_entry,
         trading_engine,
         populated_db,
         mock_telegram,
@@ -67,6 +87,9 @@ class TestStopLossFlow:
     async def test_stop_loss_does_not_trigger_above_stop(
         self,
         mock_market,
+        mock_calc_ind,
+        mock_score,
+        mock_entry,
         trading_engine,
         populated_db,
         mock_telegram,
@@ -97,6 +120,9 @@ class TestStopLossFlow:
     async def test_target_reached_closes_with_profit(
         self,
         mock_market,
+        mock_calc_ind,
+        mock_score,
+        mock_entry,
         trading_engine,
         populated_db,
         mock_telegram,
@@ -135,6 +161,9 @@ class TestStopLossFlow:
     async def test_multiple_positions_independent(
         self,
         mock_market,
+        mock_calc_ind,
+        mock_score,
+        mock_entry,
         trading_engine,
         populated_db,
         mock_telegram,

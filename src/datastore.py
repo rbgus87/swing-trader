@@ -14,7 +14,7 @@ from src.models import Position, TradeRecord
 _POSITION_UPDATABLE_COLUMNS = frozenset({
     "code", "name", "entry_date", "entry_price", "quantity",
     "stop_price", "target_price", "status", "updated_at",
-    "high_since_entry",
+    "high_since_entry", "hold_days",
 })
 
 
@@ -68,6 +68,7 @@ class DataStore:
                 target_price INTEGER,
                 status TEXT DEFAULT 'open',
                 high_since_entry INTEGER DEFAULT 0,
+                hold_days INTEGER DEFAULT 0,
                 updated_at TEXT
             );
 
@@ -120,6 +121,14 @@ class DataStore:
             -- 성능 인덱스: trades(code, executed_at) (get_last_trade, get_trades_by_date 최적화)
             CREATE INDEX IF NOT EXISTS idx_trades_code_executed
                 ON trades(code, executed_at);
+
+            -- 성능 인덱스: daily_performance(date)
+            CREATE INDEX IF NOT EXISTS idx_daily_performance_date
+                ON daily_performance(date);
+
+            -- 성능 인덱스: trades(executed_at) (get_trades_by_date 최적화)
+            CREATE INDEX IF NOT EXISTS idx_trades_executed_at
+                ON trades(executed_at);
             """
         )
         self.conn.commit()

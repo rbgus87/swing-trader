@@ -60,11 +60,56 @@ class AppConfig:
 
         if self._config_path.exists():
             self._load_yaml()
+            self._validate()
 
     def _load_yaml(self) -> None:
         """config.yaml 파일 로드."""
         with open(self._config_path, "r", encoding="utf-8") as f:
             self._data = yaml.safe_load(f) or {}
+
+    def _validate(self) -> None:
+        """설정값 기본 검증 — 누락 시 기본값 적용, 범위 위반 시 보정."""
+        # 필수 숫자 범위 검증 + 기본값
+        _DEFAULTS = {
+            "trading.max_positions": (1, 20, 3),
+            "trading.max_hold_days": (1, 60, 15),
+            "trading.reentry_cooldown_days": (0, 30, 3),
+            "risk.daily_loss_limit": (-0.20, 0.0, -0.03),
+            "risk.max_mdd": (-0.50, 0.0, -0.20),
+            "risk.max_position_ratio": (0.01, 1.0, 0.15),
+            "risk.stop_atr_multiplier": (0.5, 5.0, 1.5),
+            "risk.max_stop_pct": (0.01, 0.30, 0.07),
+            "strategy.target_return": (0.01, 0.50, 0.08),
+        }
+        for key, (min_v, max_v, default) in _DEFAULTS.items():
+            val = self.get(key)
+            if val is None:
+                self._set_nested(key, default)
+            elif isinstance(val, (int, float)):
+                if val < min_v or val > max_v:
+                    self._set_nested(key, default)
+
+        # 스케줄 시간 형식 검증 (HH:MM)
+        import re
+        for time_key in [
+            "schedule.screening_time",
+            "schedule.daily_report_time",
+            "schedule.reconnect_time",
+        ]:
+            val = self.get(time_key)
+            if val and not re.match(r"^\d{2}:\d{2}$", str(val)):
+                self._set_nested(time_key, "08:30" if "screening" in time_key
+                                 else "16:00" if "report" in time_key else "08:45")
+
+    def _set_nested(self, key: str, value) -> None:
+        """dot notation 키에 값 설정."""
+        keys = key.split(".")
+        d = self._data
+        for k in keys[:-1]:
+            if k not in d or not isinstance(d[k], dict):
+                d[k] = {}
+            d = d[k]
+        d[keys[-1]] = value
 
     def get(self, key: str, default=None):
         """dot notation으로 nested key 접근.

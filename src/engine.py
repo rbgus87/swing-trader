@@ -77,6 +77,11 @@ class TradingEngine:
         self._initial_capital = config.get("backtest.initial_capital", 1_000_000)
         self._positions_cache: list[dict] | None = None  # 포지션 메모리 캐시
         self._sell_retry_counts: dict[int, int] = {}  # 매도 재시도 카운터
+        self._latest_prices: dict[str, int] = {}  # 종목별 최신 가격 캐시
+        self._atr_cache: dict[str, float] = {}  # 종목별 ATR 캐시
+
+        # MDD 초기 자본 설정
+        self._risk_mgr.set_initial_capital(float(self._initial_capital))
 
         # 스케줄러
         self._scheduler = AsyncIOScheduler()
@@ -139,8 +144,9 @@ class TradingEngine:
 
     # ── 장전 ──
 
-    async def _pre_market_screening(self):
-        """장전 스크리닝 (08:30)."""
+    async def _pre_market_screening(self, _retry: int = 0):
+        """장전 스크리닝 (08:30). 실패 시 최대 3회 재시도."""
+        max_retries = 3
         try:
             today = datetime.now().strftime("%Y%m%d")
             # Screener는 pykrx 기반 sync — to_thread로 래핑
@@ -154,10 +160,17 @@ class TradingEngine:
                 )
             logger.info(f"스크리닝 완료: {len(self._candidates)}종목")
         except Exception as e:
-            logger.error(f"스크리닝 실패: {e}")
-            self._telegram.send_system_error(
-                str(e), "screener.run_daily_screening"
-            )
+            logger.error(f"스크리닝 실패 (시도 {_retry + 1}/{max_retries + 1}): {e}")
+            if _retry < max_retries:
+                delay = 60 * (_retry + 1)  # 1분, 2분, 3분 후 재시도
+                logger.info(f"스크리닝 재시도 예약: {delay}초 후")
+                await asyncio.sleep(delay)
+                await self._pre_market_screening(_retry=_retry + 1)
+            else:
+                self._telegram.send_system_error(
+                    str(e), "screener.run_daily_screening",
+                    f"최대 재시도({max_retries}회) 초과"
+                )
 
     # ── 장중 실시간 ──
 
@@ -167,6 +180,9 @@ class TradingEngine:
             return
         if not is_market_open():
             return
+
+        # 최신 가격 캐시 갱신
+        self._latest_prices[tick.code] = tick.price
 
         # 1. 보유 종목 손절/트레일링/목표가 체크
         await self._check_exit_conditions(tick)
@@ -179,7 +195,7 @@ class TradingEngine:
             await self._check_entry_conditions(tick)
 
     async def _check_exit_conditions(self, tick: Tick):
-        """보유 종목 청산 조건 체크."""
+        """보유 종목 청산 조건 체크 — signals.check_exit_signal 통합."""
         positions = self._get_cached_positions()
         for pos_dict in positions:
             if pos_dict["code"] != tick.code:
@@ -187,35 +203,96 @@ class TradingEngine:
 
             pos = self._dict_to_position(pos_dict)
 
-            # 트레일링스탑 업데이트
-            # (ATR은 캐시된 값 사용, 여기서는 간이 계산)
-            new_stop = self._stop_mgr.update_trailing_stop(
-                pos, tick.price, pos.entry_price * 0.02
-            )
+            # 트레일링스탑 업데이트 (OHLCV 캐시 기반 ATR)
+            atr = self._get_atr(tick.code, pos.entry_price)
+            new_stop = self._stop_mgr.update_trailing_stop(pos, tick.price, atr)
             if new_stop != pos.stop_price:
                 self._ds.update_position(pos.id, stop_price=new_stop)
+                pos.stop_price = new_stop
 
-            # 청산 체크 (간이 — 실제로는 latest 일봉 필요)
-            if self._stop_mgr.is_stopped(pos, tick.price):
-                await self._execute_sell(pos, tick.price, ExitReason.STOP_LOSS)
-            elif tick.price >= pos.target_price:
-                await self._execute_sell(pos, tick.price, ExitReason.TARGET_REACHED)
+            # OHLCV 기반 종합 청산 판단
+            exit_reason = self._evaluate_exit(pos, tick.price)
+            if exit_reason:
+                await self._execute_sell(pos, tick.price, exit_reason)
+
+    def _evaluate_exit(self, pos: Position, current_price: int) -> ExitReason | None:
+        """OHLCV 기반 종합 청산 판단 — signals.check_exit_signal 활용."""
+        from src.strategy.signals import check_exit_signal
+        import pandas as pd
+
+        max_hold = config.get("trading.max_hold_days", 15)
+
+        # OHLCV 캐시에서 최근 일봉 조회
+        try:
+            from datetime import timedelta
+            end = datetime.now().strftime("%Y-%m-%d")
+            start = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+            ohlcv = self._ds.get_cached_ohlcv(pos.code, start, end)
+            if ohlcv and len(ohlcv) >= 1:
+                latest_row = ohlcv[-1]
+                latest = pd.Series(latest_row)
+                return check_exit_signal(
+                    pos, current_price, latest, max_hold_days=max_hold
+                )
+        except Exception:
+            pass
+
+        # OHLCV 없으면 기본 손절/목표가만 체크
+        if self._stop_mgr.is_stopped(pos, current_price):
+            return ExitReason.STOP_LOSS
+        if pos.target_price > 0 and current_price >= pos.target_price:
+            return ExitReason.TARGET_REACHED
+        if pos.hold_days >= max_hold:
+            return ExitReason.MAX_HOLD
+        return None
 
     async def _check_entry_conditions(self, tick: Tick):
-        """후보 종목 진입 조건 체크 — 간이 버전."""
-        # 리스크 사전 체크
+        """후보 종목 진입 조건 체크 — signals.py 통합."""
+        from src.strategy.signals import (
+            calculate_indicators,
+            calculate_signal_score,
+            check_entry_signal,
+        )
+        import pandas as pd
+
+        # 1. OHLCV 캐시에서 일봉 데이터 조회 + 기술적 지표 계산
+        try:
+            from datetime import timedelta
+            end = datetime.now().strftime("%Y-%m-%d")
+            start = (datetime.now() - timedelta(days=130)).strftime("%Y-%m-%d")
+            ohlcv = self._ds.get_cached_ohlcv(tick.code, start, end)
+            if not ohlcv or len(ohlcv) < 30:
+                return  # 데이터 부족
+
+            df = pd.DataFrame(ohlcv)
+            df = calculate_indicators(df)
+
+            # 2. 매수 신호 체크 (60분봉 미사용)
+            if not check_entry_signal(df, use_60m=False):
+                return
+
+            # 3. 신호 강도 점수 계산
+            score = calculate_signal_score(df)
+            min_score = config.get("strategy.min_signal_score", 1.5)
+            if score < min_score:
+                return
+        except Exception:
+            return  # 지표 계산 실패 시 진입 안 함
+
+        # 4. 리스크 사전 체크
+        name = self._get_stock_name(tick.code)
         signal = Signal(
             code=tick.code,
-            name="",
+            name=name,
             signal_type="buy",
             price=tick.price,
-            score=0.0,
+            score=score,
         )
         risk_result = self._risk_mgr.pre_check(signal)
         if not risk_result.approved:
             return
 
-        # 포지션 사이징
+        # 5. 포지션 사이징
         capital = self._get_available_capital()
         invest_amount = self._sizer.calculate(
             capital=capital, win_rate=0.5, avg_win=0.08, avg_loss=0.04
@@ -227,7 +304,7 @@ class TradingEngine:
         if qty <= 0:
             return
 
-        # 주문 실행  # RISK_CHECK_REQUIRED
+        # 6. 주문 실행  # RISK_CHECK_REQUIRED
         if self.mode == "live":
             from src.broker.tr_codes import ORDER_BUY, PRICE_MARKET
 
@@ -322,6 +399,44 @@ class TradingEngine:
             f"매도 {position.code} @ {price:,} ({reason.value}), PnL: {pnl:+,}",
         )
 
+    def _get_atr(self, code: str, fallback_price: int = 0) -> float:
+        """종목의 ATR 조회 — OHLCV 캐시 우선, 없으면 가격 기반 추정.
+
+        Args:
+            code: 종목코드.
+            fallback_price: OHLCV 없을 때 기준 가격.
+
+        Returns:
+            ATR 값 (float).
+        """
+        if code in self._atr_cache:
+            return self._atr_cache[code]
+
+        # OHLCV 캐시에서 최근 20일 데이터로 ATR 계산
+        try:
+            from datetime import timedelta
+            end = datetime.now().strftime("%Y-%m-%d")
+            start = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
+            ohlcv = self._ds.get_cached_ohlcv(code, start, end)
+
+            if len(ohlcv) >= 14:
+                trs = []
+                for i in range(1, len(ohlcv)):
+                    high = ohlcv[i]["high"]
+                    low = ohlcv[i]["low"]
+                    prev_close = ohlcv[i - 1]["close"]
+                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                    trs.append(tr)
+                atr = sum(trs[-14:]) / 14
+                self._atr_cache[code] = atr
+                return atr
+        except Exception:
+            pass
+
+        # 폴백: 가격의 2%
+        atr = fallback_price * 0.02 if fallback_price > 0 else 0.0
+        return atr
+
     def _get_stock_name(self, code: str) -> str:
         """종목명 조회 (pykrx 캐시)."""
         try:
@@ -333,8 +448,8 @@ class TradingEngine:
 
     async def _record_buy(self, tick: Tick, qty: int):
         """매수 기록."""
-        atr_estimate = tick.price * 0.02  # 간이 ATR (향후 OHLCV 캐시 기반으로 개선)
-        stop_price = self._stop_mgr.get_initial_stop(tick.price, atr_estimate)
+        atr = self._get_atr(tick.code, tick.price)
+        stop_price = self._stop_mgr.get_initial_stop(tick.price, atr)
         target_return = config.get("strategy.target_return", 0.08)
         target_price = int(tick.price * (1 + target_return))
         name = self._get_stock_name(tick.code)
@@ -391,12 +506,12 @@ class TradingEngine:
 
         unrealized_pnl = 0
         for pos_dict in positions:
-            if pos_dict["code"] == tick.code:
-                pnl = (tick.price - pos_dict["entry_price"]) * pos_dict["quantity"]
-            else:
-                # 다른 종목은 매입가 기준 (실시간 가격 없으므로)
-                pnl = 0
-            unrealized_pnl += pnl
+            code = pos_dict["code"]
+            entry_price = pos_dict["entry_price"]
+            qty = pos_dict["quantity"]
+            # 최신 가격 캐시에서 조회 — 없으면 매입가 사용 (변동 0)
+            current = self._latest_prices.get(code, entry_price)
+            unrealized_pnl += (current - entry_price) * qty
 
         # 당일 실현 손익
         today = datetime.now().strftime("%Y-%m-%d")
@@ -407,6 +522,10 @@ class TradingEngine:
         pnl_pct = total_pnl / self._initial_capital if self._initial_capital > 0 else 0.0
 
         self._risk_mgr.update_daily_pnl(pnl_pct)
+
+        # MDD 업데이트
+        current_capital = self._initial_capital + total_pnl
+        self._risk_mgr.update_mdd(float(current_capital))
 
         # 일일 한도 체크
         if pnl_pct <= self._risk_mgr._daily_loss_limit:
@@ -430,6 +549,15 @@ class TradingEngine:
 
     def _dict_to_position(self, d: dict) -> Position:
         """dict -> Position 변환."""
+        # hold_days 계산: entry_date 기준 경과일
+        hold_days = d.get("hold_days", 0)
+        if hold_days == 0 and d.get("entry_date"):
+            try:
+                entry = datetime.strptime(d["entry_date"], "%Y-%m-%d").date()
+                hold_days = (datetime.now().date() - entry).days
+            except ValueError:
+                hold_days = 0
+
         return Position(
             id=d["id"],
             code=d["code"],
@@ -441,6 +569,7 @@ class TradingEngine:
             target_price=d.get("target_price", 0),
             status=d.get("status", "open"),
             high_since_entry=d.get("high_since_entry", d["entry_price"]),
+            hold_days=hold_days,
             updated_at=d.get("updated_at", ""),
         )
 
@@ -496,6 +625,19 @@ class TradingEngine:
         self._risk_mgr.reset_daily()
         self._invalidate_positions_cache()
         self._sell_retry_counts.clear()
+        self._atr_cache.clear()  # ATR 캐시 리프레시
+
+        # 보유 포지션 hold_days 갱신
+        positions = self._ds.get_open_positions()
+        today = datetime.now().date()
+        for pos in positions:
+            try:
+                entry = datetime.strptime(pos["entry_date"], "%Y-%m-%d").date()
+                hold_days = (today - entry).days
+                self._ds.update_position(pos["id"], hold_days=hold_days)
+            except (ValueError, KeyError):
+                pass
+
         logger.info("일일 리셋 완료")
 
     async def _ensure_connection(self):

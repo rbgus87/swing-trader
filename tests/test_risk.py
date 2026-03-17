@@ -378,7 +378,9 @@ class TestRiskManager:
     def test_pre_check_mdd_exceeded(self, mock_market, tmp_db, sample_config):
         """MDD 초과 → rejected."""
         rm = self._make_risk_manager(tmp_db, sample_config)
-        rm.update_mdd(-0.20)  # exactly at limit
+        # 자본 최고점 설정 후 20% 하락 시뮬레이션
+        rm.set_initial_capital(1_000_000)
+        rm.update_mdd(800_000)  # -20% drawdown → current_mdd = -0.20
         result = rm.pre_check(self._make_signal())
         assert result.approved is False
         assert "최대 낙폭" in result.reason
@@ -416,7 +418,10 @@ class TestRiskManager:
         assert rm.daily_pnl_pct == -0.015
 
     def test_update_mdd(self, tmp_db, sample_config):
-        """update_mdd 값 저장 확인."""
+        """update_mdd 자본 기반 MDD 계산."""
         rm = self._make_risk_manager(tmp_db, sample_config)
-        rm.update_mdd(-0.12)
-        assert rm.current_mdd == -0.12
+        rm.set_initial_capital(1_000_000)
+        rm.update_mdd(1_100_000)  # 신고점 갱신
+        assert rm.current_mdd == 0.0  # 아직 하락 없음
+        rm.update_mdd(968_000)  # 968k / 1100k = -12%
+        assert round(rm.current_mdd, 2) == -0.12

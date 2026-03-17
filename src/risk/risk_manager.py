@@ -28,6 +28,7 @@ class RiskManager:
 
         self.daily_pnl_pct: float = 0.0
         self.current_mdd: float = 0.0
+        self._peak_capital: float = 0.0  # MDD 계산용 자본 최고점
         self._halted: bool = False
 
     def pre_check(self, signal: Signal) -> RiskCheckResult:
@@ -70,7 +71,10 @@ class RiskManager:
                 if days_since < self._reentry_cooldown:
                     return RiskCheckResult(approved=False, reason="재진입 쿨다운 중")
             except ValueError:
-                pass  # 날짜 파싱 실패 시 쿨다운 체크 건너뜀
+                # 날짜 파싱 실패 — 안전하게 쿨다운 적용 (매수 차단)
+                return RiskCheckResult(
+                    approved=False, reason="재진입 쿨다운 체크 실패 (날짜 파싱 오류)"
+                )
 
         # 5. 장 시간 체크
         if not is_market_open():
@@ -99,9 +103,23 @@ class RiskManager:
         """일일 손익률 업데이트."""
         self.daily_pnl_pct = pnl_pct
 
-    def update_mdd(self, mdd: float) -> None:
-        """MDD 업데이트."""
-        self.current_mdd = mdd
+    def update_mdd(self, current_capital: float) -> None:
+        """MDD 업데이트 — 현재 자본 기준으로 최대 낙폭 계산.
+
+        Args:
+            current_capital: 현재 총 자본 (원).
+        """
+        if current_capital > self._peak_capital:
+            self._peak_capital = current_capital
+        if self._peak_capital > 0:
+            drawdown = (current_capital - self._peak_capital) / self._peak_capital
+            if drawdown < self.current_mdd:
+                self.current_mdd = drawdown
+
+    def set_initial_capital(self, capital: float) -> None:
+        """초기 자본 설정 — MDD 계산 기준점."""
+        if self._peak_capital <= 0:
+            self._peak_capital = capital
 
     def reset_daily(self) -> None:
         """일일 상태 초기화 (장 시작 시)."""

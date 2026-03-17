@@ -126,8 +126,8 @@ class KiwoomWebSocketClient:
             except Exception as e:
                 logger.error(f"주문 체결 콜백 에러: {e}")
 
-    async def _reconnect(self, max_retries: int = 5, delay: float = 5.0):
-        """자동 재연결 (최대 5회, 5초 간격)."""
+    async def _reconnect(self, max_retries: int = 5, base_delay: float = 2.0):
+        """자동 재연결 (지수 백오프, 최대 5회)."""
         for attempt in range(1, max_retries + 1):
             try:
                 logger.warning(f"WebSocket 재연결 시도 ({attempt}/{max_retries})")
@@ -145,6 +145,9 @@ class KiwoomWebSocketClient:
             except Exception as e:
                 logger.error(f"재연결 실패: {e}")
                 if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))  # 2, 4, 8, 16초
+                    delay = min(delay, 60)  # 최대 60초
+                    logger.info(f"재연결 대기: {delay:.0f}초")
                     await asyncio.sleep(delay)
         logger.critical("WebSocket 최대 재연결 횟수 초과")
         self._running = False

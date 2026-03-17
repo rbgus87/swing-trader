@@ -86,6 +86,17 @@ class OrderManager:
             )
 
         side = "buy" if order_type == ORDER_BUY else "sell"
+
+        # 중복 주문 감지: 동일 종목+방향의 미체결 주문이 있으면 차단
+        for pending in self._pending_orders.values():
+            if pending.code == code and pending.side == side:
+                logger.warning("중복 주문 차단: code={}, side={}", code, side)
+                return OrderResult(
+                    success=False,
+                    order_no="",
+                    message=f"중복 주문 차단: {code} ({side}) 미체결 주문 존재",
+                )
+
         logger.info(
             "주문 실행 요청: code={}, side={}, qty={}, price={}, hoga={}",
             code,

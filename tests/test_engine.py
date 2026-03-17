@@ -283,7 +283,12 @@ class TestOnPriceUpdate:
         mock_deps["ds"].record_trade.assert_called()
 
     @patch("src.engine.is_market_open", return_value=True)
-    async def test_entry_check_for_candidate(self, mock_market, engine, mock_deps):
+    @patch("src.strategy.signals.check_entry_signal", return_value=True)
+    @patch("src.strategy.signals.calculate_signal_score", return_value=3.0)
+    @patch("src.strategy.signals.calculate_indicators", side_effect=lambda df, **kw: df)
+    async def test_entry_check_for_candidate(
+        self, mock_calc_ind, mock_score, mock_entry, mock_market, engine, mock_deps
+    ):
         """후보 종목에 대해 진입 조건 체크."""
         engine._running = True
         engine._candidates = ["005930"]
@@ -291,6 +296,12 @@ class TestOnPriceUpdate:
             approved=True
         )
         mock_deps["config"].get.return_value = 10_000_000
+        # OHLCV 캐시 데이터 반환하도록 mock
+        mock_deps["ds"].get_cached_ohlcv.return_value = [
+            {"date": f"2026-03-{i:02d}", "open": 9900, "high": 10200,
+             "low": 9800, "close": 10000, "volume": 100000}
+            for i in range(1, 32)
+        ]
 
         tick = _make_tick(code="005930", price=10000)
         await engine.on_price_update(tick)
