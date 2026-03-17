@@ -108,20 +108,28 @@ class KiwoomRestClient:
         headers["cont-yn"] = "N"
         headers["next-key"] = ""
 
-        try:
-            if method.upper() == "GET":
-                response = await self._client.get(endpoint, headers=headers, params=params)
-            else:
-                response = await self._client.post(endpoint, headers=headers, json=data)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if method.upper() == "GET":
+                    response = await self._client.get(endpoint, headers=headers, params=params)
+                else:
+                    response = await self._client.post(endpoint, headers=headers, json=data)
 
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"API 요청 실패: {endpoint} ({e.response.status_code})")
-            raise
-        except httpx.RequestError as e:
-            logger.error(f"API 연결 실패: {endpoint} ({e})")
-            raise
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"API 요청 실패: {endpoint} ({e.response.status_code})")
+                if e.response.status_code >= 500 and attempt < max_retries - 1:
+                    await asyncio.sleep(1 * (attempt + 1))
+                    continue
+                raise
+            except httpx.RequestError as e:
+                logger.error(f"API 연결 실패: {endpoint} ({e})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1 * (attempt + 1))
+                    continue
+                raise
 
     async def get_daily_ohlcv(self, code: str, start_date: str,
                                end_date: str) -> list[dict]:

@@ -22,11 +22,12 @@ from src.strategy.signals import (
 class Screener:
     """종목 스크리닝 — 장 시작 전(08:30) 실행."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, datastore=None):
         """스크리너 초기화.
 
         Args:
             config: 전체 설정 딕셔너리.
+            datastore: DataStore 인스턴스 (OHLCV 캐싱용, 선택).
         """
         screening = config.get("screening", {})
         self.min_daily_amount = screening.get("min_daily_amount", 5_000_000_000)
@@ -37,6 +38,7 @@ class Screener:
         self.strategy_config = config.get("strategy", {})
         self.watchlist = config.get("watchlist", [])
         self.strategy_type = self.strategy_config.get("type", "golden_cross")
+        self._ds = datastore
 
     def get_all_codes(self, market: str | None = None) -> list[str]:
         """전종목 코드 수집.
@@ -95,12 +97,10 @@ class Screener:
 
         for code in codes:
             try:
-                # 일봉 OHLCV 수집
-                df = stock.get_market_ohlcv_by_date(start_date, date, code)
+                # 일봉 OHLCV 수집 (캐시 우선)
+                df = self._get_ohlcv(code, start_date, date)
                 if df.empty or len(df) < 130:
                     continue
-
-                df = map_columns(df, OHLCV_MAP)
 
                 # 유동성 필터
                 if not self._apply_liquidity_filter(code, df):
@@ -162,6 +162,58 @@ class Screener:
 
         logger.info(f"스크리닝 완료: {len(candidates)}종목 신호 발생, 상위 {len(result)}종목 선정")
         return result
+
+    def _get_ohlcv(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """OHLCV 조회 — DataStore 캐시 우선, 없으면 pykrx 조회 후 캐시 저장.
+
+        Args:
+            code: 종목 코드.
+            start_date: 시작일 "YYYYMMDD".
+            end_date: 종료일 "YYYYMMDD".
+
+        Returns:
+            영문 컬럼명의 OHLCV DataFrame.
+        """
+        # 캐시에서 조회 시도
+        if self._ds is not None:
+            start_fmt = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+            end_fmt = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
+            cached = self._ds.get_cached_ohlcv(code, start_fmt, end_fmt)
+            if len(cached) >= 130:
+                df = pd.DataFrame(cached)
+                df = df.rename(columns={
+                    "open": "open", "high": "high", "low": "low",
+                    "close": "close", "volume": "volume", "amount": "amount",
+                })
+                return df
+
+        # pykrx에서 조회
+        df = stock.get_market_ohlcv_by_date(start_date, end_date, code)
+        if df.empty:
+            return df
+
+        df = map_columns(df, OHLCV_MAP)
+
+        # 캐시에 저장
+        if self._ds is not None and not df.empty:
+            records = []
+            for idx, row in df.iterrows():
+                date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
+                records.append({
+                    "date": date_str,
+                    "open": int(row.get("open", 0)),
+                    "high": int(row.get("high", 0)),
+                    "low": int(row.get("low", 0)),
+                    "close": int(row.get("close", 0)),
+                    "volume": int(row.get("volume", 0)),
+                    "amount": int(row.get("amount", 0)) if "amount" in row else 0,
+                })
+            try:
+                self._ds.cache_ohlcv(code, records)
+            except Exception as e:
+                logger.warning(f"OHLCV 캐시 저장 실패 ({code}): {e}")
+
+        return df
 
     def _apply_liquidity_filter(self, code: str, df: pd.DataFrame) -> bool:
         """유동성 필터 적용.

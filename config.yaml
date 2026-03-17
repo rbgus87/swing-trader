@@ -28,8 +28,8 @@ watchlist:
   - "017670"   # SK텔레콤
 
 # --- 매매 기본 설정 ---
+# 모드 제어는 .env의 IS_PAPER_TRADING으로 관리 (True=모의, False=실거래)
 trading:
-  mode: paper                       # paper: 모의매매 | live: 실거래 (실거래 시 텔레그램 필수)
   universe: kospi_kosdaq            # 매매 대상 시장 (kospi | kosdaq | kospi_kosdaq)
   max_positions: 3                  # 동시에 보유할 수 있는 최대 종목 수 (자본금에 따라 조절)
   reentry_cooldown_days: 3          # 같은 종목을 매도 후 다시 매수하기까지 대기 영업일
@@ -105,12 +105,9 @@ broker:
   # 실거래 서버
   base_url: "https://api.kiwoom.com"                              # REST API 기본 URL
   ws_url: "wss://api.kiwoom.com:10000/api/dostk/websocket"        # WebSocket URL (실시간 시세)
-  # 모의투자 서버 (simulate 모드에서 사용)
+  # 모의투자 서버 (IS_PAPER_TRADING=True 시 자동 사용)
   mock_base_url: "https://mockapi.kiwoom.com"
   mock_ws_url: "wss://mockapi.kiwoom.com:10000/api/dostk/websocket"
-  environment: paper                # paper | simulate | live
-  # environment: simulate                # paper | simulate | live
-  # environment: live                # paper | simulate | live
 
 # --- 스케줄러 (자동 작업 시간) ---
 schedule:

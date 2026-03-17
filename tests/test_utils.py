@@ -61,6 +61,27 @@ class TestAppConfig:
         assert cfg.get_env("TEST_VAR") == "hello"
         assert cfg.get_env("MISSING_VAR", "fallback") == "fallback"
 
+    def test_is_paper_true(self, tmp_config_file, monkeypatch):
+        """IS_PAPER_TRADING=True이면 is_paper=True, mode='paper'."""
+        monkeypatch.setenv("IS_PAPER_TRADING", "True")
+        cfg = AppConfig(config_path=tmp_config_file)
+        assert cfg.is_paper is True
+        assert cfg.mode == "paper"
+
+    def test_is_paper_false(self, tmp_config_file, monkeypatch):
+        """IS_PAPER_TRADING=False이면 is_paper=False, mode='live'."""
+        monkeypatch.setenv("IS_PAPER_TRADING", "False")
+        cfg = AppConfig(config_path=tmp_config_file)
+        assert cfg.is_paper is False
+        assert cfg.mode == "live"
+
+    def test_is_paper_default(self, tmp_config_file, monkeypatch):
+        """IS_PAPER_TRADING 미설정 시 기본값 True (안전)."""
+        monkeypatch.delenv("IS_PAPER_TRADING", raising=False)
+        cfg = AppConfig(config_path=tmp_config_file)
+        assert cfg.is_paper is True
+        assert cfg.mode == "paper"
+
 
 class TestMarketCalendar:
     def test_weekday_is_trading_day(self):

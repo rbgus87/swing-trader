@@ -3,7 +3,7 @@
 ## 프로젝트 정보
 
 ```yaml
-project_name: "realtime-trader"
+project_name: "swing-trader"
 description: "KOSPI/KOSDAQ 국내 주식 스윙매매 자동화 시스템 (키움 OpenAPI+ 기반)"
 version: "0.1.0"
 project_type: "fullstack"

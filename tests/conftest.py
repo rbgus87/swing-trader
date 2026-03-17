@@ -240,6 +240,8 @@ def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
     ):
         # config mock
         mock_config.get_env.return_value = ""
+        mock_config.mode = "paper"
+        mock_config.is_paper = True
         mock_config.data = sample_config
 
         def config_get(key, default=None):

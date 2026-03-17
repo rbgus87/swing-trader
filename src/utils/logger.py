@@ -10,6 +10,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from src.utils.config import _get_app_dir
+
 
 # 커스텀 레벨: 매매 실행 전용
 TRADE_LEVEL = "TRADE"
@@ -29,7 +31,11 @@ def setup_logger(
         rotation: 로그 파일 교체 주기.
         retention: 로그 파일 보존 기간.
     """
-    log_path = Path(log_dir)
+    # exe 환경: 실행 파일 기준 디렉토리에 로그 생성
+    if Path(log_dir).is_absolute():
+        log_path = Path(log_dir)
+    else:
+        log_path = _get_app_dir() / log_dir
     log_path.mkdir(parents=True, exist_ok=True)
 
     # 기존 핸들러 제거

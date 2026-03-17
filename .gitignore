@@ -38,6 +38,8 @@ htmlcov/
 .coverage
 coverage.xml
 
-# Distribution
+# Distribution / Build
 *.tar.gz
 *.whl
+*.spec
+*.exe

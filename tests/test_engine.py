@@ -51,14 +51,23 @@ def mock_deps():
     ):
         # config mock
         mock_config.get_env.return_value = ""
-        mock_config.get.return_value = None
+        mock_config.mode = "paper"
+        mock_config.is_paper = True
         mock_config.data = {}
+
+        def config_get_side_effect(key, default=None):
+            """테스트용 config.get — 기본값 반환."""
+            return default
+
+        mock_config.get.side_effect = config_get_side_effect
 
         # DataStore mock
         ds_instance = MockDS.return_value
         ds_instance.get_open_positions.return_value = []
         ds_instance.insert_position.return_value = 1
         ds_instance.record_trade.return_value = 1
+        ds_instance.get_trades_by_date.return_value = []
+        ds_instance.save_daily_performance.return_value = None
 
         # KiwoomAPI mock (async)
         kiwoom_instance = MockKiwoom.return_value
@@ -72,6 +81,8 @@ def mock_deps():
         risk_instance = MockRiskMgr.return_value
         risk_instance.is_halted = False
         risk_instance.daily_pnl_pct = 0.0
+        risk_instance.current_mdd = 0.0
+        risk_instance._daily_loss_limit = -0.03
 
         # StopManager mock
         stop_instance = MockStopMgr.return_value
@@ -129,6 +140,7 @@ def engine(mock_deps):
     from src.engine import TradingEngine
 
     eng = TradingEngine(mode="paper")
+    eng._positions_cache = None  # 매 테스트마다 캐시 리셋
     return eng
 
 
@@ -138,15 +150,7 @@ def engine_live(mock_deps):
     from src.engine import TradingEngine
 
     eng = TradingEngine(mode="live")
-    return eng
-
-
-@pytest.fixture
-def engine_simulate(mock_deps):
-    """Mock 의존성으로 초기화된 TradingEngine (simulate 모드)."""
-    from src.engine import TradingEngine
-
-    eng = TradingEngine(mode="simulate")
+    eng._positions_cache = None
     return eng
 
 
@@ -197,11 +201,13 @@ class TestEngineCreation:
         """live 모드로 정상 생성."""
         assert engine_live.mode == "live"
 
-    async def test_create_simulate_mode(self, engine_simulate, mock_deps):
-        """simulate 모드로 정상 생성."""
-        assert engine_simulate.mode == "simulate"
-        mock_deps["ds"].connect.assert_called()
-        mock_deps["ds"].create_tables.assert_called()
+    async def test_default_mode_from_config(self, mock_deps):
+        """mode 미지정 시 config.mode 사용."""
+        from src.engine import TradingEngine
+
+        mock_deps["config"].mode = "paper"
+        eng = TradingEngine()
+        assert eng.mode == "paper"
 
 
 # ── on_price_update 테스트 ──
@@ -446,26 +452,6 @@ class TestPaperVsLive:
         )
 
         await engine_live._execute_sell(
-            pos, price=10800, reason=ExitReason.TARGET_REACHED
-        )
-
-        mock_deps["order_mgr"].execute_order.assert_called_once()
-
-    async def test_simulate_mode_calls_order_on_sell(self, engine_simulate, mock_deps):
-        """simulate 모드에서 주문 호출 (매도) — mock 서버로 전송."""
-        pos = Position(
-            id=1,
-            code="005930",
-            name="삼성전자",
-            entry_date="2026-03-10",
-            entry_price=10000,
-            quantity=10,
-            stop_price=9300,
-            target_price=10800,
-            high_since_entry=10000,
-        )
-
-        await engine_simulate._execute_sell(
             pos, price=10800, reason=ExitReason.TARGET_REACHED
         )
 

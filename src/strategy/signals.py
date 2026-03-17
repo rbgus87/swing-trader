@@ -4,7 +4,22 @@ pandas-ta 라이브러리를 사용하여 기술적 지표를 계산하고,
 스윙 매매를 위한 AND(매수) / OR(매도) 조건 기반 신호를 생성.
 """
 
+import sys
+import types
+
 import pandas as pd
+
+# pandas_ta가 numba를 optional import하지만, PyInstaller exe에서는
+# numba가 번들되지 않아 ImportError 발생. 더미 모듈로 우회.
+if "numba" not in sys.modules:
+    _noop_decorator = lambda *a, **kw: (lambda f: f)
+    numba_mock = types.ModuleType("numba")
+    numba_mock.jit = _noop_decorator
+    numba_mock.njit = _noop_decorator
+    numba_mock.vectorize = _noop_decorator
+    numba_mock.prange = range
+    sys.modules["numba"] = numba_mock
+
 import pandas_ta as ta
 
 from src.models import ExitReason, Position

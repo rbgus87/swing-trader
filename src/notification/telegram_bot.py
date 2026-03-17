@@ -34,30 +34,33 @@ class TelegramBot:
         self._base = f"https://api.telegram.org/bot{self._token}"
         self._cooldowns: dict[str, datetime] = {}
 
-    def send(self, message: str, parse_mode: str = "HTML") -> bool:
+    def send(self, message: str, parse_mode: str = "HTML", retries: int = 1) -> bool:
         """메시지 전송. timeout=5초.
 
         Args:
             message: 전송할 메시지 텍스트.
             parse_mode: 파싱 모드. 기본값 "HTML".
+            retries: 재시도 횟수 (기본 1=재시도 없음, 3=2회 재시도).
 
         Returns:
             전송 성공 여부.
         """
-        try:
-            resp = requests.post(
-                f"{self._base}/sendMessage",
-                json={
-                    "chat_id": self._chat_id,
-                    "text": message,
-                    "parse_mode": parse_mode,
-                },
-                timeout=5,
-            )
-            return resp.status_code == 200
-        except Exception as e:
-            logger.error(f"텔레그램 전송 실패: {e}")
-            return False
+        for attempt in range(retries):
+            try:
+                resp = requests.post(
+                    f"{self._base}/sendMessage",
+                    json={
+                        "chat_id": self._chat_id,
+                        "text": message,
+                        "parse_mode": parse_mode,
+                    },
+                    timeout=5,
+                )
+                if resp.status_code == 200:
+                    return True
+            except Exception as e:
+                logger.error(f"텔레그램 전송 실패 ({attempt + 1}/{retries}): {e}")
+        return False
 
     def send_with_cooldown(self, key: str, message: str, cooldown_sec: int) -> bool:
         """쿨다운 적용 메시지 전송.
@@ -80,7 +83,47 @@ class TelegramBot:
         self._cooldowns[key] = now
         return self.send(message)
 
-    # ── 8종 메시지 템플릿 ──
+    # ── 10종 메시지 템플릿 ──
+
+    def send_startup(self, mode: str, version: str = "0.1.0") -> bool:
+        """서비스 시작 알림.
+
+        Args:
+            mode: 실행 모드 (paper/simulate/live).
+            version: 시스템 버전.
+
+        Returns:
+            전송 성공 여부.
+        """
+        mode_label = {"paper": "모의투자", "live": "실거래"}
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msg = (
+            f"🟢 <b>시스템 시작</b>\n"
+            f"모드: {mode_label.get(mode, mode)}\n"
+            f"버전: v{version}\n"
+            f"시각: {now}"
+        )
+        return self.send(msg)
+
+    def send_shutdown(self, mode: str, reason: str = "정상 종료") -> bool:
+        """서비스 종료 알림.
+
+        Args:
+            mode: 실행 모드 (paper/simulate/live).
+            reason: 종료 사유.
+
+        Returns:
+            전송 성공 여부.
+        """
+        mode_label = {"paper": "모의투자", "live": "실거래"}
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msg = (
+            f"🔴 <b>시스템 종료</b>\n"
+            f"모드: {mode_label.get(mode, mode)}\n"
+            f"사유: {reason}\n"
+            f"시각: {now}"
+        )
+        return self.send(msg)
 
     def send_signal_alert(
         self,
@@ -283,7 +326,7 @@ class TelegramBot:
             f"당일 신규 주문 중단됨\n"
             f"내일 09:00 자동 재개"
         )
-        return self.send(msg)  # 긴급 알림에는 쿨다운 없음
+        return self.send(msg, retries=3)  # 긴급 알림 — 재시도 3회
 
     def send_daily_report(
         self,
@@ -355,4 +398,4 @@ class TelegramBot:
         )
         if retry_info:
             msg += f"\n\n{retry_info}"
-        return self.send(msg)  # 시스템 오류에는 쿨다운 없음
+        return self.send(msg, retries=3)  # 시스템 오류 — 재시도 3회

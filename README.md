@@ -1,4 +1,4 @@
-# realtime-trader
+# swing-trader
 
 KOSPI/KOSDAQ 국내 주식 스윙매매 자동화 시스템. 키움증권 OpenAPI+를 통해 실시간 시세 수신, MACD-RSI 기반 매매 신호 생성, 자동 주문 실행까지 전 과정을 자동화합니다.
 
@@ -65,8 +65,8 @@ Paper(모의) 모드와 Live(실거래) 모드를 지원하며, vectorbt 기반 
 
 ```bash
 # 저장소 클론
-git clone https://github.com/your-org/realtime-trader.git
-cd realtime-trader
+git clone https://github.com/your-org/swing-trader.git
+cd swing-trader
 
 # 가상환경 생성 및 활성화
 python -m venv venv
@@ -129,7 +129,7 @@ result = engine.run(
 ## 디렉터리 구조
 
 ```
-realtime-trader/
+swing-trader/
 ├── main.py                    # 진입점
 ├── config.yaml                # 시스템 설정
 ├── requirements.txt           # Python 의존성

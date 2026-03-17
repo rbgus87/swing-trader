@@ -1,5 +1,5 @@
 [project]
-name = "realtime-trader"
+name = "swing-trader"
 version = "0.1.0"
 description = "KOSPI/KOSDAQ 국내 주식 스윙매매 자동화 시스템"
 requires-python = ">=3.10"

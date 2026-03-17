@@ -205,7 +205,7 @@ else:
 # --- Footer ---
 st.divider()
 st.caption(
-    f"realtime-trader 대시보드 | DB: {DB_PATH} | "
+    f"swing-trader 대시보드 | DB: {DB_PATH} | "
     f"마지막 조회: {datetime.now().strftime('%H:%M:%S')}"
 )
 

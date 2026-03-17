@@ -393,6 +393,63 @@ class TestSystemError:
         assert mock_post.call_count == 2
 
 
+class TestStartup:
+    """send_startup() 메시지 형식 테스트."""
+
+    def test_startup_format_paper(self, bot, mock_post):
+        """모의투자 모드 시작 메시지 형식 검증."""
+        bot.send_startup(mode="paper")
+
+        msg = mock_post.call_args[1]["json"]["text"]
+        assert "🟢 <b>시스템 시작</b>" in msg
+        assert "모의투자" in msg
+        assert "v0.1.0" in msg
+
+    def test_startup_format_live(self, bot, mock_post):
+        """실거래 모드 시작 메시지 형식 검증."""
+        bot.send_startup(mode="live", version="1.0.0")
+
+        msg = mock_post.call_args[1]["json"]["text"]
+        assert "🟢 <b>시스템 시작</b>" in msg
+        assert "실거래" in msg
+        assert "v1.0.0" in msg
+
+    def test_startup_no_cooldown(self, bot, mock_post):
+        """시작 알림에는 쿨다운 없음."""
+        bot.send_startup(mode="paper")
+        bot.send_startup(mode="paper")
+
+        assert mock_post.call_count == 2
+
+
+class TestShutdown:
+    """send_shutdown() 메시지 형식 테스트."""
+
+    def test_shutdown_format(self, bot, mock_post):
+        """종료 메시지 형식 검증."""
+        bot.send_shutdown(mode="paper")
+
+        msg = mock_post.call_args[1]["json"]["text"]
+        assert "🔴 <b>시스템 종료</b>" in msg
+        assert "모의투자" in msg
+        assert "정상 종료" in msg
+
+    def test_shutdown_custom_reason(self, bot, mock_post):
+        """사유 지정 종료 메시지."""
+        bot.send_shutdown(mode="live", reason="사용자 중단")
+
+        msg = mock_post.call_args[1]["json"]["text"]
+        assert "실거래" in msg
+        assert "사용자 중단" in msg
+
+    def test_shutdown_no_cooldown(self, bot, mock_post):
+        """종료 알림에는 쿨다운 없음."""
+        bot.send_shutdown(mode="paper")
+        bot.send_shutdown(mode="paper")
+
+        assert mock_post.call_count == 2
+
+
 class TestEnvironmentVariables:
     """환경변수에서 토큰/채팅ID 로드 테스트."""
 

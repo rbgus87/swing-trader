@@ -28,8 +28,8 @@ from src.utils.market_calendar import is_market_open
 class TradingEngine:
     """매매 시스템 핵심 조율자."""
 
-    def __init__(self, mode: Literal["paper", "simulate", "live"] = "paper"):
-        self.mode = mode
+    def __init__(self, mode: Literal["paper", "live"] | None = None):
+        self.mode = mode or config.mode
         self._running = False
 
         # 모듈 초기화
@@ -37,27 +37,19 @@ class TradingEngine:
         self._ds.connect()
         self._ds.create_tables()
 
-        # 키움 API (REST + WebSocket)
-        if mode == "simulate":
+        # 키움 API (REST + WebSocket) — IS_PAPER_TRADING으로 서버 자동 선택
+        is_paper = self.mode == "paper"
+        if is_paper:
             base_url = config.get("broker.mock_base_url", "https://mockapi.kiwoom.com")
             ws_url = config.get(
                 "broker.mock_ws_url",
                 "wss://mockapi.kiwoom.com:10000/api/dostk/websocket",
             )
-        elif mode == "live":
+        else:
             base_url = config.get("broker.base_url", "https://api.kiwoom.com")
             ws_url = config.get(
                 "broker.ws_url",
                 "wss://api.kiwoom.com:10000/api/dostk/websocket",
-            )
-        else:  # paper — 모의투자 appkey 사용 시 mock 서버 필요
-            base_url = config.get(
-                "broker.mock_base_url",
-                config.get("broker.base_url", "https://mockapi.kiwoom.com"),
-            )
-            ws_url = config.get(
-                "broker.mock_ws_url",
-                "wss://mockapi.kiwoom.com:10000/api/dostk/websocket",
             )
         appkey = config.get_env("KIWOOM_APPKEY", "")
         secretkey = config.get_env("KIWOOM_SECRETKEY", "")
@@ -67,7 +59,7 @@ class TradingEngine:
         self._order_mgr = OrderManager(self._kiwoom, account)
         self._realtime = RealtimeDataManager(self._kiwoom)
 
-        self._screener = Screener(config.data)
+        self._screener = Screener(config.data, datastore=self._ds)
         self._risk_mgr = RiskManager(self._ds, config.data)
         self._sizer = PositionSizer()
         self._stop_mgr = StopManager(
@@ -82,6 +74,9 @@ class TradingEngine:
         self._candidates: list[str] = []  # 당일 매수 후보
         self._reconnect_count = 0
         self._max_reconnect = 5
+        self._initial_capital = config.get("backtest.initial_capital", 1_000_000)
+        self._positions_cache: list[dict] | None = None  # 포지션 메모리 캐시
+        self._sell_retry_counts: dict[int, int] = {}  # 매도 재시도 카운터
 
         # 스케줄러
         self._scheduler = AsyncIOScheduler()
@@ -120,12 +115,16 @@ class TradingEngine:
 
         self._scheduler.start()
 
-        # 키움 연결 (simulate/live에서만 WebSocket 사용)
-        use_ws = self.mode in ("simulate", "live")
+        # 키움 연결 (live 모드에서만 WebSocket 사용)
+        use_ws = self.mode == "live"
         await self._kiwoom.connect(use_websocket=use_ws)
+
+        # 서비스 시작 알림
+        self._telegram.send_startup(self.mode)
 
     async def stop(self):
         """시스템 중지."""
+        self._telegram.send_shutdown(self.mode)
         self._running = False
         self._scheduler.shutdown(wait=False)
         await self._kiwoom.disconnect()
@@ -181,7 +180,7 @@ class TradingEngine:
 
     async def _check_exit_conditions(self, tick: Tick):
         """보유 종목 청산 조건 체크."""
-        positions = self._ds.get_open_positions()
+        positions = self._get_cached_positions()
         for pos_dict in positions:
             if pos_dict["code"] != tick.code:
                 continue
@@ -229,7 +228,7 @@ class TradingEngine:
             return
 
         # 주문 실행  # RISK_CHECK_REQUIRED
-        if self.mode in ("live", "simulate"):
+        if self.mode == "live":
             from src.broker.tr_codes import ORDER_BUY, PRICE_MARKET
 
             result = await self._order_mgr.execute_order(
@@ -242,8 +241,18 @@ class TradingEngine:
 
     async def _execute_sell(self, position: Position, price: int, reason: ExitReason):
         """매도 실행."""
-        if self.mode in ("live", "simulate"):
+        if self.mode == "live":
             from src.broker.tr_codes import ORDER_SELL, PRICE_MARKET
+
+            # 매도 재시도 제한 (최대 3회)
+            retry_count = self._sell_retry_counts.get(position.id, 0)
+            if retry_count >= 3:
+                logger.error(f"매도 재시도 한도 초과: {position.code} (id={position.id})")
+                self._telegram.send_system_error(
+                    f"매도 실패 3회 초과: {position.code}",
+                    "engine._execute_sell",
+                )
+                return
 
             result = await self._order_mgr.execute_order(
                 position.code,
@@ -253,10 +262,14 @@ class TradingEngine:
                 PRICE_MARKET,
             )
             if not result.success:
+                self._sell_retry_counts[position.id] = retry_count + 1
+                logger.warning(f"매도 실패 ({retry_count + 1}/3): {position.code}")
                 return
 
         # 포지션 종료
         self._ds.update_position(position.id, status="closed")
+        self._invalidate_positions_cache()
+        self._sell_retry_counts.pop(position.id, None)
 
         # 손익 계산
         pnl = (price - position.entry_price) * position.quantity
@@ -309,17 +322,27 @@ class TradingEngine:
             f"매도 {position.code} @ {price:,} ({reason.value}), PnL: {pnl:+,}",
         )
 
+    def _get_stock_name(self, code: str) -> str:
+        """종목명 조회 (pykrx 캐시)."""
+        try:
+            from pykrx import stock
+            name = stock.get_market_ticker_name(code)
+            return name or code
+        except Exception:
+            return code
+
     async def _record_buy(self, tick: Tick, qty: int):
         """매수 기록."""
-        atr_estimate = tick.price * 0.02  # 간이 ATR
+        atr_estimate = tick.price * 0.02  # 간이 ATR (향후 OHLCV 캐시 기반으로 개선)
         stop_price = self._stop_mgr.get_initial_stop(tick.price, atr_estimate)
         target_return = config.get("strategy.target_return", 0.08)
         target_price = int(tick.price * (1 + target_return))
+        name = self._get_stock_name(tick.code)
 
         pos = Position(
             id=0,
             code=tick.code,
-            name="",
+            name=name,
             entry_date=datetime.now().strftime("%Y-%m-%d"),
             entry_price=tick.price,
             quantity=qty,
@@ -328,10 +351,11 @@ class TradingEngine:
             high_since_entry=tick.price,
         )
         self._ds.insert_position(pos)
+        self._invalidate_positions_cache()
 
         trade = TradeRecord(
             code=tick.code,
-            name="",
+            name=name,
             side="buy",
             price=tick.price,
             quantity=qty,
@@ -349,7 +373,7 @@ class TradingEngine:
         capital_pct = (tick.price * qty) / available if available > 0 else 0
         self._telegram.send_buy_executed(
             tick.code,
-            "",
+            name,
             tick.price,
             qty,
             tick.price * qty,
@@ -360,14 +384,49 @@ class TradingEngine:
         logger.log("TRADE", f"매수 {tick.code} @ {tick.price:,} × {qty}주")
 
     def _update_daily_pnl(self, tick: Tick):
-        """일일 손익 업데이트."""
-        # 간이 구현: 보유 포지션 기반 미실현 손익
-        pass
+        """일일 손익 업데이트 — 보유 포지션 기반 미실현 손익."""
+        positions = self._get_cached_positions()
+        if not positions:
+            return
+
+        unrealized_pnl = 0
+        for pos_dict in positions:
+            if pos_dict["code"] == tick.code:
+                pnl = (tick.price - pos_dict["entry_price"]) * pos_dict["quantity"]
+            else:
+                # 다른 종목은 매입가 기준 (실시간 가격 없으므로)
+                pnl = 0
+            unrealized_pnl += pnl
+
+        # 당일 실현 손익
+        today = datetime.now().strftime("%Y-%m-%d")
+        trades = self._ds.get_trades_by_date(today)
+        realized_pnl = sum(t.get("pnl", 0) for t in trades if t["side"] == "sell")
+
+        total_pnl = realized_pnl + unrealized_pnl
+        pnl_pct = total_pnl / self._initial_capital if self._initial_capital > 0 else 0.0
+
+        self._risk_mgr.update_daily_pnl(pnl_pct)
+
+        # 일일 한도 체크
+        if pnl_pct <= self._risk_mgr._daily_loss_limit:
+            self.halt()
 
     def _get_available_capital(self) -> int:
-        """가용 자본 조회."""
-        initial = config.get("backtest.initial_capital", 10_000_000)
-        return initial  # 간이 구현
+        """가용 자본 조회 — 초기자본 - 투자중 금액."""
+        positions = self._get_cached_positions()
+        invested = sum(p["entry_price"] * p["quantity"] for p in positions)
+        return max(0, self._initial_capital - invested)
+
+    def _get_cached_positions(self) -> list[dict]:
+        """포지션 메모리 캐시 반환. 없으면 DB 조회."""
+        if self._positions_cache is None:
+            self._positions_cache = self._ds.get_open_positions()
+        return self._positions_cache
+
+    def _invalidate_positions_cache(self):
+        """포지션 캐시 무효화 (매수/매도 후)."""
+        self._positions_cache = None
 
     def _dict_to_position(self, d: dict) -> Position:
         """dict -> Position 변환."""
@@ -395,31 +454,48 @@ class TradingEngine:
 
         buy_count = sum(1 for t in trades if t["side"] == "buy")
         sell_count = sum(1 for t in trades if t["side"] == "sell")
-        total_pnl = sum(t.get("pnl", 0) for t in trades if t["side"] == "sell")
+        realized_pnl = sum(t.get("pnl", 0) for t in trades if t["side"] == "sell")
 
-        initial_capital = config.get("backtest.initial_capital", 1_000_000)
-        pnl_pct = total_pnl / initial_capital * 100 if initial_capital > 0 else 0.0
+        # 미실현 손익 (보유 포지션 기준 — 종가 미반영, 매입가 기준)
+        unrealized_pnl = 0  # 장마감 시 실시간 가격 없으므로 0
+
+        pnl_pct = realized_pnl / self._initial_capital * 100 if self._initial_capital > 0 else 0.0
+        current_capital = self._initial_capital + int(realized_pnl)
 
         self._telegram.send_daily_report(
             date=today,
             buy_count=buy_count,
             sell_count=sell_count,
-            realized_pnl=int(total_pnl),
+            realized_pnl=int(realized_pnl),
             realized_pnl_pct=pnl_pct,
             position_count=len(positions),
-            unrealized_pnl=0,
-            initial_capital=initial_capital,
-            current_capital=initial_capital + int(total_pnl),
+            unrealized_pnl=unrealized_pnl,
+            initial_capital=self._initial_capital,
+            current_capital=current_capital,
             total_return_pct=pnl_pct,
-            current_mdd=0.0,
+            current_mdd=self._risk_mgr.current_mdd,
         )
+
+        # 일일 성과 DB 저장
+        self._ds.save_daily_performance(
+            date=today,
+            realized_pnl=realized_pnl,
+            unrealized_pnl=float(unrealized_pnl),
+            total_capital=float(current_capital),
+            daily_return=pnl_pct,
+            mdd_current=self._risk_mgr.current_mdd,
+            trade_count=buy_count + sell_count,
+        )
+
         logger.info(
-            f"일간 리포트 발송: 매수{buy_count}/매도{sell_count}/PnL{int(total_pnl):+,}"
+            f"일간 리포트 발송: 매수{buy_count}/매도{sell_count}/PnL{int(realized_pnl):+,}"
         )
 
     def _daily_reset(self):
         """일일 리셋 (09:00)."""
         self._risk_mgr.reset_daily()
+        self._invalidate_positions_cache()
+        self._sell_retry_counts.clear()
         logger.info("일일 리셋 완료")
 
     async def _ensure_connection(self):

@@ -1,0 +1,317 @@
+/* ══════════════════════════════════════════════════════════════
+   Catppuccin Mocha — Swing Trader v3
+   좌측 사이드바 + 우측 콘텐츠 레이아웃
+   ══════════════════════════════════════════════════════════════ */
+
+* {
+    font-family: "Malgun Gothic", "Segoe UI", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow, QWidget {
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+}
+
+/* ── 좌측 사이드바 ── */
+QFrame#sidebar {
+    background-color: #11111b;
+    border-right: 1px solid #313244;
+}
+
+QLabel#appTitle {
+    font-size: 20px;
+    font-weight: bold;
+    color: #cdd6f4;
+    padding: 0 0 8px 0;
+    letter-spacing: 1px;
+}
+
+QLabel#engineStatus {
+    font-size: 12px;
+    padding: 4px 0;
+}
+
+QLabel#modeBadge {
+    font-size: 11px;
+    font-weight: bold;
+    padding: 4px 0;
+    border-radius: 4px;
+}
+
+/* ── 요약 통계 바 ── */
+QFrame#summaryBar {
+    background-color: #181825;
+    border-bottom: 1px solid #313244;
+}
+
+/* ── 탭 ── */
+QTabWidget::pane {
+    border: none;
+    background-color: #1e1e2e;
+}
+
+QTabBar::tab {
+    background-color: transparent;
+    color: #6c7086;
+    padding: 10px 28px;
+    border-bottom: 2px solid transparent;
+    font-weight: bold;
+}
+
+QTabBar::tab:selected {
+    color: #89b4fa;
+    border-bottom: 2px solid #89b4fa;
+}
+
+QTabBar::tab:hover:!selected {
+    color: #bac2de;
+    border-bottom: 2px solid #45475a;
+}
+
+/* ── 버튼 ── */
+QPushButton {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    padding: 6px 12px;
+    min-height: 28px;
+    font-weight: bold;
+    font-size: 12px;
+}
+
+QPushButton:hover {
+    background-color: #45475a;
+    border-color: #585b70;
+}
+
+QPushButton:pressed {
+    background-color: #585b70;
+}
+
+QPushButton:disabled {
+    background-color: #181825;
+    color: #313244;
+    border-color: #1e1e2e;
+}
+
+QPushButton#startBtn {
+    background-color: #40a02b;
+    color: #fff;
+    border-color: #4cb036;
+}
+QPushButton#startBtn:hover {
+    background-color: #4cb036;
+}
+QPushButton#startBtn:disabled {
+    background-color: #181825;
+    color: #313244;
+    border-color: #1e1e2e;
+}
+
+QPushButton#stopBtn {
+    background-color: transparent;
+    color: #f38ba8;
+    border: 1px solid #f38ba8;
+}
+QPushButton#stopBtn:hover {
+    background-color: #f38ba8;
+    color: #11111b;
+}
+QPushButton#stopBtn:disabled {
+    background-color: #181825;
+    color: #313244;
+    border-color: #1e1e2e;
+}
+
+QPushButton#haltBtn {
+    background-color: transparent;
+    color: #f9e2af;
+    border: 1px solid #f9e2af;
+}
+QPushButton#haltBtn:hover {
+    background-color: #f9e2af;
+    color: #11111b;
+}
+QPushButton#haltBtn:disabled {
+    background-color: #181825;
+    color: #313244;
+    border-color: #1e1e2e;
+}
+
+/* ── 테이블 ── */
+QTableWidget {
+    background-color: #11111b;
+    alternate-background-color: #181825;
+    gridline-color: transparent;
+    selection-background-color: #313244;
+    selection-color: #cdd6f4;
+    border: 1px solid #313244;
+    border-radius: 4px;
+    font-size: 12px;
+    outline: none;
+}
+
+QTableWidget::item {
+    padding: 4px 8px;
+    border-bottom: 1px solid #1e1e2e;
+}
+
+QHeaderView::section {
+    background-color: #181825;
+    color: #585b70;
+    padding: 6px 8px;
+    border: none;
+    border-bottom: 1px solid #313244;
+    font-weight: bold;
+    font-size: 11px;
+}
+
+/* ── 폼 요소 ── */
+QComboBox {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    padding: 4px 10px;
+    min-height: 26px;
+    font-size: 12px;
+}
+
+QComboBox:focus {
+    border-color: #89b4fa;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 20px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #313244;
+    color: #cdd6f4;
+    selection-background-color: #45475a;
+    border: 1px solid #45475a;
+}
+
+QSpinBox {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    padding: 4px 8px;
+    min-height: 26px;
+}
+
+QSpinBox:focus {
+    border-color: #89b4fa;
+}
+
+QSpinBox::up-button, QSpinBox::down-button {
+    width: 16px;
+    border: none;
+    background: #45475a;
+}
+
+QLineEdit {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    padding: 4px 10px;
+    min-height: 26px;
+}
+
+QLineEdit:focus {
+    border-color: #89b4fa;
+}
+
+QSlider::groove:horizontal {
+    background: #313244;
+    height: 4px;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    background: #89b4fa;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    margin: -5px 0;
+    border: 2px solid #1e1e2e;
+}
+
+QSlider::sub-page:horizontal {
+    background: #89b4fa;
+    border-radius: 2px;
+}
+
+/* ── 로그 뷰 ── */
+QTextEdit#logView {
+    background-color: #11111b;
+    color: #a6adc8;
+    border: 1px solid #313244;
+    border-radius: 4px;
+    font-family: "Cascadia Code", "Consolas", "D2Coding", monospace;
+    font-size: 11px;
+    padding: 6px;
+    selection-background-color: #313244;
+}
+
+/* ── 스크롤바 ── */
+QScrollBar:vertical {
+    background-color: transparent;
+    width: 6px;
+}
+QScrollBar::handle:vertical {
+    background-color: #313244;
+    border-radius: 3px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #45475a;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollBar:horizontal {
+    height: 0px;
+}
+
+/* ── 상태바 ── */
+QStatusBar {
+    background-color: #11111b;
+    color: #585b70;
+    border-top: 1px solid #313244;
+    font-size: 11px;
+    min-height: 22px;
+}
+
+QStatusBar QLabel {
+    color: #585b70;
+    font-size: 11px;
+    padding: 0 8px;
+}
+
+/* ── 스플리터 ── */
+QSplitter::handle {
+    background-color: #313244;
+}
+
+/* ── 설정 서브탭 ── */
+QTabWidget QTabWidget::pane {
+    border: 1px solid #313244;
+    border-radius: 4px;
+    background-color: #181825;
+}
+
+QTabWidget QTabBar::tab {
+    padding: 8px 20px;
+    font-size: 12px;
+}
+
+QScrollArea {
+    border: none;
+    background-color: transparent;
+}

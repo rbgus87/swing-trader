@@ -26,14 +26,19 @@ class DataStore:
     """
 
     def __init__(self, db_path: str = "trading.db"):
+        # exe 환경: 실행 파일 기준 디렉토리에 DB 생성
+        if not Path(db_path).is_absolute():
+            from src.utils.config import _get_app_dir
+            db_path = str(_get_app_dir() / db_path)
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
 
     def connect(self) -> None:
         """DB 연결."""
-        self._conn = sqlite3.connect(self._db_path)
+        self._conn = sqlite3.connect(self._db_path, timeout=5)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
 
     def close(self) -> None:
         """DB 연결 종료."""
@@ -107,6 +112,10 @@ class DataStore:
             -- 성능 인덱스: positions.status (get_open_positions 최적화)
             CREATE INDEX IF NOT EXISTS idx_positions_status
                 ON positions(status);
+
+            -- 성능 인덱스: positions.code (종목별 조회 최적화)
+            CREATE INDEX IF NOT EXISTS idx_positions_code
+                ON positions(code);
 
             -- 성능 인덱스: trades(code, executed_at) (get_last_trade, get_trades_by_date 최적화)
             CREATE INDEX IF NOT EXISTS idx_trades_code_executed
@@ -259,8 +268,8 @@ class DataStore:
             매매 기록 dict 리스트.
         """
         cursor = self.conn.execute(
-            "SELECT * FROM trades WHERE executed_at LIKE ?",
-            (f"{target_date}%",),
+            "SELECT * FROM trades WHERE executed_at >= ? AND executed_at < ?",
+            (f"{target_date} 00:00:00", f"{target_date} 23:59:60"),
         )
         return [dict(row) for row in cursor.fetchall()]
 

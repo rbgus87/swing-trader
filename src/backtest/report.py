@@ -105,7 +105,7 @@ img {{ border: 1px solid #ddd; border-radius: 4px; margin: 10px 0; }}
 {trade_table_html}
 
 <div class="footer">
-realtime-trader 백테스트 엔진
+swing-trader 백테스트 엔진
 </div>
 </body>
 </html>"""
