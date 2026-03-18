@@ -27,6 +27,11 @@ class EngineWorker(QThread):
         self.signals.request_stop.connect(self._on_request_stop)
         self.signals.request_halt.connect(self._on_request_halt)
         self.signals.request_resume.connect(self._on_request_resume)
+        self.signals.request_screening.connect(self._on_request_screening)
+        self.signals.request_report.connect(self._on_request_report)
+        self.signals.request_reconnect.connect(self._on_request_reconnect)
+        self.signals.request_daily_reset.connect(self._on_request_daily_reset)
+        self.signals.request_refresh_60m.connect(self._on_request_refresh_60m)
 
         # daemon 스레드 — 메인 프로세스 종료 시 자동 정리
         self.setTerminationEnabled(True)
@@ -107,6 +112,47 @@ class EngineWorker(QThread):
         """resume()을 asyncio 루프 내에서 실행."""
         self._engine._risk_mgr.resume()
         self._emit_status()
+
+    def _on_request_screening(self):
+        """수동 스크리닝 — asyncio 안전 호출."""
+        if self._engine and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._engine._pre_market_screening(), self._loop
+            )
+
+    def _on_request_report(self):
+        """수동 일간 리포트 — asyncio 안전 호출."""
+        if self._engine and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._async_report(), self._loop)
+
+    async def _async_report(self):
+        """daily_report()를 asyncio 루프 내에서 실행."""
+        self._engine._daily_report()
+        self._emit_status()
+
+    def _on_request_reconnect(self):
+        """수동 연결 확인 — asyncio 안전 호출."""
+        if self._engine and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._engine._ensure_connection(), self._loop
+            )
+
+    def _on_request_daily_reset(self):
+        """수동 일일 리셋 — asyncio 안전 호출."""
+        if self._engine and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._async_daily_reset(), self._loop)
+
+    async def _async_daily_reset(self):
+        """daily_reset()을 asyncio 루프 내에서 실행."""
+        self._engine._daily_reset()
+        self._emit_status()
+
+    def _on_request_refresh_60m(self):
+        """수동 60분봉 갱신 — asyncio 안전 호출."""
+        if self._engine and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._engine._refresh_minute_ohlcv(), self._loop
+            )
 
     # ── 데이터 Emission ──
 

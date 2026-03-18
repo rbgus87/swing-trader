@@ -163,6 +163,36 @@ class Screener:
         logger.info(f"스크리닝 완료: {len(candidates)}종목 신호 발생, 상위 {len(result)}종목 선정")
         return result
 
+    def preload_ohlcv(self, codes: list[str], date: str | None = None) -> None:
+        """watchlist 종목의 OHLCV 캐시를 갱신 (데이터 프리로드).
+
+        장전에 pykrx에서 최신 일봉을 가져와 DataStore에 캐시한다.
+        진입 판단 시 캐시된 데이터를 사용하므로 장중 지연 없음.
+
+        Args:
+            codes: 종목 코드 리스트.
+            date: 기준 날짜 ("YYYYMMDD"). None이면 오늘.
+        """
+        if date is None:
+            date = datetime.now().strftime("%Y%m%d")
+
+        start_date = (
+            datetime.strptime(date, "%Y%m%d") - timedelta(days=200)
+        ).strftime("%Y%m%d")
+
+        logger.info(f"OHLCV 프리로드 시작: {len(codes)}종목, 기준일 {date}")
+
+        success = 0
+        for code in codes:
+            try:
+                df = self._get_ohlcv(code, start_date, date)
+                if not df.empty:
+                    success += 1
+            except Exception as e:
+                logger.warning(f"OHLCV 프리로드 실패 ({code}): {e}")
+
+        logger.info(f"OHLCV 프리로드 완료: {success}/{len(codes)}종목 성공")
+
     def _get_ohlcv(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """OHLCV 조회 — DataStore 캐시 우선, 없으면 pykrx 조회 후 캐시 저장.
 

@@ -34,3 +34,8 @@ class EngineSignals(QObject):
     request_stop = pyqtSignal()
     request_halt = pyqtSignal()
     request_resume = pyqtSignal()
+    request_screening = pyqtSignal()
+    request_report = pyqtSignal()
+    request_reconnect = pyqtSignal()
+    request_daily_reset = pyqtSignal()
+    request_refresh_60m = pyqtSignal()

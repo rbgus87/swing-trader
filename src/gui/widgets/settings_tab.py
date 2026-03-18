@@ -9,12 +9,13 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv, set_key
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QLocale, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -23,9 +24,81 @@ from PyQt5.QtWidgets import (
     QSlider,
     QSpinBox,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+
+class _StockNameWorker(QThread):
+    """백그라운드에서 종목 코드 → 종목명 조회."""
+    finished = pyqtSignal(dict)
+
+    def __init__(self, codes: list, parent=None):
+        super().__init__(parent)
+        self._codes = codes
+
+    def run(self):
+        result = {}
+        try:
+            from pykrx import stock
+            for code in self._codes:
+                try:
+                    name = stock.get_market_ticker_name(code)
+                    if name:
+                        result[code] = name
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self.finished.emit(result)
+
+
+class _StockSearchWorker(QThread):
+    """백그라운드에서 전종목 리스트를 캐시 파일로 빌드."""
+    finished = pyqtSignal(dict)
+    _CACHE_FILE = Path("data/stock_names.json")
+
+    def run(self):
+        import json
+        cache = {}
+        # 1) 캐시 파일이 있으면 로드
+        if self._CACHE_FILE.exists():
+            try:
+                with open(self._CACHE_FILE, "r", encoding="utf-8") as f:
+                    cache = json.load(f)
+                if cache:
+                    self.finished.emit(cache)
+                    return
+            except Exception:
+                pass
+        # 2) pykrx에서 전종목 리스트 시도
+        try:
+            from pykrx import stock
+            import datetime
+            today = datetime.date.today()
+            for delta in range(0, 7):
+                d = (today - datetime.timedelta(days=delta)).strftime("%Y%m%d")
+                for market in ["KOSPI", "KOSDAQ"]:
+                    tickers = stock.get_market_ticker_list(d, market=market)
+                    for code in tickers:
+                        if code not in cache:
+                            name = stock.get_market_ticker_name(code)
+                            cache[code] = name
+                if cache:
+                    break
+        except Exception:
+            pass
+        # 3) 캐시 파일로 저장
+        if cache:
+            try:
+                self._CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with open(self._CACHE_FILE, "w", encoding="utf-8") as f:
+                    json.dump(cache, f, ensure_ascii=False)
+            except Exception:
+                pass
+        self.finished.emit(cache)
 
 
 class SettingField:
@@ -38,6 +111,9 @@ class SettingField:
         w.setValue(value)
         if suffix:
             w.setSuffix(f" {suffix}")
+        locale = QLocale(QLocale.Korean, QLocale.SouthKorea)
+        w.setLocale(locale)
+        w.setGroupSeparatorShown(True)
         w.setFixedHeight(30)
         return w
 
@@ -157,6 +233,7 @@ class SettingsTab(QWidget):
 
         # 서브탭
         self.sub_tabs = QTabWidget()
+        self.sub_tabs.addTab(self._build_watchlist_tab(), "종목관리")
         self.sub_tabs.addTab(self._build_trading_tab(), "매매")
         self.sub_tabs.addTab(self._build_screening_tab(), "스크리닝")
         self.sub_tabs.addTab(self._build_strategy_tab(), "전략")
@@ -190,6 +267,236 @@ class SettingsTab(QWidget):
                 child.widget().deleteLater()
             elif child.layout():
                 self._clear_layout(child.layout())
+
+    # ── Watchlist 서브탭 ──
+
+    def _build_watchlist_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(8)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # -- 종목 검색 영역 --
+        layout.addWidget(self._make_separator("종목 검색"))
+
+        search_row = QHBoxLayout()
+        self.w_search_input = QLineEdit()
+        self.w_search_input.setPlaceholderText("종목코드 또는 종목명 (예: 삼성, 005930)")
+        self.w_search_input.setFixedHeight(30)
+        self.w_search_input.returnPressed.connect(self._on_search_stock)
+        search_row.addWidget(self.w_search_input, stretch=1)
+
+        btn_search = QPushButton("검색")
+        btn_search.setFixedHeight(30)
+        btn_search.setFixedWidth(60)
+        btn_search.clicked.connect(self._on_search_stock)
+        search_row.addWidget(btn_search)
+        layout.addLayout(search_row)
+
+        # 검색 상태
+        self.w_search_status = QLabel("")
+        self.w_search_status.setStyleSheet("color: #6c7086; font-size: 11px;")
+        layout.addWidget(self.w_search_status)
+
+        # 검색 결과 테이블 (2컬럼: 종목코드+종목명 | 추가버튼)
+        self.w_search_results = QTableWidget(0, 2)
+        self.w_search_results.setHorizontalHeaderLabels(["종목", ""])
+        self.w_search_results.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.w_search_results.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.w_search_results.setColumnWidth(1, 44)
+        self.w_search_results.setMaximumHeight(160)
+        self.w_search_results.verticalHeader().setVisible(False)
+        self.w_search_results.verticalHeader().setDefaultSectionSize(30)
+        self.w_search_results.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.w_search_results.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.w_search_results)
+
+        # -- 감시 종목 리스트 --
+        watchlist = self._config.get("watchlist", [])
+        self.w_watchlist_label = self._make_separator(f"감시 종목 ({len(watchlist)}개)")
+        layout.addWidget(self.w_watchlist_label)
+
+        # 감시 종목 테이블 (2컬럼: 종목코드+종목명 | 삭제버튼)
+        self.w_watchlist_table = QTableWidget(0, 2)
+        self.w_watchlist_table.setHorizontalHeaderLabels(["종목", ""])
+        self.w_watchlist_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.w_watchlist_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.w_watchlist_table.setColumnWidth(1, 44)
+        self.w_watchlist_table.verticalHeader().setVisible(False)
+        self.w_watchlist_table.verticalHeader().setDefaultSectionSize(30)
+        self.w_watchlist_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.w_watchlist_table.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.w_watchlist_table, stretch=1)
+
+        # 전체 삭제 버튼
+        clear_row = QHBoxLayout()
+        clear_row.addStretch()
+        btn_clear = QPushButton("전체 삭제")
+        btn_clear.setFixedHeight(28)
+        btn_clear.clicked.connect(self._on_clear_watchlist)
+        clear_row.addWidget(btn_clear)
+        layout.addLayout(clear_row)
+
+        # 초기화: watchlist 코드만 먼저 표시, 종목명은 비동기 로드
+        self._stock_cache = {}
+        self._populate_watchlist(watchlist)
+        self._start_name_lookup(watchlist)
+        # 전종목 검색용 캐시도 백그라운드 로드
+        self._start_full_cache_load()
+
+        return w
+
+    def _start_name_lookup(self, codes: list):
+        """watchlist 종목명을 백그라운드에서 조회."""
+        if not codes:
+            return
+        self._name_worker = _StockNameWorker(codes, parent=self)
+        self._name_worker.finished.connect(self._on_names_loaded)
+        self._name_worker.start()
+
+    def _on_names_loaded(self, names: dict):
+        """종목명 조회 완료 → 테이블 업데이트."""
+        self._stock_cache.update(names)
+        for row in range(self.w_watchlist_table.rowCount()):
+            item = self.w_watchlist_table.item(row, 0)
+            if item:
+                code = item.text().split(" ")[0]  # "005930" or "005930  삼성전자"
+                if code in names:
+                    item.setText(f"{code}  {names[code]}")
+
+    def _start_full_cache_load(self):
+        """전종목 검색용 캐시를 백그라운드 로드."""
+        self._search_worker = _StockSearchWorker(parent=self)
+        self._search_worker.finished.connect(self._on_full_cache_loaded)
+        self._search_worker.start()
+        self.w_search_status.setText("종목 데이터 로딩 중...")
+
+    def _on_full_cache_loaded(self, cache: dict):
+        """전종목 캐시 로드 완료."""
+        self._stock_cache.update(cache)
+        if cache:
+            self.w_search_status.setText(f"검색 가능 ({len(cache)}종목)")
+            # watchlist 종목명도 갱신
+            for row in range(self.w_watchlist_table.rowCount()):
+                item = self.w_watchlist_table.item(row, 0)
+                if item:
+                    text = item.text()
+                    code = text.split(" ")[0]
+                    if code in cache and cache[code] not in text:
+                        item.setText(f"{code}  {cache[code]}")
+        else:
+            self.w_search_status.setText("종목코드로 검색 가능")
+
+    def _on_search_stock(self):
+        """종목 검색."""
+        query = self.w_search_input.text().strip()
+        if not query:
+            return
+
+        self.w_search_results.setRowCount(0)
+        results = []
+
+        # 캐시에서 코드/종목명 검색
+        if self._stock_cache:
+            for code, name in self._stock_cache.items():
+                if query in code or query in name:
+                    results.append((code, name))
+                if len(results) >= 15:
+                    break
+
+        # 캐시에 없고 6자리 코드면 pykrx 개별 조회
+        if not results and len(query) == 6 and query.isdigit():
+            try:
+                from pykrx import stock
+                name = stock.get_market_ticker_name(query)
+                if name:
+                    results.append((query, name))
+                    self._stock_cache[query] = name
+            except Exception:
+                results.append((query, ""))
+
+        if not results:
+            self.w_search_status.setText("검색 결과 없음")
+            return
+
+        self.w_search_status.setText(f"{len(results)}건")
+        for code, name in results:
+            row = self.w_search_results.rowCount()
+            self.w_search_results.insertRow(row)
+
+            display = f"{code}  {name}" if name else code
+            self.w_search_results.setItem(row, 0, QTableWidgetItem(display))
+
+            btn = QPushButton("+")
+            btn.setFixedSize(30, 24)
+            btn.clicked.connect(lambda _, c=code, n=name: self._add_to_watchlist(c, n))
+            self.w_search_results.setCellWidget(row, 1, btn)
+
+    def _add_to_watchlist(self, code: str, name: str):
+        """감시 종목에 추가."""
+        # 중복 체크
+        for row in range(self.w_watchlist_table.rowCount()):
+            item = self.w_watchlist_table.item(row, 0)
+            if item and item.text().startswith(code):
+                self.w_search_status.setText(f"{code} 이미 등록됨")
+                return
+
+        if not name:
+            name = self._stock_cache.get(code, "")
+
+        row = self.w_watchlist_table.rowCount()
+        self.w_watchlist_table.insertRow(row)
+
+        display = f"{code}  {name}" if name else code
+        self.w_watchlist_table.setItem(row, 0, QTableWidgetItem(display))
+
+        btn = QPushButton("X")
+        btn.setFixedSize(30, 24)
+        btn.clicked.connect(lambda _, c=code: self._remove_from_watchlist(c))
+        self.w_watchlist_table.setCellWidget(row, 1, btn)
+
+        self._update_watchlist_count()
+        self.w_search_status.setText(f"{code} {name} 추가됨")
+
+    def _remove_from_watchlist(self, code: str):
+        """감시 종목에서 제거."""
+        for row in range(self.w_watchlist_table.rowCount()):
+            item = self.w_watchlist_table.item(row, 0)
+            if item and item.text().startswith(code):
+                self.w_watchlist_table.removeRow(row)
+                break
+        self._update_watchlist_count()
+
+    def _on_clear_watchlist(self):
+        """감시 종목 전체 삭제."""
+        if self.w_watchlist_table.rowCount() == 0:
+            return
+        reply = QMessageBox.question(
+            self, "확인", "감시 종목을 모두 삭제하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self.w_watchlist_table.setRowCount(0)
+            self._update_watchlist_count()
+
+    def _populate_watchlist(self, codes: list):
+        """config에서 로드한 종목 코드로 테이블 채우기 (이름은 비동기 로드)."""
+        self.w_watchlist_table.setRowCount(0)
+        for code in codes:
+            row = self.w_watchlist_table.rowCount()
+            self.w_watchlist_table.insertRow(row)
+            self.w_watchlist_table.setItem(row, 0, QTableWidgetItem(code))
+
+            btn = QPushButton("X")
+            btn.setFixedSize(30, 24)
+            btn.clicked.connect(lambda _, c=code: self._remove_from_watchlist(c))
+            self.w_watchlist_table.setCellWidget(row, 1, btn)
+        self._update_watchlist_count()
+
+    def _update_watchlist_count(self):
+        """감시 종목 수 업데이트."""
+        count = self.w_watchlist_table.rowCount()
+        self.w_watchlist_label.setText(f"감시 종목 ({count}개)")
 
     # ── Trading 서브탭 ──
 
@@ -233,9 +540,15 @@ class SettingsTab(QWidget):
 
         self.w_min_amount = SettingField.spin(
             int(screening.get("min_daily_amount", 5_000_000_000) / 100_000_000),
-            1, 500, "B"
+            1, 500, "억원"
         )
         form.addRow("최소 거래대금", self.w_min_amount)
+
+        self.w_min_market_cap = SettingField.spin(
+            int(screening.get("min_market_cap", 30_000_000_000) / 100_000_000),
+            1, 10000, "억원"
+        )
+        form.addRow("최소 시가총액", self.w_min_market_cap)
 
         self.w_min_price = SettingField.spin(
             screening.get("min_price", 1000), 100, 50000, "원"
@@ -382,9 +695,9 @@ class SettingsTab(QWidget):
         )
         form.addRow("재연결 시각", self.w_reconnect_time)
 
-        backtest = self._config.get("backtest", {})
+        trading = self._config.get("trading", {})
         self.w_initial_capital = SettingField.spin(
-            backtest.get("initial_capital", 1_000_000), 100_000, 100_000_000, "원"
+            trading.get("initial_capital", 3_000_000), 100_000, 100_000_000, "원"
         )
         form.addRow("초기 투자금", self.w_initial_capital)
 
@@ -485,6 +798,15 @@ class SettingsTab(QWidget):
 
     def _collect_config(self):
         """위젯 값들을 self._config 딕셔너리에 수집."""
+        # Watchlist — 셀 텍스트에서 코드(앞 6자리) 추출
+        watchlist = []
+        for row in range(self.w_watchlist_table.rowCount()):
+            item = self.w_watchlist_table.item(row, 0)
+            if item:
+                code = item.text().split()[0]  # "005930  삼성전자" → "005930"
+                watchlist.append(code)
+        self._config["watchlist"] = watchlist
+
         # Trading
         trading = self._config.setdefault("trading", {})
         trading["universe"] = self.w_universe.currentText()
@@ -494,6 +816,7 @@ class SettingsTab(QWidget):
         # Screening
         screening = self._config.setdefault("screening", {})
         screening["min_daily_amount"] = self.w_min_amount.value() * 100_000_000
+        screening["min_market_cap"] = self.w_min_market_cap.value() * 100_000_000
         screening["min_price"] = self.w_min_price.value()
         screening["max_price"] = self.w_max_price.value()
         screening["top_n"] = self.w_top_n.value()
@@ -528,9 +851,8 @@ class SettingsTab(QWidget):
         schedule["daily_report_time"] = self.w_report_time.text()
         schedule["reconnect_time"] = self.w_reconnect_time.text()
 
-        # Backtest
-        backtest = self._config.setdefault("backtest", {})
-        backtest["initial_capital"] = self.w_initial_capital.value()
+        # Trading — 초기 투자금
+        trading["initial_capital"] = self.w_initial_capital.value()
 
     # ── 유틸 ──
 

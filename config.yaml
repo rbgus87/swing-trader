@@ -33,6 +33,7 @@ trading:
   universe: kospi_kosdaq            # 매매 대상 시장 (kospi | kosdaq | kospi_kosdaq)
   max_positions: 3                  # 동시에 보유할 수 있는 최대 종목 수 (자본금에 따라 조절)
   reentry_cooldown_days: 3          # 같은 종목을 매도 후 다시 매수하기까지 대기 영업일
+  initial_capital: 3_000_000        # 실거래/페이퍼 초기 자본금 (원)
 
 # --- 종목 스크리닝 (장 시작 전 후보 선별) ---
 screening:
@@ -70,7 +71,7 @@ strategy:
 
   # 청산 조건
   max_hold_days: 15                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도
-  target_return: 0.10               # 목표 수익률 (0.10 = +10%) — 도달 시 자동 매도
+  target_return: 0.12               # 목표 수익률 (0.12 = +12%) — 도달 시 자동 매도
 
 # --- 리스크 관리 ---
 risk:

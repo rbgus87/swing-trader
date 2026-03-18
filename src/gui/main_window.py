@@ -145,6 +145,62 @@ class MainWindow(QMainWindow):
         # 구분선
         sidebar_layout.addWidget(self._hline())
 
+        # ── 수동 실행 ──
+        sidebar_layout.addWidget(self._sidebar_section("수동 실행"))
+
+        btn_manual_row1 = QHBoxLayout()
+        btn_manual_row1.setSpacing(8)
+
+        self.btn_reconnect = QPushButton("연결확인")
+        self.btn_reconnect.setObjectName("manualBtn")
+        self.btn_reconnect.setEnabled(False)
+        self.btn_reconnect.setCursor(Qt.PointingHandCursor)
+        self.btn_reconnect.setToolTip("키움 API 연결 확인/재연결")
+        btn_manual_row1.addWidget(self.btn_reconnect)
+
+        self.btn_daily_reset = QPushButton("일일리셋")
+        self.btn_daily_reset.setObjectName("manualBtn")
+        self.btn_daily_reset.setEnabled(False)
+        self.btn_daily_reset.setCursor(Qt.PointingHandCursor)
+        self.btn_daily_reset.setToolTip("PnL 초기화, ATR캐시 클리어, hold_days 갱신")
+        btn_manual_row1.addWidget(self.btn_daily_reset)
+
+        sidebar_layout.addLayout(btn_manual_row1)
+
+        btn_manual_row2 = QHBoxLayout()
+        btn_manual_row2.setSpacing(8)
+
+        self.btn_screening = QPushButton("스크리닝")
+        self.btn_screening.setObjectName("manualBtn")
+        self.btn_screening.setEnabled(False)
+        self.btn_screening.setCursor(Qt.PointingHandCursor)
+        self.btn_screening.setToolTip("즉시 장전 스크리닝 실행")
+        btn_manual_row2.addWidget(self.btn_screening)
+
+        self.btn_report = QPushButton("리포트")
+        self.btn_report.setObjectName("manualBtn")
+        self.btn_report.setEnabled(False)
+        self.btn_report.setCursor(Qt.PointingHandCursor)
+        self.btn_report.setToolTip("즉시 일간 리포트 발송")
+        btn_manual_row2.addWidget(self.btn_report)
+
+        sidebar_layout.addLayout(btn_manual_row2)
+
+        btn_manual_row3 = QHBoxLayout()
+        btn_manual_row3.setSpacing(8)
+
+        self.btn_refresh_60m = QPushButton("60분봉")
+        self.btn_refresh_60m.setObjectName("manualBtn")
+        self.btn_refresh_60m.setEnabled(False)
+        self.btn_refresh_60m.setCursor(Qt.PointingHandCursor)
+        self.btn_refresh_60m.setToolTip("60분봉 데이터 즉시 갱신 (진입 타이밍 판단용)")
+        btn_manual_row3.addWidget(self.btn_refresh_60m)
+
+        sidebar_layout.addLayout(btn_manual_row3)
+
+        # 구분선
+        sidebar_layout.addWidget(self._hline())
+
         # ── 연결 상태 ──
         conn_layout = QHBoxLayout()
         conn_layout.setSpacing(6)
@@ -192,6 +248,11 @@ class MainWindow(QMainWindow):
         self.btn_start.clicked.connect(self._on_start)
         self.btn_stop.clicked.connect(self._on_stop)
         self.btn_halt.clicked.connect(self._on_halt)
+        self.btn_screening.clicked.connect(self._on_screening)
+        self.btn_report.clicked.connect(self._on_report)
+        self.btn_reconnect.clicked.connect(self._on_reconnect)
+        self.btn_daily_reset.clicked.connect(self._on_daily_reset)
+        self.btn_refresh_60m.clicked.connect(self._on_refresh_60m)
 
     # ── 사이드바 헬퍼 ──
 
@@ -310,6 +371,31 @@ class MainWindow(QMainWindow):
         else:
             self._worker.signals.request_resume.emit()
 
+    def _on_screening(self):
+        if self._worker:
+            self._worker.signals.request_screening.emit()
+            logger.info("수동 스크리닝 요청")
+
+    def _on_report(self):
+        if self._worker:
+            self._worker.signals.request_report.emit()
+            logger.info("수동 리포트 요청")
+
+    def _on_reconnect(self):
+        if self._worker:
+            self._worker.signals.request_reconnect.emit()
+            logger.info("수동 연결 확인 요청")
+
+    def _on_daily_reset(self):
+        if self._worker:
+            self._worker.signals.request_daily_reset.emit()
+            logger.info("수동 일일 리셋 요청")
+
+    def _on_refresh_60m(self):
+        if self._worker:
+            self._worker.signals.request_refresh_60m.emit()
+            logger.info("수동 60분봉 갱신 요청")
+
     def _on_engine_started(self):
         # 연결 상태
         self._lbl_conn_dot.setStyleSheet("color: #a6e3a1; font-size: 10px;")
@@ -349,6 +435,11 @@ class MainWindow(QMainWindow):
         self.btn_start.setText("시작")
         self.btn_stop.setEnabled(True)
         self.btn_halt.setEnabled(True)
+        self.btn_screening.setEnabled(True)
+        self.btn_report.setEnabled(True)
+        self.btn_reconnect.setEnabled(True)
+        self.btn_daily_reset.setEnabled(True)
+        self.btn_refresh_60m.setEnabled(True)
         self._lbl_status_left.setText("스케줄러: 실행 중")
 
     def _on_engine_stopped(self):
@@ -374,6 +465,11 @@ class MainWindow(QMainWindow):
         self.btn_stop.setText("중지")
         self.btn_halt.setEnabled(False)
         self.btn_halt.setText("매매 중단")
+        self.btn_screening.setEnabled(False)
+        self.btn_report.setEnabled(False)
+        self.btn_reconnect.setEnabled(False)
+        self.btn_daily_reset.setEnabled(False)
+        self.btn_refresh_60m.setEnabled(False)
         self.combo_mode.setEnabled(True)
         self._lbl_status_left.setText("스케줄러: 중지")
         self._worker = None

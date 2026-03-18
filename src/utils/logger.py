@@ -41,18 +41,19 @@ def setup_logger(
     # 기존 핸들러 제거
     logger.remove()
 
-    # 콘솔 핸들러
-    logger.add(
-        sys.stderr,
-        level=log_level,
-        format=(
-            "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-            "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
-            "<level>{message}</level>"
-        ),
-        colorize=True,
-    )
+    # 콘솔 핸들러 (PyInstaller GUI exe에서는 sys.stderr가 None)
+    if sys.stderr is not None:
+        logger.add(
+            sys.stderr,
+            level=log_level,
+            format=(
+                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                "<level>{level: <8}</level> | "
+                "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+                "<level>{message}</level>"
+            ),
+            colorize=True,
+        )
 
     # 일반 로그 파일 핸들러
     today = datetime.now().strftime("%Y%m%d")

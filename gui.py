@@ -25,6 +25,11 @@ if __name__ == "__main__":
 
     atexit.register(_force_exit)
 
+    from src.utils.config import config
+    from src.utils.logger import setup_logger
+
+    setup_logger(log_level=config.get_env("LOG_LEVEL", "INFO"))
+
     from src.gui.main_window import run_gui
 
     run_gui()

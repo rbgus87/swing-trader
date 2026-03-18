@@ -140,6 +140,24 @@ QPushButton#haltBtn:disabled {
     border-color: #1e1e2e;
 }
 
+QPushButton#manualBtn {
+    background-color: transparent;
+    color: #89b4fa;
+    border: 1px solid #89b4fa;
+    font-size: 11px;
+    padding: 4px 8px;
+    min-height: 24px;
+}
+QPushButton#manualBtn:hover {
+    background-color: #89b4fa;
+    color: #11111b;
+}
+QPushButton#manualBtn:disabled {
+    background-color: #181825;
+    color: #313244;
+    border-color: #1e1e2e;
+}
+
 /* ── 테이블 ── */
 QTableWidget {
     background-color: #11111b;

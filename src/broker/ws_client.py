@@ -139,7 +139,13 @@ class KiwoomWebSocketClient:
                     ping_timeout=10,
                 )
                 logger.info("WebSocket 재연결 성공")
-                # 수신 루프 재시작
+                # 이전 listen 태스크 정리 후 수신 루프 재시작
+                if self._listen_task and not self._listen_task.done():
+                    self._listen_task.cancel()
+                    try:
+                        await self._listen_task
+                    except asyncio.CancelledError:
+                        pass
                 self._listen_task = asyncio.create_task(self._listen())
                 return
             except Exception as e:

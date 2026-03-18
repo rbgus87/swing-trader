@@ -5,6 +5,7 @@ asyncio 기반으로 동작한다.
 """
 
 import asyncio
+import time
 from datetime import datetime
 from typing import Literal
 
@@ -63,10 +64,10 @@ class TradingEngine:
         self._risk_mgr = RiskManager(self._ds, config.data)
         self._sizer = PositionSizer()
         self._stop_mgr = StopManager(
-            stop_atr_mult=config.get("risk.stop_atr_multiplier", 1.5),
-            max_stop_pct=config.get("risk.max_stop_pct", 0.07),
-            trailing_atr_mult=config.get("risk.trailing_atr_multiplier", 2.0),
-            trailing_activate_pct=config.get("risk.trailing_activate_pct", 0.03),
+            stop_atr_mult=config.get("risk.stop_atr_multiplier", 2.5),
+            max_stop_pct=config.get("risk.max_stop_pct", 0.10),
+            trailing_atr_mult=config.get("risk.trailing_atr_multiplier", 2.5),
+            trailing_activate_pct=config.get("risk.trailing_activate_pct", 0.07),
         )
         self._telegram = TelegramBot()
 
@@ -74,11 +75,16 @@ class TradingEngine:
         self._candidates: list[str] = []  # 당일 매수 후보
         self._reconnect_count = 0
         self._max_reconnect = 5
-        self._initial_capital = config.get("backtest.initial_capital", 1_000_000)
+        self._initial_capital = config.get(
+            "trading.initial_capital",
+            config.get("backtest.initial_capital", 1_000_000),
+        )
         self._positions_cache: list[dict] | None = None  # 포지션 메모리 캐시
         self._sell_retry_counts: dict[int, int] = {}  # 매도 재시도 카운터
         self._latest_prices: dict[str, int] = {}  # 종목별 최신 가격 캐시
         self._atr_cache: dict[str, float] = {}  # 종목별 ATR 캐시
+        self._last_entry_check: dict[str, float] = {}  # 종목별 마지막 진입 체크 시각 (throttle)
+        self._minute_ohlcv_cache: dict[str, "pd.DataFrame"] = {}  # 종목별 60분봉 캐시
 
         # MDD 초기 자본 설정
         self._risk_mgr.set_initial_capital(float(self._initial_capital))
@@ -118,18 +124,52 @@ class TradingEngine:
         # 일일 리셋 (09:00)
         self._scheduler.add_job(self._daily_reset, "cron", hour=9, minute=0)
 
+        # 60분봉 갱신 (장중 매시 정각: 10, 11, 12, 13, 14, 15시)
+        self._scheduler.add_job(
+            self._refresh_minute_ohlcv, "cron",
+            hour="10-15", minute=1,  # 정각 1분 후 (캔들 확정 대기)
+        )
+
         self._scheduler.start()
 
-        # 키움 연결 (live 모드에서만 WebSocket 사용)
-        use_ws = self.mode == "live"
-        await self._kiwoom.connect(use_websocket=use_ws)
+        # 키움 연결 — paper/live 모두 WebSocket 사용 (시세 수신 동일)
+        # paper와 live의 차이는 주문 실행 여부뿐
+        await self._kiwoom.connect(use_websocket=True)
+
+        # 구독 대상: watchlist + 보유 포지션 (합집합)
+        subscribe_codes: set[str] = set()
+
+        # watchlist가 있으면 전체가 감시 대상 (= 후보)
+        watchlist = config.get("watchlist", [])
+        if watchlist:
+            subscribe_codes.update(watchlist)
+            self._candidates = list(watchlist)
+            logger.info(f"watchlist {len(watchlist)}종목 → 전체 후보 등록")
+        else:
+            # watchlist 없으면 스크리닝으로 후보 선정 (모드 B)
+            logger.info("watchlist 미설정 — 스크리닝 기반 모드")
+
+        # 보유 포지션 종목 추가 (청산 감시용)
+        open_positions = self._ds.get_open_positions()
+        if open_positions:
+            pos_codes = {p["code"] for p in open_positions}
+            subscribe_codes.update(pos_codes)
+            logger.info(f"보유 포지션 {len(pos_codes)}종목 추가")
+
+        # WebSocket 구독
+        if subscribe_codes:
+            await self._realtime.subscribe_list(list(subscribe_codes))
+            logger.info(f"실시간 구독 시작: 총 {len(subscribe_codes)}종목")
 
         # 서비스 시작 알림
         self._telegram.send_startup(self.mode)
 
     async def stop(self):
         """시스템 중지."""
-        self._telegram.send_shutdown(self.mode)
+        try:
+            self._telegram.send_shutdown(self.mode)
+        except Exception as e:
+            logger.warning(f"종료 알림 전송 실패 (무시): {e}")
         self._running = False
         self._scheduler.shutdown(wait=False)
         await self._kiwoom.disconnect()
@@ -145,24 +185,46 @@ class TradingEngine:
     # ── 장전 ──
 
     async def _pre_market_screening(self, _retry: int = 0):
-        """장전 스크리닝 (08:30). 실패 시 최대 3회 재시도."""
+        """장전 스크리닝 (08:30).
+
+        watchlist 있음: OHLCV 캐시 갱신 + ATR 사전계산 (데이터 프리로드)
+        watchlist 없음: 전체 시장 스캔 → 후보 선정 → WebSocket 구독
+        """
         max_retries = 3
+        watchlist = config.get("watchlist", [])
+
         try:
             today = datetime.now().strftime("%Y%m%d")
-            # Screener는 pykrx 기반 sync — to_thread로 래핑
-            self._candidates = await asyncio.to_thread(
-                self._screener.run_daily_screening, today
-            )
-            if self._candidates:
-                await self._realtime.subscribe_list(self._candidates)
-                self._telegram.send(
-                    f"📊 당일 매수 후보: {len(self._candidates)}종목"
+
+            if watchlist:
+                # 모드 A: watchlist 전체가 후보, OHLCV 캐시만 갱신
+                await asyncio.to_thread(
+                    self._screener.preload_ohlcv, watchlist, today
                 )
-            logger.info(f"스크리닝 완료: {len(self._candidates)}종목")
+                self._candidates = list(watchlist)
+                # ATR 캐시 리프레시
+                self._atr_cache.clear()
+                for code in watchlist:
+                    self._get_atr(code)
+                logger.info(
+                    f"장전 데이터 프리로드 완료: {len(watchlist)}종목 OHLCV + ATR 갱신"
+                )
+            else:
+                # 모드 B: 전체 시장 스캔 → 후보 선정
+                self._candidates = await asyncio.to_thread(
+                    self._screener.run_daily_screening, today
+                )
+                if self._candidates:
+                    await self._realtime.subscribe_list(self._candidates)
+                logger.info(f"스크리닝 완료: {len(self._candidates)}종목 후보 선정")
+
+            self._telegram.send(
+                f"📊 당일 매수 후보: {len(self._candidates)}종목"
+            )
         except Exception as e:
             logger.error(f"스크리닝 실패 (시도 {_retry + 1}/{max_retries + 1}): {e}")
             if _retry < max_retries:
-                delay = 60 * (_retry + 1)  # 1분, 2분, 3분 후 재시도
+                delay = 60 * (_retry + 1)
                 logger.info(f"스크리닝 재시도 예약: {delay}초 후")
                 await asyncio.sleep(delay)
                 await self._pre_market_screening(_retry=_retry + 1)
@@ -191,8 +253,16 @@ class TradingEngine:
         self._update_daily_pnl(tick)
 
         # 3. 후보 종목 진입 조건 체크
+        # 쓰로틀링: 같은 종목은 30초 간격으로만 진입 판단 (지표 계산 부하 방지)
         if tick.code in self._candidates:
-            await self._check_entry_conditions(tick)
+            now = time.monotonic()
+            last_check = self._last_entry_check.get(tick.code, 0)
+            if now - last_check < 30:
+                return
+            held_codes = {p["code"] for p in self._get_cached_positions()}
+            if tick.code not in held_codes:
+                self._last_entry_check[tick.code] = now
+                await self._check_entry_conditions(tick)
 
     async def _check_exit_conditions(self, tick: Tick):
         """보유 종목 청산 조건 체크 — signals.check_exit_signal 통합."""
@@ -200,6 +270,8 @@ class TradingEngine:
         for pos_dict in positions:
             if pos_dict["code"] != tick.code:
                 continue
+            if pos_dict.get("status") == "selling":
+                continue  # 매도 주문 중인 포지션은 스킵
 
             pos = self._dict_to_position(pos_dict)
 
@@ -216,38 +288,47 @@ class TradingEngine:
                 await self._execute_sell(pos, tick.price, exit_reason)
 
     def _evaluate_exit(self, pos: Position, current_price: int) -> ExitReason | None:
-        """OHLCV 기반 종합 청산 판단 — signals.check_exit_signal 활용."""
-        from src.strategy.signals import check_exit_signal
+        """종합 청산 판단 — 손절/목표가/트레일링/MACD 데드크로스/최대보유."""
+        from src.strategy.signals import calculate_indicators
         import pandas as pd
 
         max_hold = config.get("trading.max_hold_days", 15)
 
-        # OHLCV 캐시에서 최근 일봉 조회
-        try:
-            from datetime import timedelta
-            end = datetime.now().strftime("%Y-%m-%d")
-            start = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
-            ohlcv = self._ds.get_cached_ohlcv(pos.code, start, end)
-            if ohlcv and len(ohlcv) >= 1:
-                latest_row = ohlcv[-1]
-                latest = pd.Series(latest_row)
-                return check_exit_signal(
-                    pos, current_price, latest, max_hold_days=max_hold
-                )
-        except Exception:
-            pass
-
-        # OHLCV 없으면 기본 손절/목표가만 체크
+        # 1. 손절가 이탈
         if self._stop_mgr.is_stopped(pos, current_price):
             return ExitReason.STOP_LOSS
+
+        # 2. 목표가 도달
         if pos.target_price > 0 and current_price >= pos.target_price:
             return ExitReason.TARGET_REACHED
+
+        # 3. MACD 데드크로스 (수익 +2% 이상이고, macd_hist 음전환)
+        pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+        if pnl_pct >= 0.02:
+            try:
+                from datetime import timedelta
+                end = datetime.now().strftime("%Y-%m-%d")
+                start = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
+                ohlcv = self._ds.get_cached_ohlcv(pos.code, start, end)
+                if ohlcv and len(ohlcv) >= 30:
+                    df = pd.DataFrame(ohlcv)
+                    df = calculate_indicators(df)
+                    if len(df) >= 2:
+                        prev_hist = df.iloc[-2].get("macd_hist", 0)
+                        curr_hist = df.iloc[-1].get("macd_hist", 0)
+                        if prev_hist > 0 and curr_hist < 0:
+                            return ExitReason.MACD_DEAD
+            except Exception:
+                pass
+
+        # 4. 최대 보유기간 초과
         if pos.hold_days >= max_hold:
             return ExitReason.MAX_HOLD
+
         return None
 
     async def _check_entry_conditions(self, tick: Tick):
-        """후보 종목 진입 조건 체크 — signals.py 통합."""
+        """후보 종목 진입 조건 체크 — 일봉(추세) + 60분봉(타이밍) 2단계."""
         from src.strategy.signals import (
             calculate_indicators,
             calculate_signal_score,
@@ -255,29 +336,56 @@ class TradingEngine:
         )
         import pandas as pd
 
-        # 1. OHLCV 캐시에서 일봉 데이터 조회 + 기술적 지표 계산
+        score = 0.0
         try:
             from datetime import timedelta
+
+            # 1층: 일봉 기반 추세 판단 (전일까지 캐시)
             end = datetime.now().strftime("%Y-%m-%d")
             start = (datetime.now() - timedelta(days=130)).strftime("%Y-%m-%d")
             ohlcv = self._ds.get_cached_ohlcv(tick.code, start, end)
             if not ohlcv or len(ohlcv) < 30:
-                return  # 데이터 부족
-
-            df = pd.DataFrame(ohlcv)
-            df = calculate_indicators(df)
-
-            # 2. 매수 신호 체크 (60분봉 미사용)
-            if not check_entry_signal(df, use_60m=False):
                 return
 
-            # 3. 신호 강도 점수 계산
-            score = calculate_signal_score(df)
+            df_daily = pd.DataFrame(ohlcv)
+            df_daily = calculate_indicators(df_daily)
+
+            # 일봉 추세 필터: SMA20 위 + RSI 적정 범위
+            if df_daily.empty:
+                return
+            last = df_daily.iloc[-1]
+            rsi_min = config.get("strategy.rsi_entry_min", 40)
+            rsi_max = config.get("strategy.rsi_entry_max", 65)
+            if last.get("close", 0) <= last.get("sma20", 0):
+                return  # SMA20 아래 = 하락 추세
+            rsi = last.get("rsi", 50)
+            if rsi < rsi_min or rsi > rsi_max:
+                return  # RSI 범위 밖
+
+            # 2층: 일봉 매수 신호 체크 (골든크로스/MACD 조건)
+            if not check_entry_signal(df_daily, use_60m=False):
+                return
+
+            # 신호 강도 점수
+            score = calculate_signal_score(df_daily)
             min_score = config.get("strategy.min_signal_score", 1.5)
             if score < min_score:
                 return
-        except Exception:
-            return  # 지표 계산 실패 시 진입 안 함
+
+            # 3층: 60분봉 기반 진입 타이밍 확인 (장중 데이터)
+            df_60m = self._minute_ohlcv_cache.get(tick.code)
+            if df_60m is not None and len(df_60m) >= 5:
+                df_60m_ind = calculate_indicators(df_60m)
+                if not df_60m_ind.empty:
+                    # 60분봉 단기 추세 확인: SMA5 > SMA20
+                    last_60m = df_60m_ind.iloc[-1]
+                    sma5 = last_60m.get("sma5", 0)
+                    sma20 = last_60m.get("sma20", 0)
+                    if sma5 > 0 and sma20 > 0 and sma5 <= sma20:
+                        return  # 60분봉 단기 하락 추세 → 타이밍 아님
+        except Exception as e:
+            logger.warning(f"진입 조건 체크 실패 ({tick.code}): {e}")
+            return
 
         # 4. 리스크 사전 체크
         name = self._get_stock_name(tick.code)
@@ -331,6 +439,10 @@ class TradingEngine:
                 )
                 return
 
+            # selling 상태로 변경 (중복 매도 방지)
+            self._ds.update_position(position.id, status="selling")
+            self._invalidate_positions_cache()
+
             result = await self._order_mgr.execute_order(
                 position.code,
                 position.quantity,
@@ -339,12 +451,20 @@ class TradingEngine:
                 PRICE_MARKET,
             )
             if not result.success:
+                # 주문 실패 → open으로 복원
+                self._ds.update_position(position.id, status="open")
+                self._invalidate_positions_cache()
                 self._sell_retry_counts[position.id] = retry_count + 1
                 logger.warning(f"매도 실패 ({retry_count + 1}/3): {position.code}")
                 return
 
-        # 포지션 종료
-        self._ds.update_position(position.id, status="closed")
+            # live: 주문 접수 성공 → 체결 이벤트(on_chejan)에서 최종 종료
+            # 여기서는 selling 상태 유지, 체결 확인 후 closed로 변경
+            logger.info(f"매도 주문 접수: {position.code} (체결 대기 중)")
+
+        # paper 모드: 즉시 포지션 종료
+        if self.mode == "paper":
+            self._ds.update_position(position.id, status="closed")
         self._invalidate_positions_cache()
         self._sell_retry_counts.pop(position.id, None)
 
@@ -379,9 +499,9 @@ class TradingEngine:
                 price,
                 position.hold_days,
                 int(pnl),
-                pnl_pct,
+                pnl_pct * 100,
                 int(net_pnl),
-                net_pnl / (position.entry_price * position.quantity),
+                net_pnl / (position.entry_price * position.quantity) * 100,
             )
         else:
             self._telegram.send_sell_executed_loss(
@@ -390,7 +510,7 @@ class TradingEngine:
                 price,
                 position.hold_days,
                 int(pnl),
-                pnl_pct,
+                pnl_pct * 100,
                 reason.value,
             )
 
@@ -468,6 +588,9 @@ class TradingEngine:
         self._ds.insert_position(pos)
         self._invalidate_positions_cache()
 
+        # 매수 종목 실시간 구독 보장 (watchlist에 없는 종목일 경우)
+        await self._realtime.subscribe(tick.code)
+
         trade = TradeRecord(
             code=tick.code,
             name=name,
@@ -484,8 +607,7 @@ class TradingEngine:
         )
         self._ds.record_trade(trade)
 
-        available = self._get_available_capital()
-        capital_pct = (tick.price * qty) / available if available > 0 else 0
+        capital_pct = (tick.price * qty) / self._initial_capital if self._initial_capital > 0 else 0
         self._telegram.send_buy_executed(
             tick.code,
             name,
@@ -528,7 +650,7 @@ class TradingEngine:
         self._risk_mgr.update_mdd(float(current_capital))
 
         # 일일 한도 체크
-        if pnl_pct <= self._risk_mgr._daily_loss_limit:
+        if pnl_pct <= self._risk_mgr._daily_loss_limit and not self._risk_mgr.is_halted:
             self.halt()
 
     def _get_available_capital(self) -> int:
@@ -626,6 +748,8 @@ class TradingEngine:
         self._invalidate_positions_cache()
         self._sell_retry_counts.clear()
         self._atr_cache.clear()  # ATR 캐시 리프레시
+        self._last_entry_check.clear()  # 진입 체크 쓰로틀 초기화
+        self._minute_ohlcv_cache.clear()  # 60분봉 캐시 초기화
 
         # 보유 포지션 hold_days 갱신
         positions = self._ds.get_open_positions()
@@ -640,26 +764,101 @@ class TradingEngine:
 
         logger.info("일일 리셋 완료")
 
+    async def _refresh_minute_ohlcv(self):
+        """60분봉 캐시 갱신 (장중 매시 정각+1분).
+
+        watchlist/후보 종목의 60분봉을 키움 REST API로 조회하여
+        메모리 캐시에 저장. 진입 판단의 2층(타이밍) 데이터로 사용.
+        """
+        import pandas as pd
+        from data.column_mapper import OHLCV_MAP, map_columns
+
+        codes = self._candidates or config.get("watchlist", [])
+        if not codes:
+            return
+
+        tick_range = config.get("strategy.timeframe_entry", 60)
+        success = 0
+
+        for code in codes:
+            for attempt in range(2):  # 최대 1회 재시도
+                try:
+                    raw = await self._kiwoom.get_minute_ohlcv(
+                        code, tick_range=tick_range, count=30
+                    )
+                    if raw and isinstance(raw, list) and len(raw) > 0:
+                        df = pd.DataFrame(raw)
+                        if not df.empty:
+                            df = map_columns(df, OHLCV_MAP)
+                            self._minute_ohlcv_cache[code] = df
+                            success += 1
+                    break  # 성공 시 재시도 루프 탈출
+                except Exception as e:
+                    if "429" in str(e) and attempt == 0:
+                        await asyncio.sleep(2)  # 429 시 2초 대기 후 재시도
+                        continue
+                    logger.warning(f"60분봉 조회 실패 ({code}): {e}")
+                    break
+            # API rate limit 준수: 종목 간 1초 대기
+            await asyncio.sleep(1.0)
+
+        logger.info(f"60분봉 갱신 완료: {success}/{len(codes)}종목")
+
     async def _ensure_connection(self):
         """키움 API 연결 확인/재연결 (08:45)."""
-        if not self._kiwoom._connected:
-            self._reconnect_count += 1
-            if self._reconnect_count <= self._max_reconnect:
-                logger.warning(
-                    f"키움 재연결 시도 ({self._reconnect_count}/{self._max_reconnect})"
-                )
+        if self._kiwoom._connected:
+            logger.info("키움 API 연결 상태: 정상")
+            return
+
+        self._reconnect_count += 1
+        if self._reconnect_count <= self._max_reconnect:
+            logger.warning(
+                f"키움 재연결 시도 ({self._reconnect_count}/{self._max_reconnect})"
+            )
+            try:
                 await self._kiwoom.connect()
+                logger.info("키움 API 재연결 성공")
+            except Exception as e:
+                logger.error(f"키움 API 재연결 실패: {e}")
                 self._telegram.send_system_error(
                     "ConnectionLost",
                     "kiwoom_api",
                     f"재연결 시도 ({self._reconnect_count}/{self._max_reconnect})",
                 )
-            else:
-                logger.error("최대 재연결 횟수 초과")
-                self._telegram.send_system_error(
-                    "MaxReconnectExceeded", "kiwoom_api"
-                )
+        else:
+            logger.error("최대 재연결 횟수 초과")
+            self._telegram.send_system_error(
+                "MaxReconnectExceeded", "kiwoom_api"
+            )
 
     async def on_chejan(self, data: dict):
-        """체결 이벤트 수신."""
+        """체결 이벤트 수신 — selling 포지션의 최종 종료 처리."""
         logger.info(f"체결 이벤트: {data}")
+
+        # selling 상태 포지션 중 체결된 종목 찾아서 closed 처리
+        try:
+            code = data.get("item", "") or data.get("code", "")
+            if not code:
+                return
+
+            positions = self._ds.get_open_positions()
+            # selling 상태인 포지션도 별도 조회
+            with self._ds._lock:
+                cursor = self._ds.conn.execute(
+                    "SELECT * FROM positions WHERE code = ? AND status = 'selling'",
+                    (code,),
+                )
+                selling_positions = [dict(row) for row in cursor.fetchall()]
+
+            for pos_dict in selling_positions:
+                self._ds.update_position(pos_dict["id"], status="closed")
+                logger.info(f"체결 확인 → 포지션 종료: {code} (id={pos_dict['id']})")
+
+            if selling_positions:
+                self._invalidate_positions_cache()
+                self._sell_retry_counts = {
+                    k: v for k, v in self._sell_retry_counts.items()
+                    if k not in {p["id"] for p in selling_positions}
+                }
+        except Exception as e:
+            logger.error(f"체결 이벤트 처리 실패: {e}")
