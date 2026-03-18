@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import (
 from loguru import logger
 
 from src.gui.widgets.dashboard_tab import DashboardTab
+from src.gui.widgets.log_tab import LogTab
 from src.gui.widgets.settings_tab import SettingsTab
 from src.gui.workers.engine_worker import EngineWorker
 
@@ -227,9 +228,11 @@ class MainWindow(QMainWindow):
         # 탭
         self.tabs = QTabWidget()
         self.dashboard_tab = DashboardTab()
+        self.log_tab = LogTab()
         self.settings_tab = SettingsTab()
 
         self.tabs.addTab(self.dashboard_tab, "대시보드")
+        self.tabs.addTab(self.log_tab, "로그")
         self.tabs.addTab(self.settings_tab, "설정")
 
         right.addWidget(self.tabs)
@@ -303,7 +306,7 @@ class MainWindow(QMainWindow):
     # ── 로그 ──
 
     def _setup_loguru_sink(self):
-        self._log_signal.connect(self.dashboard_tab.append_log)
+        self._log_signal.connect(self._dispatch_log)
 
         def gui_sink(message):
             record = message.record
@@ -313,6 +316,11 @@ class MainWindow(QMainWindow):
             self._log_signal.emit(text, level)
 
         self._loguru_sink_id = logger.add(gui_sink, level="DEBUG", format="{message}")
+
+    def _dispatch_log(self, text: str, level: str):
+        """로그를 대시보드 + 로그탭 양쪽에 전달."""
+        self.dashboard_tab.append_log(text, level)
+        self.log_tab.append_log(text, level)
 
     # ── 타이머 ──
 

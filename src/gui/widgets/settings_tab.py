@@ -277,18 +277,20 @@ class SettingsTab(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
 
         # -- 종목 검색 영역 --
-        layout.addWidget(self._make_separator("종목 검색"))
+        layout.addWidget(self._make_separator("종목 검색 (더블클릭으로 추가)"))
 
         search_row = QHBoxLayout()
+        search_row.setSpacing(6)
         self.w_search_input = QLineEdit()
         self.w_search_input.setPlaceholderText("종목코드 또는 종목명 (예: 삼성, 005930)")
-        self.w_search_input.setFixedHeight(30)
+        self.w_search_input.setFixedHeight(28)
         self.w_search_input.returnPressed.connect(self._on_search_stock)
         search_row.addWidget(self.w_search_input, stretch=1)
 
         btn_search = QPushButton("검색")
-        btn_search.setFixedHeight(30)
-        btn_search.setFixedWidth(60)
+        btn_search.setFixedHeight(28)
+        btn_search.setFixedWidth(50)
+        btn_search.setStyleSheet("font-size: 11px;")
         btn_search.clicked.connect(self._on_search_stock)
         search_row.addWidget(btn_search)
         layout.addLayout(search_row)
@@ -298,41 +300,42 @@ class SettingsTab(QWidget):
         self.w_search_status.setStyleSheet("color: #6c7086; font-size: 11px;")
         layout.addWidget(self.w_search_status)
 
-        # 검색 결과 테이블 (2컬럼: 종목코드+종목명 | 추가버튼)
-        self.w_search_results = QTableWidget(0, 2)
-        self.w_search_results.setHorizontalHeaderLabels(["종목", ""])
+        # 검색 결과 테이블 (1컬럼, 더블클릭으로 추가)
+        self.w_search_results = QTableWidget(0, 1)
+        self.w_search_results.setHorizontalHeaderLabels(["종목"])
         self.w_search_results.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.w_search_results.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
-        self.w_search_results.setColumnWidth(1, 44)
-        self.w_search_results.setMaximumHeight(160)
+        self.w_search_results.setMaximumHeight(180)
         self.w_search_results.verticalHeader().setVisible(False)
-        self.w_search_results.verticalHeader().setDefaultSectionSize(30)
+        self.w_search_results.verticalHeader().setDefaultSectionSize(26)
         self.w_search_results.setEditTriggers(QTableWidget.NoEditTriggers)
         self.w_search_results.setSelectionBehavior(QTableWidget.SelectRows)
+        self.w_search_results.doubleClicked.connect(self._on_search_double_click)
         layout.addWidget(self.w_search_results)
 
         # -- 감시 종목 리스트 --
         watchlist = self._config.get("watchlist", [])
-        self.w_watchlist_label = self._make_separator(f"감시 종목 ({len(watchlist)}개)")
+        self.w_watchlist_label = self._make_separator(
+            f"감시 종목 ({len(watchlist)}개) — 더블클릭으로 삭제"
+        )
         layout.addWidget(self.w_watchlist_label)
 
-        # 감시 종목 테이블 (2컬럼: 종목코드+종목명 | 삭제버튼)
-        self.w_watchlist_table = QTableWidget(0, 2)
-        self.w_watchlist_table.setHorizontalHeaderLabels(["종목", ""])
+        # 감시 종목 테이블 (1컬럼, 더블클릭으로 삭제)
+        self.w_watchlist_table = QTableWidget(0, 1)
+        self.w_watchlist_table.setHorizontalHeaderLabels(["종목"])
         self.w_watchlist_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.w_watchlist_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
-        self.w_watchlist_table.setColumnWidth(1, 44)
         self.w_watchlist_table.verticalHeader().setVisible(False)
-        self.w_watchlist_table.verticalHeader().setDefaultSectionSize(30)
+        self.w_watchlist_table.verticalHeader().setDefaultSectionSize(26)
         self.w_watchlist_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.w_watchlist_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.w_watchlist_table.doubleClicked.connect(self._on_watchlist_double_click)
         layout.addWidget(self.w_watchlist_table, stretch=1)
 
         # 전체 삭제 버튼
         clear_row = QHBoxLayout()
         clear_row.addStretch()
         btn_clear = QPushButton("전체 삭제")
-        btn_clear.setFixedHeight(28)
+        btn_clear.setFixedHeight(26)
+        btn_clear.setStyleSheet("font-size: 11px;")
         btn_clear.clicked.connect(self._on_clear_watchlist)
         clear_row.addWidget(btn_clear)
         layout.addLayout(clear_row)
@@ -345,6 +348,26 @@ class SettingsTab(QWidget):
         self._start_full_cache_load()
 
         return w
+
+    def _on_search_double_click(self, index):
+        """검색 결과 더블클릭 → watchlist에 추가."""
+        row = index.row()
+        item = self.w_search_results.item(row, 0)
+        if not item:
+            return
+        text = item.text()
+        code = text.split()[0]
+        name = text.split("  ", 1)[1] if "  " in text else ""
+        self._add_to_watchlist(code, name)
+
+    def _on_watchlist_double_click(self, index):
+        """watchlist 더블클릭 → 종목 삭제."""
+        row = index.row()
+        item = self.w_watchlist_table.item(row, 0)
+        if not item:
+            return
+        code = item.text().split()[0]
+        self._remove_from_watchlist(code)
 
     def _start_name_lookup(self, codes: list):
         """watchlist 종목명을 백그라운드에서 조회."""
@@ -396,10 +419,11 @@ class SettingsTab(QWidget):
         self.w_search_results.setRowCount(0)
         results = []
 
-        # 캐시에서 코드/종목명 검색
+        # 캐시에서 코드/종목명 검색 (대소문자 무시)
+        query_lower = query.lower()
         if self._stock_cache:
             for code, name in self._stock_cache.items():
-                if query in code or query in name:
+                if query_lower in code.lower() or query_lower in name.lower():
                     results.append((code, name))
                 if len(results) >= 15:
                     break
@@ -419,18 +443,13 @@ class SettingsTab(QWidget):
             self.w_search_status.setText("검색 결과 없음")
             return
 
-        self.w_search_status.setText(f"{len(results)}건")
+        self.w_search_status.setText(f"{len(results)}건 — 더블클릭으로 추가")
         for code, name in results:
             row = self.w_search_results.rowCount()
             self.w_search_results.insertRow(row)
 
             display = f"{code}  {name}" if name else code
             self.w_search_results.setItem(row, 0, QTableWidgetItem(display))
-
-            btn = QPushButton("+")
-            btn.setFixedSize(30, 24)
-            btn.clicked.connect(lambda _, c=code, n=name: self._add_to_watchlist(c, n))
-            self.w_search_results.setCellWidget(row, 1, btn)
 
     def _add_to_watchlist(self, code: str, name: str):
         """감시 종목에 추가."""
@@ -449,11 +468,6 @@ class SettingsTab(QWidget):
 
         display = f"{code}  {name}" if name else code
         self.w_watchlist_table.setItem(row, 0, QTableWidgetItem(display))
-
-        btn = QPushButton("X")
-        btn.setFixedSize(30, 24)
-        btn.clicked.connect(lambda _, c=code: self._remove_from_watchlist(c))
-        self.w_watchlist_table.setCellWidget(row, 1, btn)
 
         self._update_watchlist_count()
         self.w_search_status.setText(f"{code} {name} 추가됨")
@@ -486,11 +500,6 @@ class SettingsTab(QWidget):
             row = self.w_watchlist_table.rowCount()
             self.w_watchlist_table.insertRow(row)
             self.w_watchlist_table.setItem(row, 0, QTableWidgetItem(code))
-
-            btn = QPushButton("X")
-            btn.setFixedSize(30, 24)
-            btn.clicked.connect(lambda _, c=code: self._remove_from_watchlist(c))
-            self.w_watchlist_table.setCellWidget(row, 1, btn)
         self._update_watchlist_count()
 
     def _update_watchlist_count(self):

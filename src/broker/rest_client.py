@@ -63,29 +63,39 @@ class KiwoomRestClient:
         logger.info(f"접근토큰 발급 완료 (만료: {self._token_expires})")
         return self._access_token
 
-    async def get_ws_key(self) -> str:
-        """WebSocket 접속키 발급.
+    async def get_approval_key(self) -> str:
+        """WebSocket 접속용 approval_key 발급.
 
-        POST /api/auth/websocket
-        Returns: ws_key string
+        POST /oauth2/Approval
+        base_url에 맞는 서버(실서버/모의서버)로 요청합니다.
         """
-        await self._ensure_token()
         await self._rate_limiter.wait()
         response = await self._client.post(
-            "/api/auth/websocket",
-            headers=self._auth_headers()
+            "/oauth2/Approval",
+            json={
+                "grant_type": "client_credentials",
+                "appkey": self._appkey,
+                "secretkey": self._secretkey,
+            }
         )
         response.raise_for_status()
         data = response.json()
-        self._ws_key = data.get("ws_key", "")
-        logger.info("WebSocket 접속키 발급 완료")
-        return self._ws_key
+        approval_key = data.get("approval_key", "")
+        if not approval_key:
+            raise ValueError(f"approval_key 발급 실패. 응답: {data}")
+        logger.info("WebSocket approval_key 발급 완료")
+        return approval_key
 
     async def _ensure_token(self):
         """토큰 만료 시 자동 갱신 (만료 10분 전 선제 갱신)."""
         if (self._token_expires is None or
             datetime.now() >= self._token_expires - timedelta(minutes=10)):
             await self.authenticate()
+
+    @property
+    def access_token(self) -> str:
+        """현재 접근토큰 반환."""
+        return self._access_token or ""
 
     def _auth_headers(self) -> dict:
         """인증 헤더 생성."""

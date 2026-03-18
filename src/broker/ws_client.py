@@ -14,21 +14,33 @@ from src.models import Tick
 class KiwoomWebSocketClient:
     """WebSocket 기반 실시간 데이터 클라이언트."""
 
-    def __init__(self, ws_url: str, ws_key: str):
+    def __init__(self, ws_url: str, approval_key: str | None = None,
+                 access_token: str | None = None):
         self._ws_url = ws_url
-        self._ws_key = ws_key
+        self._approval_key = approval_key
+        self._access_token = access_token
         self._ws = None
         self._running = False
         self._listen_task: asyncio.Task | None = None
         self.on_tick_callback = None       # async Tick 수신 콜백
         self.on_order_callback = None      # async 체결 수신 콜백
 
+    def _build_headers(self) -> dict:
+        """WebSocket 연결 헤더 구성."""
+        headers = {}
+        if self._approval_key:
+            headers["approval_key"] = self._approval_key
+        if self._access_token:
+            headers["Authorization"] = f"Bearer {self._access_token}"
+        return headers
+
     async def connect(self):
-        """WebSocket 연결."""
+        """WebSocket 연결 (approval_key 또는 Bearer 토큰)."""
         self._ws = await websockets.connect(
-            f"{self._ws_url}?ws_key={self._ws_key}",
+            self._ws_url,
             ping_interval=30,
             ping_timeout=10,
+            additional_headers=self._build_headers(),
         )
         self._running = True
         self._listen_task = asyncio.create_task(self._listen())
@@ -92,8 +104,14 @@ class KiwoomWebSocketClient:
                 except asyncio.TimeoutError:
                     continue  # 타임아웃은 정상 (heartbeat 대기)
                 except Exception as e:
+                    err_str = str(e)
+                    if "1000" in err_str:
+                        # 서버가 정상 종료 (1000 OK) — 장 마감 등
+                        logger.info("WebSocket 서버 정상 종료 (장 마감 또는 서버 점검)")
+                        self._running = False
+                        break
                     if self._running:
-                        logger.error(f"WebSocket 수신 에러: {e}")
+                        logger.warning(f"WebSocket 수신 에러: {e}")
                         await self._reconnect()
                     break
         except asyncio.CancelledError:
@@ -134,9 +152,10 @@ class KiwoomWebSocketClient:
                 if self._ws:
                     await self._ws.close()
                 self._ws = await websockets.connect(
-                    f"{self._ws_url}?ws_key={self._ws_key}",
+                    self._ws_url,
                     ping_interval=30,
                     ping_timeout=10,
+                    additional_headers=self._build_headers(),
                 )
                 logger.info("WebSocket 재연결 성공")
                 # 이전 listen 태스크 정리 후 수신 루프 재시작

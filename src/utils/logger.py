@@ -2,10 +2,14 @@
 
 loguru 기반 콘솔 + 파일 동시 출력.
 매매 전용 로그(trades)는 별도 핸들러로 분리.
+
+파일 관리 방식:
+- 단독 파일: trading.log, trades.log
+- 용량 초과 시 롤링: trading.log → trading_1.log → trading_2.log ...
+- 최대 5개 백업 유지 (retention=5)
 """
 
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -20,16 +24,16 @@ TRADE_LEVEL = "TRADE"
 def setup_logger(
     log_dir: str = "logs",
     log_level: str = "INFO",
-    rotation: str = "00:00",
-    retention: str = "30 days",
+    max_size: str = "10 MB",
+    backup_count: int = 5,
 ) -> None:
     """loguru 로거 초기화.
 
     Args:
         log_dir: 로그 파일 저장 디렉터리.
         log_level: 최소 로그 레벨.
-        rotation: 로그 파일 교체 주기.
-        retention: 로그 파일 보존 기간.
+        max_size: 로그 파일 최대 크기 (예: "10 MB", "50 MB").
+        backup_count: 백업 파일 최대 개수.
     """
     # exe 환경: 실행 파일 기준 디렉토리에 로그 생성
     if Path(log_dir).is_absolute():
@@ -56,9 +60,9 @@ def setup_logger(
         )
 
     # 일반 로그 파일 핸들러
-    today = datetime.now().strftime("%Y%m%d")
+    # 단독 파일 + 용량 초과 시 롤링 (trading.log → trading.log.1 → trading.log.2 ...)
     logger.add(
-        str(log_path / f"trading_{today}.log"),
+        str(log_path / "trading.log"),
         level=log_level,
         format=(
             "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
@@ -66,8 +70,8 @@ def setup_logger(
             "{name}:{function}:{line} | "
             "{message}"
         ),
-        rotation=rotation,
-        retention=retention,
+        rotation=max_size,
+        retention=backup_count,
         encoding="utf-8",
     )
 
@@ -79,7 +83,7 @@ def setup_logger(
         pass
 
     logger.add(
-        str(log_path / f"trades_{today}.log"),
+        str(log_path / "trades.log"),
         level=TRADE_LEVEL,
         format=(
             "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
@@ -87,9 +91,9 @@ def setup_logger(
             "{message}"
         ),
         filter=lambda record: record["level"].name == TRADE_LEVEL,
-        rotation=rotation,
-        retention=retention,
+        rotation=max_size,
+        retention=backup_count,
         encoding="utf-8",
     )
 
-    logger.info("로거 초기화 완료 (레벨: {})", log_level)
+    logger.info("로거 초기화 완료 (레벨: {}, 롤링: {})", log_level, max_size)

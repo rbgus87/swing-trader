@@ -39,8 +39,18 @@ class KiwoomAPI:
         # 2. WebSocket 연결 (선택)
         if use_websocket and self._ws_url:
             try:
-                ws_key = await self._rest.get_ws_key()
-                self._ws = KiwoomWebSocketClient(self._ws_url, ws_key)
+                # approval_key 발급 시도 (실패해도 토큰으로 폴백)
+                approval_key = None
+                try:
+                    approval_key = await self._rest.get_approval_key()
+                except Exception as e:
+                    logger.info(f"approval_key 발급 실패, 토큰 인증으로 시도: {e}")
+
+                self._ws = KiwoomWebSocketClient(
+                    self._ws_url,
+                    approval_key=approval_key,
+                    access_token=self._rest.access_token,
+                )
                 self._ws.on_tick_callback = self.on_tick_callback
                 self._ws.on_order_callback = self.on_chejan_callback
                 await self._ws.connect()

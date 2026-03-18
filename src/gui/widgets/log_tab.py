@@ -24,8 +24,9 @@ class LogTab(QWidget):
     _LEVEL_ORDER = {
         "DEBUG": 0,
         "INFO": 1,
-        "WARNING": 2,
-        "ERROR": 3,
+        "TRADE": 2,
+        "WARNING": 3,
+        "ERROR": 4,
     }
 
     def __init__(self, parent=None):
@@ -46,7 +47,7 @@ class LogTab(QWidget):
         # 레벨 필터
         toolbar.addWidget(QLabel("Level:"))
         self.combo_level = QComboBox()
-        self.combo_level.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
+        self.combo_level.addItems(["DEBUG", "INFO", "TRADE", "WARNING", "ERROR"])
         self.combo_level.setCurrentText("INFO")
         self.combo_level.setFixedWidth(100)
         self.combo_level.currentTextChanged.connect(self._on_level_changed)
@@ -93,7 +94,7 @@ class LogTab(QWidget):
     def _detect_level(self, message: str) -> str | None:
         """메시지에서 로그 레벨 감지."""
         # 형식: [HH:MM:SS] LEVEL    message
-        for lvl in ("ERROR", "WARNING", "INFO", "DEBUG"):
+        for lvl in ("ERROR", "WARNING", "TRADE", "INFO", "DEBUG"):
             if f"] {lvl}" in message:
                 return lvl
         return None
@@ -114,6 +115,7 @@ class LogTab(QWidget):
         color = {
             "ERROR": "#f38ba8",
             "WARNING": "#f9e2af",
+            "TRADE": "#a6e3a1",
             "DEBUG": "#6c7086",
         }.get(level, "#a6adc8")
 
