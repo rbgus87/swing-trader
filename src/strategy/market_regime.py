@@ -34,6 +34,7 @@ class MarketRegime:
         self._vkospi_fear_threshold = vkospi_fear_threshold
 
         self._is_bullish: bool | None = None
+        self._regime_type: str = "unknown"  # trending / sideways / bearish
         self._kospi_close: int = 0
         self._kospi_sma200: float = 0.0
         self._kospi_adx: float = 0.0
@@ -91,8 +92,16 @@ class MarketRegime:
             is_calm = self._vkospi <= self._vkospi_fear_threshold
 
             # 종합 판단
-            self._is_bullish = above_sma and is_trending and is_calm
+            self._is_bullish = above_sma and is_calm  # ADX와 무관하게 매수 허용
             self._last_check_date = date
+
+            # 국면 유형 결정 (전략 전환용)
+            if not above_sma or not is_calm:
+                self._regime_type = "bearish"
+            elif is_trending:
+                self._regime_type = "trending"
+            else:
+                self._regime_type = "sideways"
 
             # 차단 사유 기록
             reasons = []
@@ -181,6 +190,11 @@ class MarketRegime:
     @property
     def vkospi(self) -> float:
         return self._vkospi
+
+    @property
+    def regime_type(self) -> str:
+        """현재 국면 유형: trending / sideways / bearish."""
+        return self._regime_type
 
     @property
     def block_reason(self) -> str:

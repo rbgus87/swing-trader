@@ -47,7 +47,12 @@ screening:
 # --- 매매 전략 파라미터 ---
 # 현재 전략: 골든크로스 변형 (SMA5/20 크로스 + RSI + ADX + 거래량)
 strategy:
-  type: bb_bounce                   # bb_bounce | golden_cross | macd_rsi | breakout
+  type: adaptive                    # adaptive: 시장 국면별 자동 전환 | bb_bounce | golden_cross | macd_rsi | breakout
+  # 국면별 전략 매핑 (type=adaptive 일 때만 사용)
+  regime_strategy:
+    trending: golden_cross           # 추세장 (ADX >= 25, KOSPI > 200일선)
+    sideways: bb_bounce              # 횡보장 (ADX < 25, KOSPI > 200일선)
+    # bearish: 매수 차단 (MarketRegime 게이트)
   timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
   timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)
   adx_threshold: 20                 # ADX 추세 강도 기준 (골든크로스 전용)

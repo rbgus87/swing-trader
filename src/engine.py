@@ -68,10 +68,19 @@ class TradingEngine:
         self._telegram = TelegramBot()
 
         # 전략 인스턴스
-        strategy_config = config.data.get("strategy", {})
-        strategy_type = strategy_config.get("type", "golden_cross")
-        self._strategy = get_strategy(strategy_type, strategy_config)
-        logger.info(f"전략 로드: {strategy_type}")
+        self._strategy_config = config.data.get("strategy", {})
+        self._strategy_type = self._strategy_config.get("type", "golden_cross")
+        self._is_adaptive = self._strategy_type == "adaptive"
+
+        if self._is_adaptive:
+            # adaptive 모드: 기본 전략으로 초기화, 장전 스크리닝에서 전환
+            regime_map = self._strategy_config.get("regime_strategy", {})
+            default_type = regime_map.get("sideways", "bb_bounce")
+            self._strategy = get_strategy(default_type, self._strategy_config)
+            logger.info(f"전략 로드: adaptive (기본 {default_type})")
+        else:
+            self._strategy = get_strategy(self._strategy_type, self._strategy_config)
+            logger.info(f"전략 로드: {self._strategy_type}")
 
         # 시장 국면 판단기
         self._market_regime = MarketRegime()
@@ -202,6 +211,10 @@ class TradingEngine:
                 logger.info("시장 방어 모드 — 스크리닝 수행하지만 장중 매수는 차단됨")
                 reason = self._market_regime.block_reason or "조건 미충족"
                 self._telegram.send(f"시장 방어 모드: {reason}")
+
+            # adaptive 모드: 국면별 전략 전환
+            if self._is_adaptive and is_bullish:
+                self._switch_strategy_by_regime()
 
             if watchlist:
                 # 모드 A: watchlist 전체가 후보, OHLCV 캐시만 갱신
@@ -650,6 +663,27 @@ class TradingEngine:
         # 일일 한도 체크
         if pnl_pct <= self._risk_mgr._daily_loss_limit and not self._risk_mgr.is_halted:
             self.halt()
+
+    def _switch_strategy_by_regime(self):
+        """시장 국면에 따라 전략 인스턴스 전환 (adaptive 모드)."""
+        regime = self._market_regime.regime_type
+        regime_map = self._strategy_config.get("regime_strategy", {})
+        new_type = regime_map.get(regime)
+
+        if not new_type:
+            return  # 매핑 없으면 현재 전략 유지
+
+        current_name = self._strategy.name
+        if current_name == new_type:
+            logger.info(f"전략 유지: {current_name} (국면: {regime})")
+            return
+
+        self._strategy = get_strategy(new_type, self._strategy_config)
+        logger.info(f"전략 전환: {current_name} → {new_type} (국면: {regime})")
+        self._telegram.send(
+            f"전략 전환: {current_name} → {new_type} "
+            f"(국면: {regime}, ADX {self._market_regime.kospi_adx:.1f})"
+        )
 
     def _get_hoga_type(self) -> str:
         """config 기반 호가 유형 반환."""
