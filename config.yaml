@@ -47,7 +47,7 @@ screening:
 # --- 매매 전략 파라미터 ---
 # 현재 전략: 골든크로스 변형 (SMA5/20 크로스 + RSI + ADX + 거래량)
 strategy:
-  type: golden_cross                # golden_cross | macd_rsi
+  type: bb_bounce                   # bb_bounce | golden_cross | macd_rsi | breakout
   timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
   timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)
   adx_threshold: 20                 # ADX 추세 강도 기준 (골든크로스 전용)
@@ -71,8 +71,8 @@ strategy:
   volume_multiplier: 1.0            # 20일 평균 거래량 대비 배수 (1.0 = 평균 이상이면 OK)
 
   # 청산 조건
-  max_hold_days: 15                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도
-  target_return: 0.12               # 목표 수익률 (0.12 = +12%) — 도달 시 자동 매도
+  max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도 (최적화: 15→10)
+  target_return: 0.06               # 목표 수익률 (0.06 = +6%) — 도달 시 자동 매도 (최적화: 0.12→0.06)
 
 # --- 리스크 관리 ---
 risk:
@@ -83,10 +83,10 @@ risk:
 
   # 손절 (Stop Loss)
   stop_atr_multiplier: 2.5          # 초기 손절가 = 진입가 - ATR × 이 값 (ATR: 평균진폭)
-  max_stop_pct: 0.10                # 최대 손절 비율 (0.10 = -10%) — ATR 손절이 이보다 넓으면 이 값 적용
+  max_stop_pct: 0.07                # 최대 손절 비율 (0.07 = -7%) — 최적화: 0.10→0.07
 
   # 트레일링 스톱 (수익 보호)
-  trailing_atr_multiplier: 2.5      # 트레일링 = 고점 - ATR × 이 값
+  trailing_atr_multiplier: 2.0      # 트레일링 = 고점 - ATR × 이 값 (최적화: 2.5→2.0)
   trailing_activate_pct: 0.07       # 트레일링 활성화 수익률 (0.07 = +7% 이상 수익 시 시작)
 
   # 일일 손실 관리
