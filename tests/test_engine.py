@@ -284,15 +284,16 @@ class TestOnPriceUpdate:
         mock_deps["ds"].record_trade.assert_called()
 
     @patch("src.engine.is_market_open", return_value=True)
-    @patch("src.strategy.signals.check_entry_signal", return_value=True)
     @patch("src.strategy.signals.calculate_signal_score", return_value=3.0)
     @patch("src.strategy.signals.calculate_indicators", side_effect=lambda df, **kw: df)
     async def test_entry_check_for_candidate(
-        self, mock_calc_ind, mock_score, mock_entry, mock_market, engine, mock_deps
+        self, mock_calc_ind, mock_score, mock_market, engine, mock_deps
     ):
         """후보 종목에 대해 진입 조건 체크."""
         engine._running = True
         engine._candidates = ["005930"]
+        # 전략의 check_realtime_entry를 mock
+        engine._strategy.check_realtime_entry = MagicMock(return_value=True)
         mock_deps["risk_mgr"].pre_check.return_value = RiskCheckResult(
             approved=True
         )
@@ -308,6 +309,7 @@ class TestOnPriceUpdate:
         await engine.on_price_update(tick)
 
         mock_deps["risk_mgr"].pre_check.assert_called()
+        engine._strategy.check_realtime_entry.assert_called()
 
 
 # ── _record_buy 테스트 ──

@@ -11,11 +11,10 @@ from loguru import logger
 from pykrx import stock
 
 from data.column_mapper import OHLCV_MAP, map_columns
+from src.strategy.base_strategy import get_strategy
 from src.strategy.signals import (
     calculate_indicators,
     calculate_signal_score,
-    check_entry_signal,
-    check_golden_cross_entry,
 )
 
 
@@ -38,6 +37,7 @@ class Screener:
         self.strategy_config = config.get("strategy", {})
         self.watchlist = config.get("watchlist", [])
         self.strategy_type = self.strategy_config.get("type", "golden_cross")
+        self._strategy = get_strategy(self.strategy_type, self.strategy_config)
         self._ds = datastore
 
     def get_all_codes(self, market: str | None = None) -> list[str]:
@@ -120,33 +120,8 @@ class Screener:
                 if df_with_ind.empty:
                     continue
 
-                # 매수 신호 체크 (전략 타입에 따라 분기)
-                has_signal = False
-                if self.strategy_type == "golden_cross":
-                    has_signal = check_golden_cross_entry(
-                        df_with_ind,
-                        adx_threshold=self.strategy_config.get("adx_threshold", 20),
-                        volume_multiplier=self.strategy_config.get(
-                            "volume_multiplier", 1.0
-                        ),
-                    )
-                else:
-                    # MACD-RSI 전략 (레거시)
-                    df_60m = pd.DataFrame(
-                        {
-                            "sma5": [df_with_ind.iloc[-1]["sma5"]],
-                            "sma20": [df_with_ind.iloc[-1]["sma20"]],
-                        }
-                    )
-                    has_signal = check_entry_signal(
-                        df_with_ind,
-                        df_60m,
-                        rsi_entry_min=self.strategy_config.get("rsi_entry_min", 40),
-                        rsi_entry_max=self.strategy_config.get("rsi_entry_max", 65),
-                        volume_multiplier=self.strategy_config.get(
-                            "volume_multiplier", 1.5
-                        ),
-                    )
+                # 매수 신호 체크 (전략 인터페이스 사용)
+                has_signal = self._strategy.check_screening_entry(df_with_ind)
 
                 if has_signal:
                     score = calculate_signal_score(df_with_ind)

@@ -21,6 +21,7 @@ from src.notification.telegram_bot import TelegramBot
 from src.risk.position_sizer import PositionSizer
 from src.risk.risk_manager import RiskManager
 from src.risk.stop_manager import StopManager
+from src.strategy import get_strategy
 from src.strategy.screener import Screener
 from src.utils.config import config
 from src.utils.market_calendar import is_market_open
@@ -63,6 +64,12 @@ class TradingEngine:
             trailing_activate_pct=config.get("risk.trailing_activate_pct", 0.07),
         )
         self._telegram = TelegramBot()
+
+        # 전략 인스턴스
+        strategy_config = config.data.get("strategy", {})
+        strategy_type = strategy_config.get("type", "golden_cross")
+        self._strategy = get_strategy(strategy_type, strategy_config)
+        logger.info(f"전략 로드: {strategy_type}")
 
         # 상태
         self._candidates: list[str] = []  # 당일 매수 후보
@@ -311,19 +318,15 @@ class TradingEngine:
         return None
 
     async def _check_entry_conditions(self, tick: Tick):
-        """후보 종목 진입 조건 체크 — 일봉(추세) + 60분봉(타이밍) 2단계."""
-        from src.strategy.signals import (
-            calculate_indicators,
-            calculate_signal_score,
-            check_entry_signal,
-        )
+        """후보 종목 진입 조건 체크 — 전략 인터페이스 기반."""
+        from src.strategy.signals import calculate_indicators, calculate_signal_score
         import pandas as pd
 
         score = 0.0
         try:
             from datetime import timedelta
 
-            # 1층: 일봉 기반 추세 판단 (전일까지 캐시)
+            # 일봉 데이터 준비
             end = datetime.now().strftime("%Y-%m-%d")
             start = (datetime.now() - timedelta(days=130)).strftime("%Y-%m-%d")
             ohlcv = self._ds.get_cached_ohlcv(tick.code, start, end)
@@ -332,21 +335,7 @@ class TradingEngine:
 
             df_daily = pd.DataFrame(ohlcv)
             df_daily = calculate_indicators(df_daily)
-
-            # 일봉 추세 필터: SMA20 위 + RSI 적정 범위
             if df_daily.empty:
-                return
-            last = df_daily.iloc[-1]
-            rsi_min = config.get("strategy.rsi_entry_min", 40)
-            rsi_max = config.get("strategy.rsi_entry_max", 65)
-            if last.get("close", 0) <= last.get("sma20", 0):
-                return  # SMA20 아래 = 하락 추세
-            rsi = last.get("rsi", 50)
-            if rsi < rsi_min or rsi > rsi_max:
-                return  # RSI 범위 밖
-
-            # 2층: 일봉 매수 신호 체크 (골든크로스/MACD 조건)
-            if not check_entry_signal(df_daily, use_60m=False):
                 return
 
             # 신호 강도 점수
@@ -355,17 +344,10 @@ class TradingEngine:
             if score < min_score:
                 return
 
-            # 3층: 60분봉 기반 진입 타이밍 확인 (장중 데이터)
+            # 전략 인터페이스로 진입 판단 (일봉 + 60분봉)
             df_60m = self._minute_ohlcv_cache.get(tick.code)
-            if df_60m is not None and len(df_60m) >= 5:
-                df_60m_ind = calculate_indicators(df_60m)
-                if not df_60m_ind.empty:
-                    # 60분봉 단기 추세 확인: SMA5 > SMA20
-                    last_60m = df_60m_ind.iloc[-1]
-                    sma5 = last_60m.get("sma5", 0)
-                    sma20 = last_60m.get("sma20", 0)
-                    if sma5 > 0 and sma20 > 0 and sma5 <= sma20:
-                        return  # 60분봉 단기 하락 추세 → 타이밍 아님
+            if not self._strategy.check_realtime_entry(df_daily, df_60m):
+                return
         except Exception as e:
             logger.warning(f"진입 조건 체크 실패 ({tick.code}): {e}")
             return

@@ -1,6 +1,6 @@
 """pandas 기반 백테스트 엔진.
 
-CLI: python -m src.backtest.engine --strategy macd_rsi --period 2y
+CLI: python -m src.backtest.engine --strategy golden_cross --period 2y
 """
 
 import argparse
@@ -13,6 +13,7 @@ from loguru import logger
 from pykrx import stock
 
 from data.column_mapper import OHLCV_MAP, map_columns
+from src.strategy import get_strategy
 from src.strategy.signals import calculate_indicators
 
 # 비용 모델
@@ -75,72 +76,21 @@ class BacktestEngine:
         return result
 
     def generate_signals(
-        self, df: pd.DataFrame, params: dict | None = None
+        self, df: pd.DataFrame, params: dict | None = None,
+        strategy_name: str = "golden_cross",
     ) -> tuple[pd.Series, pd.Series]:
-        """지표 기반 entry/exit 시그널 생성.
-
-        Look-ahead bias 방지:
-        - entry = 조건 충족.shift(1)  # 전일 신호 -> 익일 진입
-        - exit = 조건 충족.shift(1)
+        """전략 인터페이스를 통한 entry/exit 시그널 생성.
 
         Args:
             df: OHLCV DataFrame (영문 컬럼).
-            params: 지표 파라미터 딕셔너리.
+            params: 전략 파라미터 딕셔너리.
+            strategy_name: 전략 이름 (config.yaml의 strategy.type).
 
         Returns:
             (entries, exits) 불리언 시리즈 튜플.
         """
-        p = params or {}
-
-        # 지표 파라미터 추출
-        indicator_params = {
-            "macd_fast": p.get("macd_fast", 12),
-            "macd_slow": p.get("macd_slow", 26),
-            "macd_signal": p.get("macd_signal", 9),
-            "rsi_period": p.get("rsi_period", 14),
-        }
-
-        df_ind = calculate_indicators(df, **indicator_params)
-
-        # 신호 파라미터
-        rsi_min = p.get("rsi_min", 35)
-        rsi_max = p.get("rsi_max", 70)
-        volume_multiplier = p.get("volume_multiplier", 1.2)
-        target_return = p.get("target_return", 0.10)
-        stop_atr_mult = p.get("stop_atr_mult", 2.0)
-
-        # --- Entry 조건 (AND) ---
-        cond_ma = df_ind["close"] > df_ind["sma20"]
-        cond_macd = (df_ind["macd_hist"] > 0) & (
-            df_ind["macd_hist"].shift(1) < 0
-        )
-        cond_rsi = (df_ind["rsi"] >= rsi_min) & (df_ind["rsi"] <= rsi_max)
-        cond_vol = df_ind["volume"] >= (
-            df_ind["volume_sma20"] * volume_multiplier
-        )
-
-        raw_entries = cond_ma & cond_macd & cond_rsi & cond_vol
-
-        # --- Exit 조건 (OR) ---
-        cond_macd_dead = (df_ind["macd_hist"] < 0) & (
-            df_ind["macd_hist"].shift(1) > 0
-        )
-        cond_rsi_high = df_ind["rsi"] > 70
-        cond_stop = df_ind["close"] < (
-            df_ind["close"].shift(1) - df_ind["atr"] * stop_atr_mult
-        )
-
-        raw_exits = cond_macd_dead | cond_rsi_high | cond_stop
-
-        # Look-ahead bias 방지: shift(1) 적용
-        entries = raw_entries.shift(1).astype("boolean").fillna(False).astype(bool)
-        exits = raw_exits.shift(1).astype("boolean").fillna(False).astype(bool)
-
-        # 인덱스를 원본 df_ind에 맞춤
-        entries.index = df_ind.index
-        exits.index = df_ind.index
-
-        return entries, exits
+        strategy = get_strategy(strategy_name, params or {})
+        return strategy.generate_backtest_signals(df)
 
     def _simulate_portfolio(
         self,
@@ -384,6 +334,7 @@ class BacktestEngine:
         start_date: str,
         end_date: str,
         params: dict | None = None,
+        strategy_name: str = "golden_cross",
     ) -> BacktestResult:
         """백테스트 실행.
 
@@ -426,7 +377,7 @@ class BacktestEngine:
 
         for code, df in price_data.items():
             try:
-                entries, exits = self.generate_signals(df, params)
+                entries, exits = self.generate_signals(df, params, strategy_name)
 
                 # calculate_indicators가 dropna하므로 close를 맞춤
                 indicator_params = {
@@ -533,8 +484,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--strategy",
         type=str,
-        default="macd_rsi",
-        help="전략 이름 (기본: macd_rsi)",
+        default="golden_cross",
+        help="전략 이름 (기본: golden_cross)",
     )
     parser.add_argument(
         "--period", type=str, default="2y", help="백테스트 기간 (예: 1y, 2y, 6m)"
@@ -601,7 +552,7 @@ if __name__ == "__main__":
         else:
             print("\n필터 통과 조합 없음")
     else:
-        result = engine.run(args.codes, start_date, end_date)
+        result = engine.run(args.codes, start_date, end_date, strategy_name=args.strategy)
 
         from src.backtest.report import BacktestReporter
 
