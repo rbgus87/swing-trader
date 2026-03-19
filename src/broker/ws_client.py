@@ -9,6 +9,7 @@ from datetime import datetime
 import websockets
 from loguru import logger
 from src.models import Tick
+from src.utils.market_calendar import is_ws_active_hours
 
 
 class KiwoomWebSocketClient:
@@ -22,6 +23,7 @@ class KiwoomWebSocketClient:
         self._ws = None
         self._running = False
         self._listen_task: asyncio.Task | None = None
+        self._subscribed: dict[str, list[str]] = {}  # {real_type: [codes]}
         self.on_tick_callback = None       # async Tick 수신 콜백
         self.on_order_callback = None      # async 체결 수신 콜백
 
@@ -77,6 +79,10 @@ class KiwoomWebSocketClient:
             "data": [{"item": codes, "type": [real_type]}]
         }
         await self._ws.send(json.dumps(msg))
+        # 구독 목록 기록 (재연결 시 복구용)
+        existing = set(self._subscribed.get(real_type, []))
+        existing.update(codes)
+        self._subscribed[real_type] = list(existing)
         logger.info(f"실시간 등록: {len(codes)}종목 (type={real_type})")
 
     async def unsubscribe(self, codes: list[str], real_type: str = "0B"):
@@ -89,6 +95,10 @@ class KiwoomWebSocketClient:
             "data": [{"item": codes, "type": [real_type]}]
         }
         await self._ws.send(json.dumps(msg))
+        # 구독 목록에서 제거
+        existing = set(self._subscribed.get(real_type, []))
+        existing -= set(codes)
+        self._subscribed[real_type] = list(existing)
         logger.info(f"실시간 해지: {len(codes)}종목")
 
     async def _listen(self):
@@ -102,7 +112,11 @@ class KiwoomWebSocketClient:
                     data = json.loads(message)
                     await self._dispatch(data)
                 except asyncio.TimeoutError:
-                    continue  # 타임아웃은 정상 (heartbeat 대기)
+                    if not is_ws_active_hours():
+                        logger.info("장 시간 외 — WebSocket 수신 대기 중지")
+                        self._running = False
+                        break
+                    continue  # 장중 타임아웃은 정상 (heartbeat 대기)
                 except Exception as e:
                     err_str = str(e)
                     if "1000" in err_str:
@@ -145,7 +159,11 @@ class KiwoomWebSocketClient:
                 logger.error(f"주문 체결 콜백 에러: {e}")
 
     async def _reconnect(self, max_retries: int = 5, base_delay: float = 2.0):
-        """자동 재연결 (지수 백오프, 최대 5회)."""
+        """자동 재연결 (지수 백오프, 최대 5회). 장 시간 외에는 시도하지 않음."""
+        if not is_ws_active_hours():
+            logger.info("장 시간 외 — 재연결 생략 (다음 장 시작 전 자동 연결)")
+            self._running = False
+            return
         for attempt in range(1, max_retries + 1):
             try:
                 logger.warning(f"WebSocket 재연결 시도 ({attempt}/{max_retries})")
@@ -166,6 +184,8 @@ class KiwoomWebSocketClient:
                     except asyncio.CancelledError:
                         pass
                 self._listen_task = asyncio.create_task(self._listen())
+                # 이전 구독 복구
+                await self._restore_subscriptions()
                 return
             except Exception as e:
                 logger.error(f"재연결 실패: {e}")
@@ -176,6 +196,24 @@ class KiwoomWebSocketClient:
                     await asyncio.sleep(delay)
         logger.critical("WebSocket 최대 재연결 횟수 초과")
         self._running = False
+
+    async def _restore_subscriptions(self):
+        """재연결 후 이전 구독 목록 복구."""
+        if not self._subscribed:
+            return
+        for real_type, codes in self._subscribed.items():
+            if codes:
+                msg = {
+                    "trnm": "REG",
+                    "grp_no": "1",
+                    "refresh": "1",
+                    "data": [{"item": codes, "type": [real_type]}]
+                }
+                try:
+                    await self._ws.send(json.dumps(msg))
+                    logger.info(f"구독 복구: {len(codes)}종목 (type={real_type})")
+                except Exception as e:
+                    logger.error(f"구독 복구 실패 (type={real_type}): {e}")
 
     @property
     def connected(self) -> bool:

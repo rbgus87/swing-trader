@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 import yaml
+from ruamel.yaml import YAML
 from dotenv import load_dotenv, set_key
 from PyQt5.QtCore import Qt, QLocale, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
@@ -243,8 +244,10 @@ class SettingsTab(QWidget):
 
     def _load_config(self):
         if self._config_path.exists():
+            ryaml = YAML()
+            ryaml.preserve_quotes = True
             with open(self._config_path, "r", encoding="utf-8") as f:
-                self._config = yaml.safe_load(f) or {}
+                self._config = ryaml.load(f) or {}
 
     def _init_ui(self):
         self._layout = QVBoxLayout(self)
@@ -879,14 +882,12 @@ class SettingsTab(QWidget):
             QMessageBox.critical(self, "오류", f"저장 실패: {e}")
 
     def _save_yaml(self):
-        """config.yaml 저장."""
+        """config.yaml 저장 (주석 보존)."""
+        ryaml = YAML()
+        ryaml.preserve_quotes = True
+        ryaml.width = 4096
         with open(self._config_path, "w", encoding="utf-8") as f:
-            yaml.dump(
-                self._config, f,
-                default_flow_style=False,
-                allow_unicode=True,
-                sort_keys=False,
-            )
+            ryaml.dump(self._config, f)
 
     def _save_env(self):
         """API 키를 .env 파일에 저장."""

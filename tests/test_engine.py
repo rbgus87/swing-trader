@@ -102,8 +102,9 @@ def mock_deps():
             )
         )
 
-        # RealtimeDataManager mock (async subscribe_list)
+        # RealtimeDataManager mock (async subscribe/subscribe_list)
         realtime_instance = MockRealtime.return_value
+        realtime_instance.subscribe = AsyncMock(return_value=None)
         realtime_instance.subscribe_list = AsyncMock(return_value=None)
 
         # TelegramBot mock (sync)
@@ -469,7 +470,7 @@ class TestPaperVsLive:
         mock_deps["order_mgr"].execute_order.assert_called_once()
 
     async def test_live_sell_failure_aborts(self, engine_live, mock_deps):
-        """live 모드에서 주문 실패 시 포지션 유지."""
+        """live 모드에서 주문 실패 시 포지션 open으로 복원."""
         mock_deps["order_mgr"].execute_order.return_value = OrderResult(
             success=False, order_no="", message="주문 실패"
         )
@@ -490,8 +491,12 @@ class TestPaperVsLive:
             pos, price=10800, reason=ExitReason.TARGET_REACHED
         )
 
-        # 주문 실패 시 포지션 update 미호출
-        mock_deps["ds"].update_position.assert_not_called()
+        # 주문 실패: selling → open 복원 (update_position 2회 호출)
+        calls = mock_deps["ds"].update_position.call_args_list
+        assert len(calls) == 2
+        assert calls[0] == ((1,), {"status": "selling"})
+        assert calls[1] == ((1,), {"status": "open"})
+        # 주문 실패 시 매매기록 미생성
         mock_deps["ds"].record_trade.assert_not_called()
 
 

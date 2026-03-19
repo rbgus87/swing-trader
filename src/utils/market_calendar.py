@@ -16,6 +16,10 @@ KST = pytz.timezone("Asia/Seoul")
 MARKET_OPEN = time(9, 0)
 MARKET_CLOSE = time(15, 30)
 
+# WebSocket 시세 수신 가능 시간 (시간외 포함)
+WS_DATA_START = time(8, 50)   # 동시호가 시작 전 마진
+WS_DATA_END = time(18, 10)    # 시간외 종료 후 마진
+
 
 def now_kst() -> datetime:
     """현재 KST 시각 반환."""
@@ -35,6 +39,19 @@ def is_market_open() -> bool:
         return False
     current_time = current.time()
     return MARKET_OPEN <= current_time < MARKET_CLOSE
+
+
+def is_ws_active_hours() -> bool:
+    """WebSocket 시세 수신이 가능한 시간대인지 판정.
+
+    거래일이고 08:50~18:10 사이면 True.
+    장마감 후 재연결 시도 방지, 타임아웃 오판 방지에 사용.
+    """
+    current = now_kst()
+    if not is_trading_day(current.date()):
+        return False
+    current_time = current.time()
+    return WS_DATA_START <= current_time < WS_DATA_END
 
 
 def is_trading_day(target_date: date | None = None) -> bool:

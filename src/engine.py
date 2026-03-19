@@ -38,20 +38,13 @@ class TradingEngine:
         self._ds.connect()
         self._ds.create_tables()
 
-        # 키움 API (REST + WebSocket) — IS_PAPER_TRADING으로 서버 자동 선택
-        is_paper = self.mode == "paper"
-        if is_paper:
-            base_url = config.get("broker.mock_base_url", "https://mockapi.kiwoom.com")
-            ws_url = config.get(
-                "broker.mock_ws_url",
-                "wss://mockapi.kiwoom.com:10000/api/dostk/websocket",
-            )
-        else:
-            base_url = config.get("broker.base_url", "https://api.kiwoom.com")
-            ws_url = config.get(
-                "broker.ws_url",
-                "wss://api.kiwoom.com:10000/api/dostk/websocket",
-            )
+        # 키움 API (REST + WebSocket) — paper/live 모두 실거래 서버 사용
+        # paper 모드는 주문만 시뮬레이션하고, 시세는 실서버에서 수신
+        base_url = config.get("broker.base_url", "https://api.kiwoom.com")
+        ws_url = config.get(
+            "broker.ws_url",
+            "wss://api.kiwoom.com:10000/api/dostk/websocket",
+        )
         appkey = config.get_env("KIWOOM_APPKEY", "")
         secretkey = config.get_env("KIWOOM_SECRETKEY", "")
 
@@ -104,7 +97,8 @@ class TradingEngine:
         # 스케줄러 등록
         screening_time = config.get("schedule.screening_time", "08:30")
         report_time = config.get("schedule.daily_report_time", "16:00")
-        reconnect_time = config.get("schedule.reconnect_time", "08:45")
+        ws_connect_time = config.get("schedule.ws_connect_time", "08:50")
+        ws_disconnect_time = config.get("schedule.ws_disconnect_time", "18:10")
 
         h, m = screening_time.split(":")
         self._scheduler.add_job(
@@ -116,9 +110,14 @@ class TradingEngine:
             self._daily_report, "cron", hour=int(h), minute=int(m)
         )
 
-        h, m = reconnect_time.split(":")
+        h, m = ws_connect_time.split(":")
         self._scheduler.add_job(
-            self._ensure_connection, "cron", hour=int(h), minute=int(m)
+            self._ws_connect, "cron", hour=int(h), minute=int(m)
+        )
+
+        h, m = ws_disconnect_time.split(":")
+        self._scheduler.add_job(
+            self._ws_disconnect, "cron", hour=int(h), minute=int(m)
         )
 
         # 일일 리셋 (09:00)
@@ -132,34 +131,18 @@ class TradingEngine:
 
         self._scheduler.start()
 
-        # 키움 연결 — paper/live 모두 WebSocket 사용 (시세 수신 동일)
-        # paper와 live의 차이는 주문 실행 여부뿐
-        await self._kiwoom.connect(use_websocket=True)
-
-        # 구독 대상: watchlist + 보유 포지션 (합집합)
-        subscribe_codes: set[str] = set()
-
-        # watchlist가 있으면 전체가 감시 대상 (= 후보)
+        # watchlist → 후보 등록 (WebSocket 연결 전에 준비)
         watchlist = config.get("watchlist", [])
         if watchlist:
-            subscribe_codes.update(watchlist)
             self._candidates = list(watchlist)
             logger.info(f"watchlist {len(watchlist)}종목 → 전체 후보 등록")
         else:
-            # watchlist 없으면 스크리닝으로 후보 선정 (모드 B)
             logger.info("watchlist 미설정 — 스크리닝 기반 모드")
 
-        # 보유 포지션 종목 추가 (청산 감시용)
-        open_positions = self._ds.get_open_positions()
-        if open_positions:
-            pos_codes = {p["code"] for p in open_positions}
-            subscribe_codes.update(pos_codes)
-            logger.info(f"보유 포지션 {len(pos_codes)}종목 추가")
-
-        # WebSocket 구독
-        if subscribe_codes:
-            await self._realtime.subscribe_list(list(subscribe_codes))
-            logger.info(f"실시간 구독 시작: 총 {len(subscribe_codes)}종목")
+        # 장 시간대이면 즉시 WebSocket 연결 (프로그램이 장중에 시작된 경우)
+        from src.utils.market_calendar import is_ws_active_hours
+        if is_ws_active_hours():
+            await self._ws_connect()
 
         # 서비스 시작 알림
         self._telegram.send_startup(self.mode)
@@ -792,6 +775,8 @@ class TradingEngine:
                             df = map_columns(df, OHLCV_MAP)
                             self._minute_ohlcv_cache[code] = df
                             success += 1
+                    else:
+                        logger.debug(f"60분봉 빈 응답 ({code}): raw={type(raw).__name__}, len={len(raw) if isinstance(raw, list) else 'N/A'}")
                     break  # 성공 시 재시도 루프 탈출
                 except Exception as e:
                     if "429" in str(e) and attempt == 0:
@@ -804,8 +789,41 @@ class TradingEngine:
 
         logger.info(f"60분봉 갱신 완료: {success}/{len(codes)}종목")
 
+    async def _ws_connect(self):
+        """WebSocket 연결 + 구독 (08:50 스케줄)."""
+        from src.utils.market_calendar import is_trading_day, now_kst
+        if not is_trading_day(now_kst().date()):
+            logger.info("비거래일 — WebSocket 연결 생략")
+            return
+
+        try:
+            await self._kiwoom.connect(use_websocket=True)
+        except Exception as e:
+            logger.error(f"WebSocket 연결 실패: {e}")
+            self._telegram.send_system_error(str(e), "ws_connect")
+            return
+
+        # 구독 대상: watchlist + 보유 포지션
+        subscribe_codes: set[str] = set()
+        if self._candidates:
+            subscribe_codes.update(self._candidates)
+        open_positions = self._ds.get_open_positions()
+        if open_positions:
+            subscribe_codes.update(p["code"] for p in open_positions)
+        if subscribe_codes:
+            await self._realtime.subscribe_list(list(subscribe_codes))
+            logger.info(f"WebSocket 연결 + 구독 완료: {len(subscribe_codes)}종목")
+
+    async def _ws_disconnect(self):
+        """WebSocket 명시적 종료 (18:10 스케줄)."""
+        if self._kiwoom._ws and self._kiwoom._ws.connected:
+            await self._kiwoom.disconnect()
+            logger.info("WebSocket 장마감 종료 (18:10)")
+        else:
+            logger.debug("WebSocket 이미 종료 상태")
+
     async def _ensure_connection(self):
-        """키움 API 연결 확인/재연결 (08:45)."""
+        """키움 API 연결 확인/재연결 — _ws_connect에 통합, 레거시 호환용."""
         if self._kiwoom._connected:
             logger.info("키움 API 연결 상태: 정상")
             return
