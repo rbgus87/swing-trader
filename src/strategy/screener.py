@@ -41,7 +41,15 @@ class Screener:
         self.strategy_config = config.get("strategy", {})
         self.watchlist = config.get("watchlist", [])
         self.strategy_type = self.strategy_config.get("type", "golden_cross")
-        self._strategy = get_strategy(self.strategy_type, self.strategy_config)
+        self._is_adaptive = self.strategy_type == "adaptive"
+
+        # adaptive 모드: 기본 전략으로 초기화 (국면별 전환은 run_daily_screening에서)
+        if self._is_adaptive:
+            regime_map = self.strategy_config.get("regime_strategy", {})
+            default_type = regime_map.get("sideways", "bb_bounce")
+            self._strategy = get_strategy(default_type, self.strategy_config)
+        else:
+            self._strategy = get_strategy(self.strategy_type, self.strategy_config)
         self._ds = datastore
 
         # Pre-screening 설정
@@ -360,6 +368,14 @@ class Screener:
             if not codes:
                 logger.warning("Pre-screening 결과 0종목 — light filter 종목으로 fallback")
                 codes = all_codes
+
+        # adaptive 모드: 국면에 맞는 전략으로 전환
+        if self._is_adaptive and regime:
+            regime_map = self.strategy_config.get("regime_strategy", {})
+            target_type = regime_map.get(regime)
+            if target_type and target_type != self._strategy.name:
+                self._strategy = get_strategy(target_type, self.strategy_config)
+                logger.info(f"스크리닝 전략 전환: {target_type} (국면: {regime})")
 
         # 2차: 기존 전략 기반 매수 신호 + 점수
         candidates: list[tuple[str, float]] = []
