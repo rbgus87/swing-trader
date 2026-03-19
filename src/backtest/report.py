@@ -57,6 +57,19 @@ class BacktestReporter:
 <img src="data:image/png;base64,{drawdown_b64}" style="max-width:100%; height:auto;">
 """
 
+        # 구간별 분석 (월별/연도별)
+        period_analysis_html = ""
+        if trades:
+            yearly_html = self._build_yearly_table(trades)
+            monthly_html = self._build_monthly_table(trades)
+            period_analysis_html = f"""
+<h2>연도별 성과</h2>
+{yearly_html}
+
+<h2>월별 성과</h2>
+{monthly_html}
+"""
+
         # 거래 내역 테이블
         trade_table_html = ""
         if trades:
@@ -102,6 +115,8 @@ img {{ border: 1px solid #ddd; border-radius: 4px; margin: 10px 0; }}
 
 {charts_html}
 
+{period_analysis_html}
+
 {trade_table_html}
 
 <div class="footer">
@@ -117,11 +132,14 @@ swing-trader 백테스트 엔진
         logger.info(f"HTML 리포트 생성: {output_path}")
         return output_path
 
-    def print_summary(self, result: BacktestResult) -> None:
+    def print_summary(
+        self, result: BacktestResult, trades: list[dict] | None = None,
+    ) -> None:
         """콘솔 요약 출력.
 
         Args:
             result: BacktestResult 성과 지표.
+            trades: 거래 내역 (월별/연도별 분석용, 선택).
         """
         print("\n" + "=" * 50)
         print("       백테스트 성과 요약")
@@ -143,6 +161,35 @@ swing-trader 백테스트 엔진
             for k, v in result.params.items():
                 print(f"    {k}: {v}")
             print()
+
+        # 연도별/월별 콘솔 출력
+        if trades:
+            self._print_yearly_summary(trades)
+
+    @staticmethod
+    def _print_yearly_summary(trades: list[dict]) -> None:
+        """연도별 성과 콘솔 출력."""
+        from collections import defaultdict
+        yearly: dict[str, list[float]] = defaultdict(list)
+        for t in trades:
+            exit_date = t.get("exit_date", "")
+            if len(exit_date) >= 4:
+                yearly[exit_date[:4]].append(t.get("return", 0))
+
+        if not yearly:
+            return
+
+        print("\n  연도별 성과:")
+        print(f"  {'연도':>6}  {'거래':>4}  {'승률':>6}  {'평균':>8}  {'누적':>8}")
+        print("  " + "-" * 38)
+        for year in sorted(yearly.keys()):
+            rets = yearly[year]
+            cnt = len(rets)
+            wr = sum(1 for r in rets if r > 0) / cnt * 100 if cnt else 0
+            avg = sum(rets) / cnt * 100 if cnt else 0
+            tot = sum(rets) * 100
+            print(f"  {year:>6}  {cnt:>4}  {wr:>5.1f}%  {avg:>+7.2f}%  {tot:>+7.2f}%")
+        print()
 
     @staticmethod
     def _plot_equity_curve(equity: pd.Series) -> str:
@@ -256,6 +303,76 @@ swing-trader 백테스트 엔진
             "<tr><th>#</th><th>매수일</th><th>매도일</th>"
             "<th>매수가</th><th>매도가</th><th>수량</th>"
             "<th>수익률</th><th>보유일</th></tr>\n"
+            + "\n".join(rows)
+            + "\n</table>"
+        )
+
+    @staticmethod
+    def _build_yearly_table(trades: list[dict]) -> str:
+        """연도별 성과 테이블."""
+        from collections import defaultdict
+        yearly: dict[str, list[float]] = defaultdict(list)
+        for t in trades:
+            exit_date = t.get("exit_date", "")
+            if len(exit_date) >= 4:
+                year = exit_date[:4]
+                yearly[year].append(t.get("return", 0))
+
+        rows = []
+        for year in sorted(yearly.keys()):
+            returns = yearly[year]
+            count = len(returns)
+            wins = sum(1 for r in returns if r > 0)
+            win_rate = wins / count * 100 if count > 0 else 0
+            avg_ret = sum(returns) / count * 100 if count > 0 else 0
+            total_ret = sum(returns) * 100
+            css = "positive" if total_ret > 0 else ("negative" if total_ret < 0 else "")
+            rows.append(
+                f'<tr><td>{year}</td><td>{count}</td>'
+                f'<td>{win_rate:.1f}%</td>'
+                f'<td class="{css}">{avg_ret:+.2f}%</td>'
+                f'<td class="{css}">{total_ret:+.2f}%</td></tr>'
+            )
+
+        return (
+            "<table>\n"
+            "<tr><th>연도</th><th>거래 수</th><th>승률</th>"
+            "<th>평균 수익</th><th>누적 수익</th></tr>\n"
+            + "\n".join(rows)
+            + "\n</table>"
+        )
+
+    @staticmethod
+    def _build_monthly_table(trades: list[dict]) -> str:
+        """월별 성과 테이블."""
+        from collections import defaultdict
+        monthly: dict[str, list[float]] = defaultdict(list)
+        for t in trades:
+            exit_date = t.get("exit_date", "")
+            if len(exit_date) >= 7:
+                month = exit_date[:7]  # "YYYY-MM"
+                monthly[month].append(t.get("return", 0))
+
+        rows = []
+        for month in sorted(monthly.keys()):
+            returns = monthly[month]
+            count = len(returns)
+            wins = sum(1 for r in returns if r > 0)
+            win_rate = wins / count * 100 if count > 0 else 0
+            avg_ret = sum(returns) / count * 100 if count > 0 else 0
+            total_ret = sum(returns) * 100
+            css = "positive" if total_ret > 0 else ("negative" if total_ret < 0 else "")
+            rows.append(
+                f'<tr><td>{month}</td><td>{count}</td>'
+                f'<td>{win_rate:.1f}%</td>'
+                f'<td class="{css}">{avg_ret:+.2f}%</td>'
+                f'<td class="{css}">{total_ret:+.2f}%</td></tr>'
+            )
+
+        return (
+            "<table>\n"
+            "<tr><th>월</th><th>거래 수</th><th>승률</th>"
+            "<th>평균 수익</th><th>누적 수익</th></tr>\n"
             + "\n".join(rows)
             + "\n</table>"
         )

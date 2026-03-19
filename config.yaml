@@ -4,28 +4,42 @@
 # 민감 정보(API키, 계좌번호 등)는 .env 파일에서 관리합니다.
 # 이 파일은 git에 커밋되므로 비밀번호/토큰을 절대 포함하지 마세요.
 
-# --- 확정 종목 리스트 (KOSPI 대형주 20종목) ---
-watchlist:
-  - "005930"   # 삼성전자
-  - "000660"   # SK하이닉스
-  - "005380"   # 현대차
-  - "000270"   # 기아
-  - "068270"   # 셀트리온
-  - "035420"   # NAVER
-  - "035720"   # 카카오
-  - "105560"   # KB금융
-  - "055550"   # 신한지주
-  - "066570"   # LG전자
-  - "006400"   # 삼성SDI
-  - "003670"   # 포스코퓨처엠
-  - "012330"   # 현대모비스
-  - "028260"   # 삼성물산
-  - "096770"   # SK이노베이션
-  - "003550"   # LG
-  - "034730"   # SK
-  - "032830"   # 삼성생명
-  - "030200"   # KT
-  - "017670"   # SK텔레콤
+# --- 종목 리스트 ---
+# watchlist가 비어있으면 pre_screening + screening 2단계 동적 선별 모드로 동작
+# watchlist에 종목이 있으면 해당 종목만 감시 (기존 고정 모드)
+watchlist: []
+# watchlist:
+#   - "005930"   # 삼성전자
+#   - "000660"   # SK하이닉스
+#   - "005380"   # 현대차
+#   (... 필요시 고정 종목 추가)
+
+# --- 1차 Pre-Screening (장전 후보군 축소 필터) ---
+# 시장 국면(regime)에 따라 조건식을 자동 선택
+pre_screening:
+  # 공통 필터
+  min_market_cap: 100_000_000_000    # 시가총액 1000억원 이상
+  volume_ratio_threshold: 1.5        # 당일 거래량 / 20일 평균 거래량 >= 150%
+
+  # 조건식 1: 눌림목 (trending 국면용 — golden_cross/breakout 전략과 매칭)
+  # 52주 고점 근처에서 조정 중이나 추세는 유지된 종목
+  pullback:
+    week52_high_min: -0.15           # 52주 최고가 대비 -15% 이상
+    week52_high_max: 0.0             # 52주 최고가 대비 0% 이하
+    rsi_min: 45                      # RSI(14) 하한
+    rsi_max: 65                      # RSI(14) 상한
+    disparity_sma20_min: 100         # 이격도(종가/SMA20) 하한 (%)
+    disparity_sma20_max: 200         # 이격도(종가/SMA20) 상한 (%)
+    disparity_sma60_min: 100         # 이격도(종가/SMA60) 하한 (%)
+    disparity_sma60_max: 200         # 이격도(종가/SMA60) 상한 (%)
+
+  # 조건식 2: 변동성 수축 (sideways 국면용 — bb_bounce 전략과 매칭)
+  # 횡보 압축 후 거래량 터지면서 방향성 출현 예상 종목
+  squeeze:
+    price_range_period: 20           # 변동폭 측정 기간 (일)
+    price_range_max: 0.15            # 최고최저폭 15% 이하 (변동성 수축)
+    min_price: 3000                  # 최소 주가 (원)
+    max_price: 200000                # 최대 주가 (원)
 
 # --- 매매 기본 설정 ---
 # 모드 제어는 .env의 IS_PAPER_TRADING으로 관리 (True=모의, False=실거래)
@@ -33,6 +47,7 @@ trading:
   universe: kospi_kosdaq            # 매매 대상 시장 (kospi | kosdaq | kospi_kosdaq)
   max_positions: 3                  # 동시에 보유할 수 있는 최대 종목 수 (자본금에 따라 조절)
   reentry_cooldown_days: 3          # 같은 종목을 매도 후 다시 매수하기까지 대기 영업일
+  reentry_cooldown_trend_days: 1    # 추세 유지 시 (SMA5>SMA20, ADX>임계값) 단축 쿨다운
   initial_capital: 3_000_000        # 실거래/페이퍼 초기 자본금 (원)
   order_type: market                # 주문 호가 유형 (market: 시장가, limit: 지정가)
 
@@ -78,6 +93,11 @@ strategy:
   # 청산 조건
   max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도 (최적화: 15→10)
   target_return: 0.06               # 목표 수익률 (0.06 = +6%) — 도달 시 자동 매도 (최적화: 0.12→0.06)
+
+  # 부분 매도 설정
+  partial_sell_enabled: true         # 부분 매도 활성화
+  partial_target_pct: 0.5            # 목표가의 50% 도달 시 부분 매도 트리거
+  partial_sell_ratio: 0.5            # 보유 수량의 50%를 매도
 
 # --- 리스크 관리 ---
 risk:

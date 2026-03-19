@@ -67,11 +67,17 @@ swing-trader/
 │       └── market_calendar.py
 ├── data/
 │   ├── column_mapper.py    ← pykrx 컬럼 한→영 변환
+│   ├── krx_api.py          ← KRX Open API 클라이언트
+│   ├── provider.py         ← DataProvider (KRX API/pykrx/DART 통합)
+│   ├── stock_names.json    ← 종목명 캐시
 │   └── cache/              ← 일봉 캐시 (gitignore)
+├── scripts/
+│   └── run_walk_forward.py ← Walk-Forward 검증 실행
 ├── tests/
+├── reports/                ← 백테스트 HTML 리포트 (gitignore)
 ├── logs/                   ← 매매 로그 (gitignore)
 ├── config.yaml             ← 설정 파일 (secrets 제외)
-└── .env                    ← API 키: KIWOOM_APPKEY, KIWOOM_SECRETKEY 등 (gitignore 필수)
+└── .env                    ← API 키: KIWOOM_*, KRX_API_KEY, DART_API_KEY (gitignore 필수)
 ```
 
 ## 기술 스택
@@ -80,7 +86,7 @@ swing-trader/
 |------|-----------|------|
 | 브로커 | 키움 REST API (httpx + websockets) | OS 무관, asyncio 기반 |
 | 이벤트루프 | asyncio | REST/WebSocket 비동기 처리 |
-| 데이터 | pykrx, pandas | 일봉/재무 데이터 |
+| 데이터 | KRX API, pykrx(폴백), DART API | DataProvider 경유, 인덱스/OHLCV/재무 |
 | 지표 | pandas-ta | TA-Lib 대체 (설치 간편) |
 | 백테스트 | pandas (자체 구현) | 파라미터 최적화 포함 |
 | 스케줄링 | APScheduler | 장 시작/마감 작업 |
@@ -95,11 +101,17 @@ swing-trader/
 # 환경 설정
 pip install -r requirements.txt
 
-# 백테스트 실행 (장 외 가능)
-python -m src.backtest.engine --strategy macd_rsi --period 2y
+# 백테스트 실행 (단일 종목 독립)
+python -m src.backtest.engine --strategy adaptive --period 2y --codes 005930
+
+# 포트폴리오 백테스트 (다종목 통합 자본)
+python -m src.backtest.engine --portfolio --strategy adaptive --codes 005930 000660 005380 --capital 3000000 --max-positions 3
+
+# Walk-Forward 검증
+python scripts/run_walk_forward.py --strategy golden_cross --train 24 --test 3
 
 # 파라미터 최적화
-python -m src.backtest.optimizer --strategy macd_rsi --grid
+python -m src.backtest.engine --optimize --codes 005930 --period 2y
 
 # 시뮬레이션 (Paper Trading)
 python main.py --mode paper

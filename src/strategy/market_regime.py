@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 from loguru import logger
-from pykrx import stock
 
 
 class MarketRegime:
@@ -59,19 +58,21 @@ class MarketRegime:
             return self._is_bullish
 
         try:
-            # KOSPI 지수 일봉 조회 (200일 + 여유분)
+            # KOSPI 지수 일봉 조회 — DataProvider 경유 (KRX API → pykrx → KODEX200 폴백)
+            from data.provider import get_provider
+            provider = get_provider()
             start = (datetime.strptime(date, "%Y%m%d") - timedelta(days=400)).strftime("%Y%m%d")
-            df = stock.get_index_ohlcv_by_date(start, date, "1001")  # 1001 = KOSPI
+            df = provider.get_kospi_ohlcv(start, date)
 
             if df.empty or len(df) < self._sma_period:
-                logger.warning(f"KOSPI 데이터 부족 ({len(df)}일) — 추세장으로 간주")
+                logger.warning(f"KOSPI 데이터 부족 ({len(df) if not df.empty else 0}일) — 추세장으로 간주")
                 self._is_bullish = True
                 return True
 
-            # 종가 컬럼명 처리 (pykrx 버전에 따라 다를 수 있음)
-            close_col = "종가" if "종가" in df.columns else "close"
-            high_col = "고가" if "고가" in df.columns else "high"
-            low_col = "저가" if "저가" in df.columns else "low"
+            # DataProvider가 영문 컬럼으로 통일
+            close_col = "close"
+            high_col = "high"
+            low_col = "low"
             closes = df[close_col]
 
             # 1. KOSPI 200일선 체크
@@ -153,20 +154,13 @@ class MarketRegime:
         return 25.0  # 실패 시 추세 있음으로 간주
 
     def _get_vkospi(self, date: str) -> float:
-        """VKOSPI(변동성지수) 조회."""
+        """VKOSPI(변동성지수) 조회 — DataProvider 경유."""
         try:
-            start = (datetime.strptime(date, "%Y%m%d") - timedelta(days=10)).strftime("%Y%m%d")
-            df = stock.get_index_ohlcv_by_date(start, date, "1004")  # 1004 = VKOSPI
-
-            if df.empty or len(df) == 0:
-                return 0.0
-
-            close_col = "종가" if "종가" in df.columns else "close"
-            return float(df[close_col].iloc[-1])
-
+            from data.provider import get_provider
+            return get_provider().get_vkospi(date)
         except Exception as e:
             logger.debug(f"VKOSPI 조회 실패: {e}")
-            return 0.0  # 실패 시 공포 없음으로 간주
+            return 0.0
 
     @property
     def is_bullish(self) -> bool:

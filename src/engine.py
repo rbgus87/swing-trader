@@ -99,6 +99,8 @@ class TradingEngine:
         self._atr_cache: dict[str, float] = {}  # 종목별 ATR 캐시
         self._last_entry_check: dict[str, float] = {}  # 종목별 마지막 진입 체크 시각 (throttle)
         self._minute_ohlcv_cache: dict[str, "pd.DataFrame"] = {}  # 종목별 60분봉 캐시
+        self._partial_sold_ids: set[int] = set()  # 부분 매도 완료된 포지션 ID
+        self._daily_trades_cache: list[dict] | None = None  # 당일 매매 기록 캐시
 
         # MDD 초기 자본 설정
         self._risk_mgr.set_initial_capital(float(self._initial_capital))
@@ -230,13 +232,22 @@ class TradingEngine:
                     f"장전 데이터 프리로드 완료: {len(watchlist)}종목 OHLCV + ATR 갱신"
                 )
             else:
-                # 모드 B: 전체 시장 스캔 → 후보 선정
+                # 모드 B: pre-screening + screening 2단계 선별
+                regime = self._market_regime.regime_type if is_bullish else None
                 self._candidates = await asyncio.to_thread(
-                    self._screener.run_daily_screening, today
+                    self._screener.run_daily_screening, today, regime
                 )
-                if self._candidates:
-                    await self._realtime.subscribe_list(self._candidates)
-                logger.info(f"스크리닝 완료: {len(self._candidates)}종목 후보 선정")
+                # 보유 포지션도 WebSocket 구독 보장
+                open_positions = self._ds.get_open_positions()
+                subscribe_codes = set(self._candidates)
+                if open_positions:
+                    subscribe_codes.update(p["code"] for p in open_positions)
+                if subscribe_codes:
+                    await self._realtime.subscribe_list(list(subscribe_codes))
+                logger.info(
+                    f"스크리닝 완료: {len(self._candidates)}종목 후보 선정"
+                    f" (국면: {regime or 'bearish'})"
+                )
 
             self._telegram.send(
                 f"📊 당일 매수 후보: {len(self._candidates)}종목"
@@ -321,7 +332,20 @@ class TradingEngine:
         if self._stop_mgr.is_stopped(pos, current_price):
             return ExitReason.STOP_LOSS
 
-        # 2. 목표가 도달
+        # 2a. 부분 매도: 목표가의 N% 도달 시 (아직 부분 매도 안 한 포지션만)
+        partial_enabled = config.get("strategy.partial_sell_enabled", False)
+        if (
+            partial_enabled
+            and pos.id not in self._partial_sold_ids
+            and pos.target_price > 0
+        ):
+            partial_pct = config.get("strategy.partial_target_pct", 0.5)
+            target_return_val = (pos.target_price - pos.entry_price) / pos.entry_price
+            partial_trigger = pos.entry_price * (1 + target_return_val * partial_pct)
+            if current_price >= partial_trigger:
+                return ExitReason.PARTIAL_TARGET
+
+        # 2b. 목표가 도달 (전량 매도)
         if pos.target_price > 0 and current_price >= pos.target_price:
             return ExitReason.TARGET_REACHED
 
@@ -388,6 +412,10 @@ class TradingEngine:
             if score < min_score:
                 return
 
+            # 주봉 SMA20 필터: 주간 추세 확인 후 진입
+            if not self._check_weekly_trend(df_daily):
+                return
+
             # 전략 인터페이스로 진입 판단 (일봉 + 60분봉)
             df_60m = self._minute_ohlcv_cache.get(tick.code)
             if not self._strategy.check_realtime_entry(df_daily, df_60m):
@@ -396,7 +424,19 @@ class TradingEngine:
             logger.warning(f"진입 조건 체크 실패 ({tick.code}): {e}")
             return
 
-        # 4. 리스크 사전 체크
+        # 4. 리스크 사전 체크 (추세 유지 시 재진입 쿨다운 단축)
+        trend_intact = False
+        try:
+            latest = df_daily.iloc[-1]
+            adx_thr = config.get("strategy.adx_threshold", 20)
+            if (
+                latest.get("sma5", 0) > latest.get("sma20", 0)
+                and latest.get("adx", 0) > adx_thr
+            ):
+                trend_intact = True
+        except Exception:
+            pass
+
         name = self._get_stock_name(tick.code)
         signal = Signal(
             code=tick.code,
@@ -405,7 +445,7 @@ class TradingEngine:
             price=tick.price,
             score=score,
         )
-        risk_result = self._risk_mgr.pre_check(signal)
+        risk_result = self._risk_mgr.pre_check(signal, trend_intact=trend_intact)
         if not risk_result.approved:
             return
 
@@ -435,7 +475,19 @@ class TradingEngine:
             await self._record_buy(tick, qty)
 
     async def _execute_sell(self, position: Position, price: int, reason: ExitReason):
-        """매도 실행."""
+        """매도 실행. 부분 매도(PARTIAL_TARGET) 시 절반만 매도하고 포지션 유지."""
+        # 부분 매도 수량 결정
+        is_partial = reason == ExitReason.PARTIAL_TARGET
+        if is_partial:
+            sell_ratio = config.get("strategy.partial_sell_ratio", 0.5)
+            sell_qty = max(1, int(position.quantity * sell_ratio))
+            # 잔여 수량이 0이 되면 전량 매도로 전환
+            if sell_qty >= position.quantity:
+                is_partial = False
+                sell_qty = position.quantity
+        else:
+            sell_qty = position.quantity
+
         if self.mode == "live":
             # 매도 재시도 제한 (최대 3회)
             retry_count = self._sell_retry_counts.get(position.id, 0)
@@ -456,7 +508,7 @@ class TradingEngine:
 
             result = await self._order_mgr.execute_order(
                 position.code,
-                position.quantity,
+                sell_qty,
                 order_price,
                 ORDER_SELL,
                 hoga,
@@ -469,29 +521,34 @@ class TradingEngine:
                 logger.warning(f"매도 실패 ({retry_count + 1}/3): {position.code}")
                 return
 
-            # live: 주문 접수 성공 → 체결 이벤트(on_chejan)에서 최종 종료
-            # 여기서는 selling 상태 유지, 체결 확인 후 closed로 변경
-            logger.info(f"매도 주문 접수: {position.code} (체결 대기 중)")
+            logger.info(f"매도 주문 접수: {position.code} ({'부분' if is_partial else '전량'}, 체결 대기 중)")
 
-        # paper 모드: 즉시 포지션 종료
-        if self.mode == "paper":
-            self._ds.update_position(position.id, status="closed")
+        # 포지션 상태 업데이트
+        if is_partial:
+            # 부분 매도: 수량 감소, 포지션 유지
+            remaining_qty = position.quantity - sell_qty
+            self._ds.update_position(position.id, quantity=remaining_qty, status="open")
+            self._partial_sold_ids.add(position.id)
+            logger.info(f"부분 매도 완료: {position.code} {sell_qty}주 매도, {remaining_qty}주 잔여 (트레일링 계속)")
+        else:
+            if self.mode == "paper":
+                self._ds.update_position(position.id, status="closed")
         self._invalidate_positions_cache()
         self._sell_retry_counts.pop(position.id, None)
 
-        # 손익 계산
-        pnl = (price - position.entry_price) * position.quantity
+        # 손익 계산 (매도 수량 기준)
+        pnl = (price - position.entry_price) * sell_qty
         pnl_pct = (price - position.entry_price) / position.entry_price
-        fee = price * position.quantity * 0.00015
-        tax = price * position.quantity * 0.002  # 매도세
+        fee = price * sell_qty * 0.00015
+        tax = price * sell_qty * 0.002  # 매도세
 
         trade = TradeRecord(
             code=position.code,
             name=position.name,
             side="sell",
             price=price,
-            quantity=position.quantity,
-            amount=price * position.quantity,
+            quantity=sell_qty,
+            amount=price * sell_qty,
             fee=fee,
             tax=tax,
             pnl=float(pnl),
@@ -500,8 +557,10 @@ class TradingEngine:
             executed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
         self._ds.record_trade(trade)
+        self._daily_trades_cache = None  # 매매 발생 → 당일 trades 캐시 갱신
 
         # 텔레그램 알림
+        sell_label = f"부분매도 {sell_qty}주" if is_partial else "전량매도"
         if pnl >= 0:
             net_pnl = pnl - fee - tax
             self._telegram.send_sell_executed_profit(
@@ -512,7 +571,7 @@ class TradingEngine:
                 int(pnl),
                 pnl_pct * 100,
                 int(net_pnl),
-                net_pnl / (position.entry_price * position.quantity) * 100,
+                net_pnl / (position.entry_price * sell_qty) * 100,
             )
         else:
             self._telegram.send_sell_executed_loss(
@@ -527,8 +586,44 @@ class TradingEngine:
 
         logger.log(
             "TRADE",
-            f"매도 {position.code} @ {price:,} ({reason.value}), PnL: {pnl:+,}",
+            f"{sell_label} {position.code} @ {price:,} ({reason.value}), PnL: {pnl:+,}",
         )
+
+    @staticmethod
+    def _check_weekly_trend(df_daily: "pd.DataFrame") -> bool:
+        """주봉 SMA20 필터 — 일봉 데이터를 주봉으로 리샘플링하여 추세 확인.
+
+        Args:
+            df_daily: 지표 계산 완료된 일봉 DataFrame (최소 100행 권장).
+
+        Returns:
+            주간 종가 > 주봉 SMA20이면 True.
+        """
+        import pandas as pd
+        try:
+            if len(df_daily) < 60:
+                return True  # 데이터 부족 시 필터 통과
+
+            # 날짜 인덱스가 없으면 리샘플링 불가 → 필터 통과
+            if not hasattr(df_daily.index, 'to_period'):
+                return True
+
+            weekly = df_daily.resample("W").agg({
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }).dropna()
+
+            if len(weekly) < 20:
+                return True  # 주봉 데이터 부족 시 필터 통과
+
+            weekly_sma20 = weekly["close"].rolling(20).mean().iloc[-1]
+            weekly_close = weekly["close"].iloc[-1]
+            return weekly_close > weekly_sma20
+        except Exception:
+            return True  # 오류 시 필터 통과 (보수적)
 
     def _get_atr(self, code: str, fallback_price: int = 0) -> float:
         """종목의 ATR 조회 — OHLCV 캐시 우선, 없으면 가격 기반 추정.
@@ -569,11 +664,10 @@ class TradingEngine:
         return atr
 
     def _get_stock_name(self, code: str) -> str:
-        """종목명 조회 (pykrx 캐시)."""
+        """종목명 조회 (DataProvider 경유, 캐시)."""
         try:
-            from pykrx import stock
-            name = stock.get_market_ticker_name(code)
-            return name or code
+            from data.provider import get_provider
+            return get_provider().get_stock_name(code)
         except Exception:
             return code
 
@@ -617,6 +711,7 @@ class TradingEngine:
             executed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
         self._ds.record_trade(trade)
+        self._daily_trades_cache = None  # 매매 발생 → 당일 trades 캐시 갱신
 
         capital_pct = (tick.price * qty) / self._initial_capital if self._initial_capital > 0 else 0
         self._telegram.send_buy_executed(
@@ -646,10 +741,13 @@ class TradingEngine:
             current = self._latest_prices.get(code, entry_price)
             unrealized_pnl += (current - entry_price) * qty
 
-        # 당일 실현 손익
-        today = datetime.now().strftime("%Y-%m-%d")
-        trades = self._ds.get_trades_by_date(today)
-        realized_pnl = sum(t.get("pnl", 0) for t in trades if t["side"] == "sell")
+        # 당일 실현 손익 (메모리 캐시 — 매매 발생 시만 갱신)
+        if self._daily_trades_cache is None:
+            today = datetime.now().strftime("%Y-%m-%d")
+            self._daily_trades_cache = self._ds.get_trades_by_date(today)
+        realized_pnl = sum(
+            t.get("pnl", 0) for t in self._daily_trades_cache if t["side"] == "sell"
+        )
 
         total_pnl = realized_pnl + unrealized_pnl
         pnl_pct = total_pnl / self._initial_capital if self._initial_capital > 0 else 0.0
@@ -840,6 +938,14 @@ class TradingEngine:
         self._atr_cache.clear()  # ATR 캐시 리프레시
         self._last_entry_check.clear()  # 진입 체크 쓰로틀 초기화
         self._minute_ohlcv_cache.clear()  # 60분봉 캐시 초기화
+        self._partial_sold_ids.clear()  # 부분 매도 추적 초기화
+        self._daily_trades_cache = None  # 당일 trades 캐시 초기화
+
+        # OHLCV 캐시 정리 (400일 이상 된 데이터 삭제)
+        try:
+            self._ds.cleanup_ohlcv_cache(400)
+        except Exception as e:
+            logger.warning(f"OHLCV 캐시 정리 실패 (무시): {e}")
 
         # 보유 포지션 hold_days 갱신
         positions = self._ds.get_open_positions()

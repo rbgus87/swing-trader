@@ -1,16 +1,20 @@
 """종목 스크리닝 — 장 시작 전(08:30) 실행.
 
 pykrx를 사용하여 전종목 OHLCV를 수집하고,
-유동성 필터 + 기술적 지표 기반 매수 후보를 선별.
+2단계 필터링(pre-screening → screening)으로 매수 후보를 선별.
+
+흐름:
+  1차 Pre-Screening: 국면별 조건식으로 후보군 축소 (2,500 → 30~50종목)
+  2차 Screening: 전략별 매수 신호 + 점수 기반 최종 선정 (30~50 → 10~20종목)
 """
 
 from datetime import datetime, timedelta
 
 import pandas as pd
 from loguru import logger
-from pykrx import stock
 
 from data.column_mapper import OHLCV_MAP, map_columns
+from data.provider import get_provider
 from src.strategy.base_strategy import get_strategy
 from src.strategy.signals import (
     calculate_indicators,
@@ -40,6 +44,29 @@ class Screener:
         self._strategy = get_strategy(self.strategy_type, self.strategy_config)
         self._ds = datastore
 
+        # Pre-screening 설정
+        pre = config.get("pre_screening", {})
+        self._pre_min_market_cap = pre.get("min_market_cap", 100_000_000_000)
+        self._pre_volume_ratio = pre.get("volume_ratio_threshold", 1.5)
+
+        # 조건식 1: 눌림목 (trending)
+        pullback = pre.get("pullback", {})
+        self._pb_week52_min = pullback.get("week52_high_min", -0.15)
+        self._pb_week52_max = pullback.get("week52_high_max", 0.0)
+        self._pb_rsi_min = pullback.get("rsi_min", 45)
+        self._pb_rsi_max = pullback.get("rsi_max", 65)
+        self._pb_disp20_min = pullback.get("disparity_sma20_min", 100)
+        self._pb_disp20_max = pullback.get("disparity_sma20_max", 200)
+        self._pb_disp60_min = pullback.get("disparity_sma60_min", 100)
+        self._pb_disp60_max = pullback.get("disparity_sma60_max", 200)
+
+        # 조건식 2: 변동성 수축 (sideways)
+        squeeze = pre.get("squeeze", {})
+        self._sq_range_period = squeeze.get("price_range_period", 20)
+        self._sq_range_max = squeeze.get("price_range_max", 0.15)
+        self._sq_min_price = squeeze.get("min_price", 3000)
+        self._sq_max_price = squeeze.get("max_price", 200000)
+
     def get_all_codes(self, market: str | None = None) -> list[str]:
         """전종목 코드 수집.
 
@@ -49,31 +76,251 @@ class Screener:
         Returns:
             종목 코드 리스트.
         """
+        provider = get_provider()
         if market:
-            return stock.get_market_ticker_list(market=market)
+            m = market.lower()
+            return provider.get_ticker_list(market=m)
 
+        return provider.get_ticker_list(market=self.universe)
+
+    # ── Light Pre-Filter (0차 필터) ──
+
+    def _light_pre_filter(self, date: str) -> tuple[list[str], dict[str, int]]:
+        """전종목 데이터를 1콜로 가져와 시총+가격으로 빠르게 걸러냄.
+
+        KRX API get_all_stocks_today 사용 → 1콜로 전종목 종가/시총/거래량 확보.
+        시가총액, 주가범위 기본 필터를 OHLCV 개별 조회 전에 적용.
+
+        Returns:
+            (필터 통과 종목코드 리스트, {코드: 시총} dict).
+        """
+        provider = get_provider()
+        market_caps: dict[str, int] = {}
+        passed_codes: list[str] = []
+
+        try:
+            for market in self._get_markets():
+                df = provider.get_all_stocks_today(date, market.lower())
+                if df.empty:
+                    continue
+
+                for _, row in df.iterrows():
+                    code = str(row.get("code", ""))
+                    if not code:
+                        continue
+
+                    cap = int(row.get("market_cap", 0))
+                    close = int(row.get("close", 0))
+
+                    # 시가총액 필터
+                    if cap < self._pre_min_market_cap:
+                        continue
+
+                    # 주가 범위 필터 (양 조건식의 합집합 범위)
+                    price_min = min(self.min_price, self._sq_min_price)
+                    price_max = max(self.max_price, self._sq_max_price)
+                    if close < price_min or close > price_max:
+                        continue
+
+                    market_caps[code] = cap
+                    passed_codes.append(code)
+
+            logger.info(
+                f"[Light Pre-Filter] 시총+가격 필터: "
+                f"{len(passed_codes)}종목 통과"
+            )
+        except Exception as e:
+            logger.warning(f"Light pre-filter 실패 (전종목 대상으로 진행): {e}")
+
+        return passed_codes, market_caps
+
+    def _get_markets(self) -> list[str]:
+        """universe 설정에 따른 시장 리스트."""
         if self.universe == "kospi":
-            return stock.get_market_ticker_list(market="KOSPI")
+            return ["KOSPI"]
         elif self.universe == "kosdaq":
-            return stock.get_market_ticker_list(market="KOSDAQ")
-        else:
-            # kospi_kosdaq
-            kospi = stock.get_market_ticker_list(market="KOSPI")
-            kosdaq = stock.get_market_ticker_list(market="KOSDAQ")
-            return kospi + kosdaq
+            return ["KOSDAQ"]
+        return ["KOSPI", "KOSDAQ"]
 
-    def run_daily_screening(self, date: str | None = None) -> list[str]:
-        """당일 매수 후보 종목 스크리닝.
+    def pre_screen_pullback(self, codes: list[str], date: str,
+                            market_caps: dict[str, int]) -> list[str]:
+        """조건식 1: 52주 고가 눌림목 필터 (trending 국면용).
 
-        Steps:
-        1. 전종목 코드 수집 (pykrx)
-        2. 유동성 필터 (거래대금, 주가 범위)
-        3. 지표 계산
-        4. 매수 신호 체크
-        5. 점수 기반 상위 N종목 반환
+        조건:
+        - 52주 최고가 대비 -15% ~ 0%
+        - RSI(14) 45 ~ 65
+        - 이격도(종가/SMA20) 100% ~ 200%
+        - 이격도(종가/SMA60) 100% ~ 200%
+        - 시가총액 1000억+
+        - 거래량비율 20일 대비 150%+
+
+        Args:
+            codes: 전종목 코드 리스트.
+            date: 기준일 (YYYYMMDD).
+            market_caps: {코드: 시가총액} 딕셔너리.
+
+        Returns:
+            조건 통과 종목 코드 리스트.
+        """
+        passed = []
+        start_date = (
+            datetime.strptime(date, "%Y%m%d") - timedelta(days=370)
+        ).strftime("%Y%m%d")
+
+        for code in codes:
+            try:
+                # 시가총액 필터 (데이터 있을 때만 적용)
+                if market_caps:
+                    cap = market_caps.get(code, 0)
+                    if cap < self._pre_min_market_cap:
+                        continue
+
+                # OHLCV 조회 (52주 = ~250거래일, 여유분 포함 370일)
+                df = self._get_ohlcv(code, start_date, date)
+                if df.empty or len(df) < 60:
+                    continue
+
+                close = df["close"].iloc[-1]
+                high_col = df["high"]
+                volume = df["volume"]
+
+                # 52주 최고가 대비 비율
+                week52_high = high_col.tail(250).max()
+                if week52_high == 0:
+                    continue
+                ratio_from_high = (close - week52_high) / week52_high
+                if not (self._pb_week52_min <= ratio_from_high <= self._pb_week52_max):
+                    continue
+
+                # RSI(14) 계산
+                delta = df["close"].diff()
+                gain = delta.clip(lower=0).rolling(14).mean()
+                loss = (-delta.clip(upper=0)).rolling(14).mean()
+                rs = gain / loss.replace(0, float("nan"))
+                rsi = 100 - (100 / (1 + rs))
+                current_rsi = rsi.iloc[-1]
+                if pd.isna(current_rsi):
+                    continue
+                if not (self._pb_rsi_min <= current_rsi <= self._pb_rsi_max):
+                    continue
+
+                # 이격도: 종가 / SMA20 × 100
+                sma20 = df["close"].rolling(20).mean().iloc[-1]
+                if pd.isna(sma20) or sma20 == 0:
+                    continue
+                disp20 = (close / sma20) * 100
+                if not (self._pb_disp20_min <= disp20 <= self._pb_disp20_max):
+                    continue
+
+                # 이격도: 종가 / SMA60 × 100
+                sma60 = df["close"].rolling(60).mean().iloc[-1]
+                if pd.isna(sma60) or sma60 == 0:
+                    continue
+                disp60 = (close / sma60) * 100
+                if not (self._pb_disp60_min <= disp60 <= self._pb_disp60_max):
+                    continue
+
+                # 거래량비율: 당일 거래량 / 20일 평균 거래량
+                vol_sma20 = volume.tail(20).mean()
+                if vol_sma20 == 0:
+                    continue
+                vol_ratio = volume.iloc[-1] / vol_sma20
+                if vol_ratio < self._pre_volume_ratio:
+                    continue
+
+                passed.append(code)
+
+            except Exception as e:
+                logger.debug(f"pullback pre-screen 실패 ({code}): {e}")
+                continue
+
+        logger.info(f"[Pre-Screen] 눌림목(pullback): {len(passed)}/{len(codes)}종목 통과")
+        return passed
+
+    def pre_screen_squeeze(self, codes: list[str], date: str,
+                           market_caps: dict[str, int]) -> list[str]:
+        """조건식 2: 변동성 수축 필터 (sideways 국면용).
+
+        조건:
+        - 20일간 최고최저폭 0% ~ 15%
+        - 거래량비율 20일 대비 150%+
+        - 주가 3,000 ~ 200,000원
+        - 시가총액 1000억+
+
+        Args:
+            codes: 전종목 코드 리스트.
+            date: 기준일 (YYYYMMDD).
+            market_caps: {코드: 시가총액} 딕셔너리.
+
+        Returns:
+            조건 통과 종목 코드 리스트.
+        """
+        passed = []
+        start_date = (
+            datetime.strptime(date, "%Y%m%d") - timedelta(days=200)
+        ).strftime("%Y%m%d")
+        period = self._sq_range_period
+
+        for code in codes:
+            try:
+                # 시가총액 필터 (데이터 있을 때만 적용)
+                if market_caps:
+                    cap = market_caps.get(code, 0)
+                    if cap < self._pre_min_market_cap:
+                        continue
+
+                # OHLCV 조회
+                df = self._get_ohlcv(code, start_date, date)
+                if df.empty or len(df) < period:
+                    continue
+
+                close = df["close"].iloc[-1]
+                volume = df["volume"]
+
+                # 주가 범위 필터
+                if not (self._sq_min_price <= close <= self._sq_max_price):
+                    continue
+
+                # 20일간 최고최저폭: (고가 max - 저가 min) / 저가 min
+                recent = df.tail(period)
+                high_max = recent["high"].max()
+                low_min = recent["low"].min()
+                if low_min == 0:
+                    continue
+                price_range = (high_max - low_min) / low_min
+                if price_range > self._sq_range_max:
+                    continue
+
+                # 거래량비율
+                vol_sma20 = volume.tail(20).mean()
+                if vol_sma20 == 0:
+                    continue
+                vol_ratio = volume.iloc[-1] / vol_sma20
+                if vol_ratio < self._pre_volume_ratio:
+                    continue
+
+                passed.append(code)
+
+            except Exception as e:
+                logger.debug(f"squeeze pre-screen 실패 ({code}): {e}")
+                continue
+
+        logger.info(f"[Pre-Screen] 수축돌파(squeeze): {len(passed)}/{len(codes)}종목 통과")
+        return passed
+
+    # ── Screening (2차 필터) ──
+
+    def run_daily_screening(self, date: str | None = None,
+                            regime: str | None = None) -> list[str]:
+        """당일 매수 후보 종목 스크리닝 (2단계).
+
+        watchlist가 있으면 기존 모드(하위 호환).
+        watchlist가 비어있으면: pre-screening → screening 2단계.
 
         Args:
             date: 기준 날짜 ("YYYYMMDD"). None이면 오늘.
+            regime: 시장 국면 ("trending" / "sideways" / None).
+                    None이면 두 조건식의 합집합 사용.
 
         Returns:
             매수 후보 종목 코드 리스트 (점수 내림차순).
@@ -85,14 +332,36 @@ class Screener:
             datetime.strptime(date, "%Y%m%d") - timedelta(days=200)
         ).strftime("%Y%m%d")
 
-        # 고정 종목 리스트가 있으면 watchlist 우선 사용
+        # 고정 종목 리스트가 있으면 watchlist 우선 사용 (하위 호환)
         if self.watchlist:
             codes = self.watchlist
             logger.info(f"스크리닝 시작: watchlist {len(codes)}종목, 기준일 {date}")
         else:
-            codes = self.get_all_codes()
-            logger.info(f"스크리닝 시작: 전체 {len(codes)}종목, 기준일 {date}")
+            # 0차: Light Pre-Filter (1콜로 시총+가격 사전 필터)
+            light_codes, market_caps = self._light_pre_filter(date)
 
+            if light_codes:
+                all_codes = light_codes
+                logger.info(
+                    f"스크리닝 시작: {len(all_codes)}종목 (light filter 통과), "
+                    f"국면 {regime or 'all'}, 기준일 {date}"
+                )
+            else:
+                # light filter 실패 시 전종목 코드 사용
+                all_codes = self.get_all_codes()
+                logger.info(
+                    f"스크리닝 시작: 전체 {len(all_codes)}종목, "
+                    f"국면 {regime or 'all'}, 기준일 {date}"
+                )
+
+            # 1차: Pre-Screening (기술적 조건 필터)
+            codes = self._run_pre_screening(all_codes, date, regime, market_caps)
+
+            if not codes:
+                logger.warning("Pre-screening 결과 0종목 — light filter 종목으로 fallback")
+                codes = all_codes
+
+        # 2차: 기존 전략 기반 매수 신호 + 점수
         candidates: list[tuple[str, float]] = []
 
         for code in codes:
@@ -137,6 +406,166 @@ class Screener:
 
         logger.info(f"스크리닝 완료: {len(candidates)}종목 신호 발생, 상위 {len(result)}종목 선정")
         return result
+
+    def _run_pre_screening(self, codes: list[str], date: str,
+                           regime: str | None,
+                           market_caps: dict[str, int]) -> list[str]:
+        """국면에 따라 적절한 pre-screening 조건식 실행.
+
+        Args:
+            codes: 전종목 코드 리스트.
+            date: 기준일.
+            regime: "trending" / "sideways" / None.
+            market_caps: 시가총액 딕셔너리.
+
+        Returns:
+            pre-screening 통과 종목 리스트.
+        """
+        if regime == "trending":
+            return self.pre_screen_pullback(codes, date, market_caps)
+        elif regime == "sideways":
+            return self.pre_screen_squeeze(codes, date, market_caps)
+        else:
+            # 국면 미지정: OHLCV를 한번만 조회하고 두 조건식에 공유
+            ohlcv_cache = self._batch_load_ohlcv(codes, date)
+            pullback = set(
+                self._pre_screen_pullback_with_cache(codes, date, market_caps, ohlcv_cache)
+            )
+            squeeze = set(
+                self._pre_screen_squeeze_with_cache(codes, date, market_caps, ohlcv_cache)
+            )
+            combined = list(pullback | squeeze)
+            logger.info(
+                f"[Pre-Screen] 합집합: {len(combined)}종목 "
+                f"(눌림목 {len(pullback)} + 수축 {len(squeeze)}, "
+                f"중복 {len(pullback & squeeze)})"
+            )
+            return combined
+
+    def _batch_load_ohlcv(self, codes: list[str], date: str) -> dict[str, pd.DataFrame]:
+        """여러 종목의 OHLCV를 한번에 로드하여 캐시 dict 반환.
+
+        pullback(370일)이 더 긴 기간을 필요로 하므로 370일로 통일.
+        """
+        start_date = (
+            datetime.strptime(date, "%Y%m%d") - timedelta(days=370)
+        ).strftime("%Y%m%d")
+
+        cache: dict[str, pd.DataFrame] = {}
+        for code in codes:
+            try:
+                df = self._get_ohlcv(code, start_date, date)
+                if not df.empty:
+                    cache[code] = df
+            except Exception:
+                pass
+        logger.info(f"[Batch OHLCV] {len(cache)}/{len(codes)}종목 로드 완료")
+        return cache
+
+    def _pre_screen_pullback_with_cache(
+        self, codes: list[str], date: str,
+        market_caps: dict[str, int],
+        ohlcv_cache: dict[str, pd.DataFrame],
+    ) -> list[str]:
+        """pullback pre-screen (OHLCV 캐시 사용 버전)."""
+        passed = []
+        for code in codes:
+            try:
+                if market_caps:
+                    if market_caps.get(code, 0) < self._pre_min_market_cap:
+                        continue
+
+                df = ohlcv_cache.get(code)
+                if df is None or len(df) < 60:
+                    continue
+
+                close = df["close"].iloc[-1]
+
+                week52_high = df["high"].tail(250).max()
+                if week52_high == 0:
+                    continue
+                ratio = (close - week52_high) / week52_high
+                if not (self._pb_week52_min <= ratio <= self._pb_week52_max):
+                    continue
+
+                delta = df["close"].diff()
+                gain = delta.clip(lower=0).rolling(14).mean()
+                loss = (-delta.clip(upper=0)).rolling(14).mean()
+                rs = gain / loss.replace(0, float("nan"))
+                rsi = 100 - (100 / (1 + rs))
+                cur_rsi = rsi.iloc[-1]
+                if pd.isna(cur_rsi) or not (self._pb_rsi_min <= cur_rsi <= self._pb_rsi_max):
+                    continue
+
+                sma20 = df["close"].rolling(20).mean().iloc[-1]
+                if pd.isna(sma20) or sma20 == 0:
+                    continue
+                disp20 = (close / sma20) * 100
+                if not (self._pb_disp20_min <= disp20 <= self._pb_disp20_max):
+                    continue
+
+                sma60 = df["close"].rolling(60).mean().iloc[-1]
+                if pd.isna(sma60) or sma60 == 0:
+                    continue
+                disp60 = (close / sma60) * 100
+                if not (self._pb_disp60_min <= disp60 <= self._pb_disp60_max):
+                    continue
+
+                vol_sma20 = df["volume"].tail(20).mean()
+                if vol_sma20 == 0:
+                    continue
+                if df["volume"].iloc[-1] / vol_sma20 < self._pre_volume_ratio:
+                    continue
+
+                passed.append(code)
+            except Exception:
+                continue
+
+        logger.info(f"[Pre-Screen] 눌림목(pullback): {len(passed)}/{len(codes)}종목 통과")
+        return passed
+
+    def _pre_screen_squeeze_with_cache(
+        self, codes: list[str], date: str,
+        market_caps: dict[str, int],
+        ohlcv_cache: dict[str, pd.DataFrame],
+    ) -> list[str]:
+        """squeeze pre-screen (OHLCV 캐시 사용 버전)."""
+        passed = []
+        period = self._sq_range_period
+        for code in codes:
+            try:
+                if market_caps:
+                    if market_caps.get(code, 0) < self._pre_min_market_cap:
+                        continue
+
+                df = ohlcv_cache.get(code)
+                if df is None or len(df) < period:
+                    continue
+
+                close = df["close"].iloc[-1]
+                if not (self._sq_min_price <= close <= self._sq_max_price):
+                    continue
+
+                recent = df.tail(period)
+                high_max = recent["high"].max()
+                low_min = recent["low"].min()
+                if low_min == 0:
+                    continue
+                if (high_max - low_min) / low_min > self._sq_range_max:
+                    continue
+
+                vol_sma20 = df["volume"].tail(20).mean()
+                if vol_sma20 == 0:
+                    continue
+                if df["volume"].iloc[-1] / vol_sma20 < self._pre_volume_ratio:
+                    continue
+
+                passed.append(code)
+            except Exception:
+                continue
+
+        logger.info(f"[Pre-Screen] 수축돌파(squeeze): {len(passed)}/{len(codes)}종목 통과")
+        return passed
 
     def preload_ohlcv(self, codes: list[str], date: str | None = None) -> None:
         """watchlist 종목의 OHLCV 캐시를 갱신 (데이터 프리로드).
@@ -192,12 +621,10 @@ class Screener:
                 })
                 return df
 
-        # pykrx에서 조회
-        df = stock.get_market_ohlcv_by_date(start_date, end_date, code)
+        # DataProvider 경유 조회 (KRX API → pykrx 폴백)
+        df = get_provider().get_ohlcv_by_date_range(code, start_date, end_date)
         if df.empty:
             return df
-
-        df = map_columns(df, OHLCV_MAP)
 
         # 캐시에 저장
         if self._ds is not None and not df.empty:

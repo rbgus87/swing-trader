@@ -44,11 +44,12 @@ class _StockNameWorker(QThread):
     def run(self):
         result = {}
         try:
-            from pykrx import stock
+            from data.provider import get_provider
+            provider = get_provider()
             for code in self._codes:
                 try:
-                    name = stock.get_market_ticker_name(code)
-                    if name:
+                    name = provider.get_stock_name(code)
+                    if name and name != code:
                         result[code] = name
                 except Exception:
                     pass
@@ -521,14 +522,16 @@ class SettingsTab(QWidget):
                 if len(results) >= 50:
                     break
 
-        # 캐시에 없고 6자리 코드면 pykrx 개별 조회
+        # 캐시에 없고 6자리 코드면 DataProvider 개별 조회
         if not results and len(query) == 6 and query.isdigit():
             try:
-                from pykrx import stock
-                name = stock.get_market_ticker_name(query)
-                if name:
+                from data.provider import get_provider
+                name = get_provider().get_stock_name(query)
+                if name and name != query:
                     results.append((query, name))
                     self._stock_cache[query] = name
+                else:
+                    results.append((query, ""))
             except Exception:
                 results.append((query, ""))
 
@@ -645,6 +648,11 @@ class SettingsTab(QWidget):
         )
         form.addRow("재진입 쿨다운", self.w_reentry_cooldown)
 
+        self.w_reentry_cooldown_trend = SettingField.spin(
+            trading.get("reentry_cooldown_trend_days", 1), 0, 30, "일"
+        )
+        form.addRow("추세 유지 시 쿨다운", self.w_reentry_cooldown_trend)
+
         return scroll
 
     # ── Screening 서브탭 ──
@@ -699,8 +707,8 @@ class SettingsTab(QWidget):
         strategy = self._config.get("strategy", {})
 
         self.w_strategy_type = SettingField.combo(
-            ["golden_cross", "macd_rsi", "bb_bounce", "breakout"],
-            strategy.get("type", "golden_cross"),
+            ["adaptive", "golden_cross", "macd_rsi", "bb_bounce", "breakout"],
+            strategy.get("type", "adaptive"),
         )
         form.addRow("전략 유형", self.w_strategy_type)
 
@@ -734,6 +742,24 @@ class SettingsTab(QWidget):
 
         self.w_adx_threshold = SettingField.spin(strategy.get("adx_threshold", 20), 10, 50)
         form.addRow("ADX 기준", self.w_adx_threshold)
+
+        # 부분 매도
+        form.addRow(self._make_separator("부분 매도"))
+        self.w_partial_sell_enabled = SettingField.combo(
+            ["true", "false"],
+            "true" if strategy.get("partial_sell_enabled", True) else "false",
+        )
+        form.addRow("부분 매도 활성화", self.w_partial_sell_enabled)
+
+        self.w_partial_target_pct = SettingField.pct_slider(
+            strategy.get("partial_target_pct", 0.5), 0.1, 0.9
+        )
+        form.addRow("목표 달성률 트리거", self.w_partial_target_pct)
+
+        self.w_partial_sell_ratio = SettingField.pct_slider(
+            strategy.get("partial_sell_ratio", 0.5), 0.1, 0.9
+        )
+        form.addRow("매도 비율", self.w_partial_sell_ratio)
 
         return scroll
 
@@ -957,6 +983,7 @@ class SettingsTab(QWidget):
         trading["universe"] = self.w_universe.currentText()
         trading["max_positions"] = self.w_max_positions.value()
         trading["reentry_cooldown_days"] = self.w_reentry_cooldown.value()
+        trading["reentry_cooldown_trend_days"] = self.w_reentry_cooldown_trend.value()
 
         # Screening
         screening = self._config.setdefault("screening", {})
@@ -978,6 +1005,9 @@ class SettingsTab(QWidget):
         strategy["target_return"] = self.w_target_return._slider.value() / 1000
         strategy["max_hold_days"] = self.w_max_hold.value()
         strategy["adx_threshold"] = self.w_adx_threshold.value()
+        strategy["partial_sell_enabled"] = self.w_partial_sell_enabled.currentText() == "true"
+        strategy["partial_target_pct"] = self.w_partial_target_pct._slider.value() / 1000
+        strategy["partial_sell_ratio"] = self.w_partial_sell_ratio._slider.value() / 1000
 
         # Risk
         risk = self._config.setdefault("risk", {})

@@ -132,7 +132,6 @@ def calculate_indicators(
         result["obv_sma20"] = ta.sma(obv, length=20)
 
     result.dropna(inplace=True)
-    result.reset_index(drop=True, inplace=True)
 
     return result
 
@@ -414,37 +413,7 @@ def get_institutional_net_buying(code: str, days: int = 5) -> tuple[int, int]:
         (기관_순매수, 외국인_순매수) 튜플 (원 단위).
     """
     try:
-        from datetime import datetime, timedelta
-        from pykrx import stock
-
-        end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
-
-        # 투자자별 순매수 조회
-        df = stock.get_market_trading_value_by_date(
-            start, end, code, on="순매수"
-        )
-
-        if df.empty or len(df) == 0:
-            return (0, 0)
-
-        # 최근 N일만 사용
-        df = df.tail(days)
-
-        # 컬럼명은 pykrx 버전에 따라 다를 수 있음
-        inst_col = None
-        foreign_col = None
-        for col in df.columns:
-            col_lower = col.lower() if isinstance(col, str) else ""
-            if "기관" in str(col):
-                inst_col = col
-            if "외국인" in str(col):
-                foreign_col = col
-
-        inst_net = int(df[inst_col].sum()) if inst_col else 0
-        foreign_net = int(df[foreign_col].sum()) if foreign_col else 0
-
-        return (inst_net, foreign_net)
-
+        from data.provider import get_provider
+        return get_provider().get_institutional_net_buying(code, days)
     except Exception:
         return (0, 0)

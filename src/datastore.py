@@ -408,3 +408,24 @@ class DataStore:
                 (code, start_date, end_date),
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    def cleanup_ohlcv_cache(self, retention_days: int = 400) -> int:
+        """오래된 OHLCV 캐시 데이터 삭제.
+
+        Args:
+            retention_days: 보존할 일수 (기본 400일).
+
+        Returns:
+            삭제된 행 수.
+        """
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+        with self._lock:
+            cursor = self.conn.execute(
+                "DELETE FROM ohlcv_cache WHERE date < ?", (cutoff,)
+            )
+            deleted = cursor.rowcount
+            self.conn.commit()
+            if deleted > 0:
+                logger.info(f"OHLCV 캐시 정리: {deleted}행 삭제 (기준: {cutoff} 이전)")
+            return deleted

@@ -16,6 +16,7 @@ class RiskManager:
 
     def __init__(self, datastore: DataStore, config: dict):
         self._ds = datastore
+        self._config = config
         self._max_positions = config.get("trading", {}).get("max_positions", 5)
         self._daily_loss_limit = config.get("risk", {}).get("daily_loss_limit", -0.03)
         self._daily_loss_warning = config.get("risk", {}).get(
@@ -31,19 +32,22 @@ class RiskManager:
         self._peak_capital: float = 0.0  # MDD 계산용 자본 최고점
         self._halted: bool = False
 
-    def pre_check(self, signal: Signal) -> RiskCheckResult:
+    def pre_check(
+        self, signal: Signal, trend_intact: bool = False,
+    ) -> RiskCheckResult:
         """주문 전 모든 리스크 조건 체크.
 
         체크 항목 (순서대로):
             1. halt 상태 체크.
             2. 일일 손실 한도 체크.
             3. 최대 동시 보유 종목 수.
-            4. 동일 종목 재진입 쿨다운.
+            4. 동일 종목 재진입 쿨다운 (추세 유지 시 단축).
             5. 장 시간 체크.
             6. MDD 체크.
 
         Args:
             signal: 매매 신호.
+            trend_intact: 추세 유지 여부 (True면 단축 쿨다운 적용).
 
         Returns:
             RiskCheckResult(approved=True/False, reason="...").
@@ -61,17 +65,21 @@ class RiskManager:
         if open_count >= self._max_positions:
             return RiskCheckResult(approved=False, reason="최대 보유 종목 수 초과")
 
-        # 4. 동일 종목 재진입 쿨다운
+        # 4. 동일 종목 재진입 쿨다운 (추세 유지 시 단축)
+        cooldown = self._reentry_cooldown
+        if trend_intact:
+            cooldown = self._config.get("trading", {}).get(
+                "reentry_cooldown_trend_days", 1
+            )
         last_trade = self._ds.get_last_trade(signal.code)
         if last_trade and last_trade.get("executed_at"):
             last_date_str = last_trade["executed_at"][:10]  # "YYYY-MM-DD"
             try:
                 last_date = datetime.strptime(last_date_str, "%Y-%m-%d").date()
                 days_since = (date.today() - last_date).days
-                if days_since < self._reentry_cooldown:
+                if days_since < cooldown:
                     return RiskCheckResult(approved=False, reason="재진입 쿨다운 중")
             except ValueError:
-                # 날짜 파싱 실패 — 안전하게 쿨다운 적용 (매수 차단)
                 return RiskCheckResult(
                     approved=False, reason="재진입 쿨다운 체크 실패 (날짜 파싱 오류)"
                 )

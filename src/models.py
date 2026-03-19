@@ -87,6 +87,7 @@ class ExitReason(Enum):
     STOP_LOSS = "stop_loss"
     TRAILING_STOP = "trailing_stop"
     TARGET_REACHED = "target_reached"
+    PARTIAL_TARGET = "partial_target"
     MACD_DEAD = "macd_dead"
     MAX_HOLD = "max_hold"
 

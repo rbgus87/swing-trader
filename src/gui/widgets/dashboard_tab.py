@@ -116,7 +116,7 @@ class DashboardTab(QWidget):
         trade_widget = QVBoxLayout()
         trade_widget.setSpacing(4)
         trade_widget.addWidget(self._section_label("당일 체결"))
-        self.trades_table = self._make_table(["시간", "종목코드", "구분", "가격", "손익"])
+        self.trades_table = self._make_table(["시간", "종목코드", "구분", "가격", "손익", "사유"])
         trade_widget.addWidget(self.trades_table)
         bottom_layout.addLayout(trade_widget)
 
@@ -282,6 +282,17 @@ class DashboardTab(QWidget):
             f"후보: {cand}종목"
         )
 
+    # 청산사유 한글 매핑
+    _EXIT_REASON_KR = {
+        "stop_loss": "손절",
+        "trailing_stop": "트레일링",
+        "target_reached": "목표가",
+        "partial_target": "부분매도",
+        "macd_dead": "MACD역전",
+        "max_hold": "보유초과",
+        "signal": "매수",
+    }
+
     def update_trades(self, trades: list):
         """체결 내역 테이블 업데이트."""
         self.trades_table.setRowCount(len(trades))
@@ -292,8 +303,11 @@ class DashboardTab(QWidget):
             side_kr = "매수" if side == "buy" else "매도"
             pnl_str = f"{pnl:+,.0f}" if side == "sell" else ""
 
+            reason_raw = trade.get("reason", "")
+            reason_kr = self._EXIT_REASON_KR.get(reason_raw, reason_raw)
+
             items = [time_str, trade.get("code", ""), side_kr,
-                     f"{trade.get('price', 0):,}", pnl_str]
+                     f"{trade.get('price', 0):,}", pnl_str, reason_kr]
 
             for col, text in enumerate(items):
                 item = QTableWidgetItem(text)
@@ -303,6 +317,8 @@ class DashboardTab(QWidget):
                     item.setForeground(QColor(color))
                 if col == 4 and pnl != 0:
                     item.setForeground(QColor(_GREEN if pnl > 0 else _RED))
+                if col == 5 and reason_raw == "partial_target":
+                    item.setForeground(QColor("#fab387"))  # 부분매도: 오렌지
                 self.trades_table.setItem(row, col, item)
 
     def update_candidates(self, candidates: list):

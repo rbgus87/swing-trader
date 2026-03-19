@@ -10,9 +10,9 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from loguru import logger
-from pykrx import stock
 
 from data.column_mapper import OHLCV_MAP, map_columns
+from data.provider import get_provider
 from src.strategy import get_strategy
 from src.strategy.signals import calculate_indicators
 
@@ -58,17 +58,16 @@ class BacktestEngine:
         Returns:
             {종목코드: OHLCV DataFrame} 딕셔너리.
         """
+        provider = get_provider()
         result = {}
         for code in codes:
             try:
-                df = stock.get_market_ohlcv_by_date(start_date, end_date, code)
+                df = provider.get_ohlcv_by_date_range(code, start_date, end_date)
                 if df.empty or len(df) < 60:
                     logger.warning(
-                        f"{code}: 데이터 부족 ({len(df)}행), 건너뜀"
+                        f"{code}: 데이터 부족 ({len(df) if not df.empty else 0}행), 건너뜀"
                     )
                     continue
-                df = map_columns(df, OHLCV_MAP)
-                df = df.reset_index(drop=True)
                 result[code] = df
                 logger.info(f"{code}: {len(df)}행 로드 완료")
             except Exception as e:
@@ -101,8 +100,9 @@ class BacktestEngine:
         entries: pd.Series,
         exits: pd.Series,
         params: dict | None = None,
+        weekly_sma20: pd.Series | None = None,
     ) -> tuple[list[dict], pd.Series]:
-        """포트폴리오 시뮬레이션 (손절/트레일링/목표가/최대보유 포함).
+        """포트폴리오 시뮬레이션 (손절/트레일링/목표가/부분매도/최대보유 포함).
 
         Args:
             close: 종가 시리즈.
@@ -112,6 +112,7 @@ class BacktestEngine:
             entries: 매수 신호 불리언 시리즈.
             exits: 매도 신호 불리언 시리즈.
             params: 전략 파라미터 딕셔너리.
+            weekly_sma20: 주봉 SMA20 시리즈 (일봉 인덱스에 매핑, 선택).
 
         Returns:
             (trades_list, equity_curve) 튜플.
@@ -124,6 +125,11 @@ class BacktestEngine:
         max_hold_days = p.get("max_hold_days", 20)
         max_stop_pct = p.get("max_stop_pct", 0.10)
 
+        # 부분 매도 파라미터
+        partial_enabled = p.get("partial_sell_enabled", True)
+        partial_target_pct = p.get("partial_target_pct", 0.5)
+        partial_sell_ratio = p.get("partial_sell_ratio", 0.5)
+
         cash = self.initial_capital
         position = 0  # 보유 주식 수
         entry_price = 0
@@ -131,6 +137,7 @@ class BacktestEngine:
         stop_price = 0
         target_price_val = 0
         high_since_entry = 0
+        partial_done = False  # 부분 매도 완료 플래그
         trades = []
         equity = []
 
@@ -161,13 +168,49 @@ class BacktestEngine:
                     should_exit = True
                     exit_price = stop_price
 
-                # 2. Target reached
-                elif bar_high >= target_price_val:
+                # 2a. Partial sell: 목표가의 N% 도달 시 절반 매도
+                elif (
+                    partial_enabled
+                    and not partial_done
+                    and target_price_val > 0
+                ):
+                    partial_trigger = int(
+                        entry_price * (1 + target_return * partial_target_pct)
+                    )
+                    if bar_high >= partial_trigger:
+                        sell_qty = max(1, int(position * partial_sell_ratio))
+                        remaining = position - sell_qty
+                        if remaining > 0:
+                            # 부분 매도 기록
+                            proceeds = partial_trigger * (
+                                1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE
+                            )
+                            cash += sell_qty * proceeds
+                            pnl_pct = (partial_trigger - entry_price) / entry_price
+                            entry_date = self._format_date(close.index[entry_idx])
+                            exit_date = self._format_date(close.index[i])
+                            trades.append({
+                                "entry_idx": entry_idx,
+                                "exit_idx": i,
+                                "entry_date": entry_date,
+                                "exit_date": exit_date,
+                                "entry_price": entry_price,
+                                "exit_price": partial_trigger,
+                                "shares": sell_qty,
+                                "return": pnl_pct,
+                                "hold_days": i - entry_idx,
+                                "partial": True,
+                            })
+                            position = remaining
+                            partial_done = True
+
+                # 2b. Target reached (전량 매도)
+                if not should_exit and bar_high >= target_price_val:
                     should_exit = True
                     exit_price = target_price_val
 
                 # 3. Trailing stop update & check
-                else:
+                if not should_exit:
                     unrealized_pct = (price - entry_price) / entry_price
                     if unrealized_pct >= trailing_activate_pct:
                         trailing = int(
@@ -197,16 +240,8 @@ class BacktestEngine:
                     )
                     cash += position * proceeds
                     pnl_pct = (exit_price - entry_price) / entry_price
-                    entry_date = (
-                        str(close.index[entry_idx].strftime("%Y-%m-%d"))
-                        if hasattr(close.index[entry_idx], "strftime")
-                        else str(close.index[entry_idx])
-                    )
-                    exit_date = (
-                        str(close.index[i].strftime("%Y-%m-%d"))
-                        if hasattr(close.index[i], "strftime")
-                        else str(close.index[i])
-                    )
+                    entry_date = self._format_date(close.index[entry_idx])
+                    exit_date = self._format_date(close.index[i])
                     trades.append(
                         {
                             "entry_idx": entry_idx,
@@ -221,8 +256,17 @@ class BacktestEngine:
                         }
                     )
                     position = 0
+                    partial_done = False
 
             elif position == 0 and entries.iloc[i]:
+                # 주봉 SMA20 필터: 주간 종가 > SMA20일 때만 진입
+                if weekly_sma20 is not None:
+                    ws = weekly_sma20.iloc[i] if i < len(weekly_sma20) else np.nan
+                    if not np.isnan(ws) and price <= ws:
+                        equity_val = cash
+                        equity.append(equity_val)
+                        continue
+
                 # 매수
                 cost_per_share = price * (1 + COMMISSION_RATE + SLIPPAGE_RATE)
                 shares = int(cash // cost_per_share)
@@ -231,6 +275,7 @@ class BacktestEngine:
                     entry_price = price
                     entry_idx = i
                     high_since_entry = bar_high
+                    partial_done = False
                     # Initial stop price
                     atr_stop = int(price - current_atr * stop_atr_mult)
                     pct_stop = int(price * (1 - max_stop_pct))
@@ -243,6 +288,13 @@ class BacktestEngine:
             equity.append(equity_val)
 
         return trades, pd.Series(equity, index=close.index)
+
+    @staticmethod
+    def _format_date(index_val) -> str:
+        """인덱스 값을 날짜 문자열로 변환."""
+        if hasattr(index_val, "strftime"):
+            return index_val.strftime("%Y-%m-%d")
+        return str(index_val)
 
     def _calculate_metrics(
         self, trades: list[dict], equity: pd.Series, params: dict
@@ -392,9 +444,21 @@ class BacktestEngine:
                 low = df_ind["low"]
                 atr_series = df_ind["atr"]
 
+                # 주봉 SMA20 계산 (일봉 인덱스에 forward-fill 매핑)
+                weekly_sma20 = None
+                if hasattr(df_ind.index, "to_period"):
+                    try:
+                        weekly = df_ind.resample("W").agg({"close": "last"}).dropna()
+                        if len(weekly) >= 20:
+                            ws = weekly["close"].rolling(20).mean()
+                            weekly_sma20 = ws.reindex(df_ind.index, method="ffill")
+                    except Exception:
+                        pass
+
                 # pandas 기반 시뮬레이션
                 trades, equity = self._simulate_portfolio(
-                    close, high, low, atr_series, entries, exits, params
+                    close, high, low, atr_series, entries, exits, params,
+                    weekly_sma20=weekly_sma20,
                 )
                 result = self._calculate_metrics(
                     trades, equity, params or {}
@@ -458,6 +522,376 @@ class BacktestEngine:
         return avg_result
 
 
+    def run_portfolio(
+        self,
+        codes: list[str],
+        start_date: str,
+        end_date: str,
+        params: dict | None = None,
+        strategy_name: str = "golden_cross",
+        max_positions: int = 3,
+        use_market_filter: bool = True,
+    ) -> BacktestResult:
+        """포트폴리오 레벨 백테스트 — 하나의 자본금으로 다종목 순차 매매.
+
+        기존 run()은 종목별 독립 시뮬레이션이지만, 이 메서드는
+        실전과 동일하게 자본 경합·포지션 제한을 반영합니다.
+
+        Args:
+            codes: 종목 코드 리스트.
+            start_date: 시작일 (YYYYMMDD).
+            end_date: 종료일 (YYYYMMDD).
+            params: 전략 파라미터.
+            strategy_name: 전략 이름 (adaptive 지원).
+            max_positions: 동시 보유 최대 종목 수.
+            use_market_filter: KOSPI 200일선 시장 필터 사용 여부.
+
+        Returns:
+            BacktestResult 성과 지표.
+        """
+        self._last_trades = []
+        self._last_equity = None
+
+        p = params or {}
+        target_return = p.get("target_return", 0.06)
+        stop_atr_mult = p.get("stop_atr_mult", 2.5)
+        trailing_atr_mult = p.get("trailing_atr_mult", 2.0)
+        trailing_activate_pct = p.get("trailing_activate_pct", 0.07)
+        max_hold_days = p.get("max_hold_days", 10)
+        max_stop_pct = p.get("max_stop_pct", 0.07)
+        partial_enabled = p.get("partial_sell_enabled", True)
+        partial_target_pct = p.get("partial_target_pct", 0.5)
+        partial_sell_ratio = p.get("partial_sell_ratio", 0.5)
+
+        # 데이터 로드 + 지표 계산
+        price_data = self.load_price_data(codes, start_date, end_date)
+        if not price_data:
+            logger.error("유효한 데이터 없음")
+            return self._empty_result(p)
+
+        indicator_params = {
+            "macd_fast": p.get("macd_fast", 12),
+            "macd_slow": p.get("macd_slow", 26),
+            "macd_signal": p.get("macd_signal", 9),
+            "rsi_period": p.get("rsi_period", 14),
+        }
+
+        indicator_cache: dict[str, pd.DataFrame] = {}
+        signals_cache: dict[str, tuple[pd.Series, pd.Series]] = {}
+
+        # adaptive 모드: 국면별 전략 결정
+        is_adaptive = strategy_name == "adaptive"
+        regime_map = p.get("regime_strategy", {
+            "trending": "golden_cross",
+            "sideways": "bb_bounce",
+        })
+
+        for code, df in price_data.items():
+            try:
+                df_ind = calculate_indicators(df, **indicator_params)
+                if df_ind.empty:
+                    continue
+                indicator_cache[code] = df_ind
+            except Exception as e:
+                logger.error(f"{code}: 지표 계산 실패 - {e}")
+
+        if not indicator_cache:
+            return self._empty_result(p)
+
+        # KOSPI 시장 필터 + 국면 판단
+        kospi_data = None
+        kospi_sma200 = None
+        kospi_adx_series = None
+        if use_market_filter or is_adaptive:
+            # KOSPI 지수 데이터 — DataProvider 경유 (KRX API → pykrx → KODEX200 폴백)
+            try:
+                from data.provider import get_provider
+                kospi_data = get_provider().get_kospi_ohlcv(start_date, end_date)
+                if not kospi_data.empty and len(kospi_data) >= 200:
+                    kospi_sma200 = kospi_data["close"].rolling(200).mean()
+                    if is_adaptive:
+                        kospi_adx_series = self._calc_adx_series(kospi_data)
+                    logger.info(f"KOSPI 지수 로드: {len(kospi_data)}행")
+            except Exception as e:
+                logger.warning(f"KOSPI 데이터 로드 실패: {e}")
+
+        # 주봉 SMA20 계산 (종목별)
+        weekly_sma20_cache: dict[str, pd.Series] = {}
+        for code, df_ind in indicator_cache.items():
+            if hasattr(df_ind.index, "to_period"):
+                try:
+                    weekly = df_ind.resample("W").agg({"close": "last"}).dropna()
+                    if len(weekly) >= 20:
+                        ws = weekly["close"].rolling(20).mean()
+                        weekly_sma20_cache[code] = ws.reindex(
+                            df_ind.index, method="ffill"
+                        )
+                except Exception:
+                    pass
+
+        # 날짜별 신호 생성 — adaptive 모드는 국면별 전략 전환
+        all_dates = sorted(
+            set().union(*(df.index for df in indicator_cache.values()))
+        )
+
+        # 전략별 신호 사전 생성
+        if is_adaptive:
+            # 두 전략의 신호를 모두 미리 생성
+            for strat_name in set(regime_map.values()):
+                for code, df in price_data.items():
+                    if code not in indicator_cache:
+                        continue
+                    try:
+                        en, ex = self.generate_signals(df, p, strat_name)
+                        signals_cache[(code, strat_name)] = (en, ex)
+                    except Exception:
+                        pass
+        else:
+            for code, df in price_data.items():
+                if code not in indicator_cache:
+                    continue
+                try:
+                    en, ex = self.generate_signals(df, p, strategy_name)
+                    signals_cache[(code, strategy_name)] = (en, ex)
+                except Exception:
+                    pass
+
+        # 포트폴리오 시뮬레이션
+        cash = float(self.initial_capital)
+        positions: dict[str, dict] = {}
+        trades: list[dict] = []
+        equity_dates = []
+        equity_vals = []
+
+        adx_threshold = p.get("adx_threshold", 25)
+
+        for date in all_dates:
+            # 시장 필터
+            market_ok = True
+            if use_market_filter and kospi_data is not None and kospi_sma200 is not None:
+                if date in kospi_data.index:
+                    idx = kospi_data.index.get_loc(date)
+                    if not pd.isna(kospi_sma200.iloc[idx]):
+                        market_ok = kospi_data["close"].iloc[idx] > kospi_sma200.iloc[idx]
+
+            # adaptive 국면 판단
+            current_regime = "sideways"
+            if is_adaptive and kospi_data is not None and kospi_adx_series is not None:
+                if date in kospi_data.index:
+                    idx = kospi_data.index.get_loc(date)
+                    k_adx = kospi_adx_series.iloc[idx] if not pd.isna(kospi_adx_series.iloc[idx]) else 25
+                    if not market_ok:
+                        current_regime = "bearish"
+                    elif k_adx >= adx_threshold:
+                        current_regime = "trending"
+                    else:
+                        current_regime = "sideways"
+
+            active_strategy = strategy_name
+            if is_adaptive and current_regime != "bearish":
+                active_strategy = regime_map.get(current_regime, "bb_bounce")
+
+            # 1. 기존 포지션 청산 체크
+            codes_to_close = []
+            for code, pos in positions.items():
+                if code not in indicator_cache:
+                    continue
+                df_ind = indicator_cache[code]
+                if date not in df_ind.index:
+                    continue
+
+                idx = df_ind.index.get_loc(date)
+                price = int(df_ind["close"].iloc[idx])
+                bar_high = int(df_ind["high"].iloc[idx])
+                bar_low = int(df_ind["low"].iloc[idx])
+                cur_atr = float(df_ind["atr"].iloc[idx]) if not pd.isna(df_ind["atr"].iloc[idx]) else price * 0.02
+                hold_days = (date - pos["entry_date"]).days if hasattr(date, "day") else 0
+
+                pos["high_since"] = max(pos["high_since"], bar_high)
+
+                should_exit = False
+                exit_price = price
+
+                # 손절
+                if bar_low <= pos["stop_price"]:
+                    should_exit = True
+                    exit_price = pos["stop_price"]
+                # 부분 매도
+                elif partial_enabled and not pos.get("partial_done", False) and pos["target_price"] > 0:
+                    partial_trigger = int(pos["entry_price"] * (1 + target_return * partial_target_pct))
+                    if bar_high >= partial_trigger:
+                        sell_qty = max(1, int(pos["shares"] * partial_sell_ratio))
+                        remaining = pos["shares"] - sell_qty
+                        if remaining > 0:
+                            proceeds = sell_qty * partial_trigger * (1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE)
+                            cash += proceeds
+                            pnl_pct = (partial_trigger - pos["entry_price"]) / pos["entry_price"]
+                            trades.append({
+                                "code": code,
+                                "entry_date": self._format_date(pos["entry_date"]),
+                                "exit_date": self._format_date(date),
+                                "entry_price": pos["entry_price"],
+                                "exit_price": partial_trigger,
+                                "shares": sell_qty,
+                                "return": pnl_pct,
+                                "hold_days": hold_days,
+                                "partial": True,
+                            })
+                            pos["shares"] = remaining
+                            pos["partial_done"] = True
+
+                # 목표가
+                if not should_exit and bar_high >= pos["target_price"]:
+                    should_exit = True
+                    exit_price = pos["target_price"]
+                # 트레일링
+                if not should_exit:
+                    unrealized = (price - pos["entry_price"]) / pos["entry_price"]
+                    if unrealized >= trailing_activate_pct:
+                        trailing = int(pos["high_since"] - cur_atr * trailing_atr_mult)
+                        trailing = max(trailing, pos["stop_price"])
+                        if trailing > pos["stop_price"]:
+                            pos["stop_price"] = trailing
+                        if bar_low <= pos["stop_price"]:
+                            should_exit = True
+                            exit_price = pos["stop_price"]
+                # 최대보유
+                if not should_exit and hold_days >= max_hold_days:
+                    should_exit = True
+
+                # 전략 매도 신호
+                if not should_exit:
+                    sig_key = (code, active_strategy)
+                    if sig_key not in signals_cache:
+                        sig_key = (code, strategy_name)
+                    if sig_key in signals_cache:
+                        _, exits = signals_cache[sig_key]
+                        if date in exits.index and exits.loc[date]:
+                            should_exit = True
+
+                if should_exit:
+                    proceeds = pos["shares"] * exit_price * (1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE)
+                    cash += proceeds
+                    pnl_pct = (exit_price - pos["entry_price"]) / pos["entry_price"]
+                    trades.append({
+                        "code": code,
+                        "entry_date": self._format_date(pos["entry_date"]),
+                        "exit_date": self._format_date(date),
+                        "entry_price": pos["entry_price"],
+                        "exit_price": exit_price,
+                        "shares": pos["shares"],
+                        "return": pnl_pct,
+                        "hold_days": hold_days,
+                    })
+                    codes_to_close.append(code)
+
+            for code in codes_to_close:
+                del positions[code]
+
+            # 2. 새 진입 (시장 필터 + 포지션 제한 + 주봉 SMA20)
+            if market_ok and current_regime != "bearish":
+                for code, df_ind in indicator_cache.items():
+                    if code in positions:
+                        continue
+                    if len(positions) >= max_positions:
+                        break
+                    if date not in df_ind.index:
+                        continue
+
+                    idx = df_ind.index.get_loc(date)
+                    price = int(df_ind["close"].iloc[idx])
+                    bar_high = int(df_ind["high"].iloc[idx])
+                    cur_atr = float(df_ind["atr"].iloc[idx]) if not pd.isna(df_ind["atr"].iloc[idx]) else price * 0.02
+
+                    # 전략 매수 신호 체크
+                    sig_key = (code, active_strategy)
+                    if sig_key not in signals_cache:
+                        continue
+                    entries, _ = signals_cache[sig_key]
+                    if date not in entries.index or not entries.loc[date]:
+                        continue
+
+                    # 주봉 SMA20 필터
+                    if code in weekly_sma20_cache:
+                        ws = weekly_sma20_cache[code]
+                        if date in ws.index and not pd.isna(ws.loc[date]):
+                            if price <= ws.loc[date]:
+                                continue
+
+                    # 포지션 사이징 (가용 자본 / max_positions)
+                    position_budget = cash / max(1, max_positions - len(positions))
+                    cost_per_share = price * (1 + COMMISSION_RATE + SLIPPAGE_RATE)
+                    shares = int(position_budget // cost_per_share)
+                    if shares <= 0:
+                        continue
+
+                    atr_stop = int(price - cur_atr * stop_atr_mult)
+                    pct_stop = int(price * (1 - max_stop_pct))
+                    stop_price = max(atr_stop, pct_stop)
+                    target_price = int(price * (1 + target_return))
+
+                    cost = shares * cost_per_share
+                    cash -= cost
+                    positions[code] = {
+                        "entry_price": price,
+                        "shares": shares,
+                        "entry_date": date,
+                        "stop_price": stop_price,
+                        "target_price": target_price,
+                        "high_since": bar_high,
+                        "partial_done": False,
+                    }
+
+            # 에퀴티 계산
+            portfolio_value = cash
+            for code, pos in positions.items():
+                if code in indicator_cache:
+                    df_ind = indicator_cache[code]
+                    if date in df_ind.index:
+                        idx = df_ind.index.get_loc(date)
+                        portfolio_value += pos["shares"] * int(df_ind["close"].iloc[idx])
+            equity_dates.append(date)
+            equity_vals.append(portfolio_value)
+
+        equity = pd.Series(equity_vals, index=equity_dates)
+        self._last_trades = trades
+        self._last_equity = equity
+
+        result = self._calculate_metrics(trades, equity, p)
+        logger.info(
+            f"포트폴리오 백테스트 완료: "
+            f"수익률 {result.total_return:.2f}%, MDD {result.max_drawdown:.2f}%, "
+            f"거래 {result.trade_count}건, 최종 자산 {equity.iloc[-1]:,.0f}원"
+        )
+        return result
+
+    @staticmethod
+    def _calc_adx_series(df: pd.DataFrame) -> pd.Series:
+        """KOSPI DataFrame에서 ADX 시리즈 계산."""
+        try:
+            import pandas_ta as ta
+            adx_df = ta.adx(
+                df["high"].astype(float),
+                df["low"].astype(float),
+                df["close"].astype(float),
+                length=14,
+            )
+            if adx_df is not None and "ADX_14" in adx_df.columns:
+                return adx_df["ADX_14"]
+        except Exception:
+            pass
+        return pd.Series(25.0, index=df.index)
+
+    def _empty_result(self, params: dict) -> BacktestResult:
+        """빈 결과 반환 헬퍼."""
+        return BacktestResult(
+            total_return=0.0, annual_return=0.0, max_drawdown=0.0,
+            sharpe_ratio=0.0, sortino_ratio=0.0, win_rate=0.0,
+            profit_factor=0.0, avg_trade_return=0.0, trade_count=0,
+            avg_hold_days=0.0, params=params,
+        )
+
+
 def _parse_period(period_str: str) -> tuple[str, str]:
     """기간 문자열을 시작일/종료일로 변환.
 
@@ -514,6 +948,17 @@ if __name__ == "__main__":
         action="store_true",
         help="파라미터 최적화 실행",
     )
+    parser.add_argument(
+        "--portfolio",
+        action="store_true",
+        help="포트폴리오 모드 (다종목 통합 자본 시뮬레이션)",
+    )
+    parser.add_argument(
+        "--max-positions",
+        type=int,
+        default=3,
+        help="포트폴리오 모드: 최대 동시 보유 종목 수 (기본: 3)",
+    )
 
     args = parser.parse_args()
 
@@ -551,18 +996,25 @@ if __name__ == "__main__":
             print(results.head(10).to_string())
         else:
             print("\n필터 통과 조합 없음")
+    elif args.portfolio:
+        result = engine.run_portfolio(
+            args.codes, start_date, end_date,
+            strategy_name=args.strategy,
+            max_positions=args.max_positions,
+        )
     else:
         result = engine.run(args.codes, start_date, end_date, strategy_name=args.strategy)
 
+    if not args.optimize:
         from src.backtest.report import BacktestReporter
 
         reporter = BacktestReporter()
-        reporter.print_summary(result)
+        reporter.print_summary(result, trades=engine._last_trades)
 
-        # Auto generate HTML report with charts
+        mode_label = "portfolio" if args.portfolio else "backtest"
         report_path = reporter.generate_html(
             result,
-            output_path=f"reports/backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+            output_path=f"reports/{mode_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
             equity=engine._last_equity,
             trades=engine._last_trades,
         )
