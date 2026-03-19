@@ -699,7 +699,7 @@ class SettingsTab(QWidget):
         strategy = self._config.get("strategy", {})
 
         self.w_strategy_type = SettingField.combo(
-            ["golden_cross", "macd_rsi"],
+            ["golden_cross", "macd_rsi", "bb_bounce", "breakout"],
             strategy.get("type", "golden_cross"),
         )
         form.addRow("전략 유형", self.w_strategy_type)

@@ -22,6 +22,7 @@ from src.risk.position_sizer import PositionSizer
 from src.risk.risk_manager import RiskManager
 from src.risk.stop_manager import StopManager
 from src.strategy import get_strategy
+from src.strategy.market_regime import MarketRegime
 from src.strategy.screener import Screener
 from src.utils.config import config
 from src.utils.market_calendar import is_market_open
@@ -70,6 +71,9 @@ class TradingEngine:
         strategy_type = strategy_config.get("type", "golden_cross")
         self._strategy = get_strategy(strategy_type, strategy_config)
         logger.info(f"전략 로드: {strategy_type}")
+
+        # 시장 국면 판단기
+        self._market_regime = MarketRegime()
 
         # 상태
         self._candidates: list[str] = []  # 당일 매수 후보
@@ -186,6 +190,15 @@ class TradingEngine:
         try:
             today = datetime.now().strftime("%Y%m%d")
 
+            # 시장 국면 판단 (장전 갱신)
+            is_bullish = self._market_regime.check(today)
+            if not is_bullish:
+                logger.info("시장 방어 모드 — 스크리닝 수행하지만 장중 매수는 차단됨")
+                self._telegram.send(
+                    f"시장 방어 모드: KOSPI {self._market_regime.kospi_close:,} "
+                    f"< 200일선 {self._market_regime.kospi_sma200:,.0f}"
+                )
+
             if watchlist:
                 # 모드 A: watchlist 전체가 후보, OHLCV 캐시만 갱신
                 await asyncio.to_thread(
@@ -243,6 +256,9 @@ class TradingEngine:
         self._update_daily_pnl(tick)
 
         # 3. 후보 종목 진입 조건 체크
+        # 시장 국면 게이트: 방어 모드이면 매수 차단
+        if not self._market_regime.is_bullish:
+            return
         # 쓰로틀링: 같은 종목은 30초 간격으로만 진입 판단 (지표 계산 부하 방지)
         if tick.code in self._candidates:
             now = time.monotonic()
