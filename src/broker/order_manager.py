@@ -18,6 +18,9 @@ from src.broker.tr_codes import (
 )
 from src.models import Order, OrderResult
 
+# 미체결 취소 최대 재시도 횟수
+_MAX_CANCEL_RETRIES = 3
+
 # 종목코드 형식: 6자리 숫자
 _CODE_PATTERN = re.compile(r"^\d{6}$")
 
@@ -172,6 +175,64 @@ class OrderManager:
             미체결 Order 리스트.
         """
         return list(self._pending_orders.values())
+
+    async def cancel_all_pending(self) -> dict[str, bool]:
+        """미체결 주문 전량 취소.
+
+        장 마감 후 잔존 미체결 주문을 모두 취소한다.
+        재시도 로직 포함 (최대 3회).
+
+        Returns:
+            {주문번호: 취소성공여부} 딕셔너리.
+        """
+        if not self._pending_orders:
+            logger.info("미체결 주문 없음 — 취소 작업 생략")
+            return {}
+
+        results: dict[str, bool] = {}
+        order_nos = list(self._pending_orders.keys())
+
+        logger.info(f"미체결 주문 전량 취소 시작: {len(order_nos)}건")
+
+        for order_no in order_nos:
+            order = self._pending_orders.get(order_no)
+            if not order:
+                continue
+
+            success = False
+            for attempt in range(1, _MAX_CANCEL_RETRIES + 1):
+                try:
+                    result = await self._api.cancel_order(
+                        order_no, order.code, order.quantity, self._account
+                    )
+                    return_code = result.get("return_code", -1)
+                    if return_code == 0:
+                        self._pending_orders.pop(order_no, None)
+                        success = True
+                        logger.info(
+                            f"미체결 취소 성공: {order_no} ({order.code} {order.side} {order.quantity}주)"
+                        )
+                        break
+                    else:
+                        logger.warning(
+                            f"미체결 취소 실패 (시도 {attempt}/{_MAX_CANCEL_RETRIES}): "
+                            f"{order_no}, 에러코드={return_code}"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"미체결 취소 예외 (시도 {attempt}/{_MAX_CANCEL_RETRIES}): "
+                        f"{order_no}, {e}"
+                    )
+
+            results[order_no] = success
+            if not success:
+                logger.error(f"미체결 취소 최종 실패: {order_no} ({order.code})")
+
+        cancelled = sum(1 for v in results.values() if v)
+        failed = sum(1 for v in results.values() if not v)
+        logger.info(f"미체결 전량 취소 완료: 성공 {cancelled}건, 실패 {failed}건")
+
+        return results
 
     async def on_chejan(self, data: dict) -> None:
         """체결 이벤트 처리.

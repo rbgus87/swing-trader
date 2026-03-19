@@ -494,6 +494,72 @@ class TestOrderManager:
 
         assert len(manager.get_pending_orders()) == 0
 
+    @pytest.mark.asyncio
+    async def test_cancel_all_pending_success(self):
+        """미체결 전량 취소 성공 테스트."""
+        manager, mock_api = self._make_manager()
+        mock_api.send_order = AsyncMock(
+            return_value={"return_code": 0, "ord_no": "ORD001"}
+        )
+        mock_api.cancel_order = AsyncMock(
+            return_value={"return_code": 0}
+        )
+
+        await manager.execute_order(
+            code="005930", qty=10, price=0, order_type=ORDER_BUY
+        )
+        assert len(manager.get_pending_orders()) == 1
+
+        results = await manager.cancel_all_pending()
+
+        assert results["ORD001"] is True
+        assert len(manager.get_pending_orders()) == 0
+
+    @pytest.mark.asyncio
+    async def test_cancel_all_pending_empty(self):
+        """미체결 없을 때 빈 dict 반환."""
+        manager, mock_api = self._make_manager()
+        results = await manager.cancel_all_pending()
+        assert results == {}
+
+    @pytest.mark.asyncio
+    async def test_cancel_all_pending_partial_failure(self):
+        """일부 취소 실패 시 결과 반영."""
+        manager, mock_api = self._make_manager()
+
+        call_count = 0
+
+        async def mock_send_order(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return {"return_code": 0, "ord_no": f"ORD{call_count:03d}"}
+
+        mock_api.send_order = AsyncMock(side_effect=mock_send_order)
+
+        await manager.execute_order(
+            code="005930", qty=10, price=0, order_type=ORDER_BUY
+        )
+        await manager.execute_order(
+            code="000660", qty=5, price=0, order_type=ORDER_BUY
+        )
+
+        cancel_call_count = 0
+
+        async def mock_cancel(*args, **kwargs):
+            nonlocal cancel_call_count
+            cancel_call_count += 1
+            if cancel_call_count <= 3:  # 첫 주문 3회 실패
+                return {"return_code": -1}
+            return {"return_code": 0}
+
+        mock_api.cancel_order = AsyncMock(side_effect=mock_cancel)
+
+        results = await manager.cancel_all_pending()
+
+        # 하나는 실패, 하나는 성공
+        assert sum(1 for v in results.values() if not v) == 1
+        assert sum(1 for v in results.values() if v) == 1
+
     def test_risk_check_required_comment_exists(self):
         """execute_order 메서드에 RISK_CHECK_REQUIRED 주석 존재 확인."""
         from src.broker.order_manager import OrderManager

@@ -15,6 +15,7 @@ from loguru import logger
 from src.broker.kiwoom_api import KiwoomAPI
 from src.broker.order_manager import OrderManager
 from src.broker.realtime_data import RealtimeDataManager
+from src.broker.tr_codes import ORDER_BUY, ORDER_SELL, PRICE_LIMIT, PRICE_MARKET
 from src.datastore import DataStore
 from src.models import ExitReason, Position, Signal, Tick, TradeRecord
 from src.notification.telegram_bot import TelegramBot
@@ -131,6 +132,11 @@ class TradingEngine:
             self._ws_disconnect, "cron", hour=int(h), minute=int(m)
         )
 
+        # 미체결 주문 정리 (15:35 — 장 마감 5분 후)
+        self._scheduler.add_job(
+            self._post_market_cleanup, "cron", hour=15, minute=35
+        )
+
         # 일일 리셋 (09:00)
         self._scheduler.add_job(self._daily_reset, "cron", hour=9, minute=0)
 
@@ -194,10 +200,8 @@ class TradingEngine:
             is_bullish = self._market_regime.check(today)
             if not is_bullish:
                 logger.info("시장 방어 모드 — 스크리닝 수행하지만 장중 매수는 차단됨")
-                self._telegram.send(
-                    f"시장 방어 모드: KOSPI {self._market_regime.kospi_close:,} "
-                    f"< 200일선 {self._market_regime.kospi_sma200:,.0f}"
-                )
+                reason = self._market_regime.block_reason or "조건 미충족"
+                self._telegram.send(f"시장 방어 모드: {reason}")
 
             if watchlist:
                 # 모드 A: watchlist 전체가 후보, OHLCV 캐시만 갱신
@@ -335,7 +339,11 @@ class TradingEngine:
 
     async def _check_entry_conditions(self, tick: Tick):
         """후보 종목 진입 조건 체크 — 전략 인터페이스 기반."""
-        from src.strategy.signals import calculate_indicators, calculate_signal_score
+        from src.strategy.signals import (
+            calculate_indicators,
+            calculate_signal_score,
+            get_institutional_net_buying,
+        )
         import pandas as pd
 
         score = 0.0
@@ -354,8 +362,15 @@ class TradingEngine:
             if df_daily.empty:
                 return
 
-            # 신호 강도 점수
-            score = calculate_signal_score(df_daily)
+            # 기관/외국인 수급 데이터 (graceful: 실패 시 0)
+            inst_net, foreign_net = get_institutional_net_buying(tick.code)
+
+            # 신호 강도 점수 (OBV + 수급 포함)
+            score = calculate_signal_score(
+                df_daily,
+                institutional_net=inst_net,
+                foreign_net=foreign_net,
+            )
             min_score = config.get("strategy.min_signal_score", 1.5)
             if score < min_score:
                 return
@@ -395,10 +410,11 @@ class TradingEngine:
 
         # 6. 주문 실행  # RISK_CHECK_REQUIRED
         if self.mode == "live":
-            from src.broker.tr_codes import ORDER_BUY, PRICE_MARKET
+            hoga = self._get_hoga_type()
+            order_price = tick.price if hoga == PRICE_LIMIT else 0
 
             result = await self._order_mgr.execute_order(
-                tick.code, qty, tick.price, ORDER_BUY, PRICE_MARKET
+                tick.code, qty, order_price, ORDER_BUY, hoga
             )
             if result.success:
                 await self._record_buy(tick, qty)
@@ -408,8 +424,6 @@ class TradingEngine:
     async def _execute_sell(self, position: Position, price: int, reason: ExitReason):
         """매도 실행."""
         if self.mode == "live":
-            from src.broker.tr_codes import ORDER_SELL, PRICE_MARKET
-
             # 매도 재시도 제한 (최대 3회)
             retry_count = self._sell_retry_counts.get(position.id, 0)
             if retry_count >= 3:
@@ -424,12 +438,15 @@ class TradingEngine:
             self._ds.update_position(position.id, status="selling")
             self._invalidate_positions_cache()
 
+            hoga = self._get_hoga_type()
+            order_price = price if hoga == PRICE_LIMIT else 0
+
             result = await self._order_mgr.execute_order(
                 position.code,
                 position.quantity,
-                price,
+                order_price,
                 ORDER_SELL,
-                PRICE_MARKET,
+                hoga,
             )
             if not result.success:
                 # 주문 실패 → open으로 복원
@@ -634,6 +651,11 @@ class TradingEngine:
         if pnl_pct <= self._risk_mgr._daily_loss_limit and not self._risk_mgr.is_halted:
             self.halt()
 
+    def _get_hoga_type(self) -> str:
+        """config 기반 호가 유형 반환."""
+        order_type = config.get("trading.order_type", "market")
+        return PRICE_LIMIT if order_type == "limit" else PRICE_MARKET
+
     def _get_available_capital(self) -> int:
         """가용 자본 조회 — 초기자본 - 투자중 금액."""
         positions = self._get_cached_positions()
@@ -677,6 +699,59 @@ class TradingEngine:
         )
 
     # ── 장마감 ──
+
+    async def _post_market_cleanup(self):
+        """장 마감 후 미체결 주문 정리 (15:35 스케줄).
+
+        1. 미체결 주문 전량 취소
+        2. "selling" 상태인데 체결 안 된 포지션을 "open"으로 복원
+        """
+        if self.mode != "live":
+            return
+
+        logger.info("장마감 미체결 정리 시작")
+
+        # 1. 미체결 주문 전량 취소
+        cancel_results = await self._order_mgr.cancel_all_pending()
+
+        # 2. "selling" 상태 포지션 복원 (체결 안 된 매도 주문)
+        restored_count = 0
+        try:
+            with self._ds._lock:
+                cursor = self._ds.conn.execute(
+                    "SELECT * FROM positions WHERE status = 'selling'"
+                )
+                selling_positions = [dict(row) for row in cursor.fetchall()]
+
+            for pos_dict in selling_positions:
+                self._ds.update_position(pos_dict["id"], status="open")
+                restored_count += 1
+                logger.warning(
+                    f"미체결 매도 포지션 복원: {pos_dict['code']} (id={pos_dict['id']})"
+                )
+        except Exception as e:
+            logger.error(f"selling 포지션 복원 실패: {e}")
+
+        if selling_positions:
+            self._invalidate_positions_cache()
+            self._sell_retry_counts.clear()
+
+        # 텔레그램 알림
+        cancelled = sum(1 for v in cancel_results.values() if v)
+        failed = sum(1 for v in cancel_results.values() if not v)
+        if cancel_results or restored_count > 0:
+            msg_parts = []
+            if cancel_results:
+                msg_parts.append(f"미체결 취소 {cancelled}건")
+                if failed > 0:
+                    msg_parts.append(f"(실패 {failed}건)")
+            if restored_count > 0:
+                msg_parts.append(f"매도 미체결 복원 {restored_count}건")
+            self._telegram.send(f"🔄 장마감 정리: {', '.join(msg_parts)}")
+
+        logger.info(
+            f"장마감 미체결 정리 완료: 취소 {cancelled}건, 복원 {restored_count}건"
+        )
 
     def _daily_report(self):
         """일간 리포트 (16:00)."""

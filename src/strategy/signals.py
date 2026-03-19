@@ -125,6 +125,12 @@ def calculate_indicators(
     # 거래량 이동평균
     result["volume_sma20"] = ta.sma(result["volume"], length=volume_sma_period)
 
+    # OBV (On-Balance Volume)
+    obv = ta.obv(result["close"], result["volume"])
+    if obv is not None:
+        result["obv"] = obv
+        result["obv_sma20"] = ta.sma(obv, length=20)
+
     result.dropna(inplace=True)
     result.reset_index(drop=True, inplace=True)
 
@@ -302,21 +308,29 @@ def check_exit_signal(
     return None
 
 
-def calculate_signal_score(df: pd.DataFrame) -> float:
-    """신호 강도 점수 계산 (0.0 ~ 5.0).
+def calculate_signal_score(
+    df: pd.DataFrame,
+    institutional_net: int = 0,
+    foreign_net: int = 0,
+) -> float:
+    """신호 강도 점수 계산 (0.0 ~ 7.0).
 
     점수 항목 (각 최대 1.0):
-    - RSI 위치 점수: 50 근처가 가장 높음 (매수 초기 추세 진입)
-    - MACD 히스토그램 크기: 양수이고 클수록 높음
-    - 거래량 배수: volume / volume_sma20 비율
-    - ADX 추세 강도: 25 이상이면 점수 부여
-    - 볼린저밴드 위치: 중간~상단 범위
+    1. RSI 위치 점수: 50 근처가 가장 높음 (매수 초기 추세 진입)
+    2. MACD 히스토그램 크기: 양수이고 클수록 높음
+    3. 거래량 배수: volume / volume_sma20 비율
+    4. ADX 추세 강도: 25 이상이면 점수 부여
+    5. 볼린저밴드 위치: 중간~상단 범위
+    6. OBV 추세 일치: 가격 상승 + OBV 상승 동시 충족
+    7. 기관/외국인 수급: 순매수 시 가점
 
     Args:
         df: 지표 계산 완료된 DataFrame.
+        institutional_net: 기관 순매수 금액 (원). 양수=순매수, 음수=순매도.
+        foreign_net: 외국인 순매수 금액 (원).
 
     Returns:
-        0.0 ~ 5.0 범위의 점수.
+        0.0 ~ 7.0 범위의 점수.
     """
     if len(df) < 1:
         return 0.0
@@ -364,4 +378,73 @@ def calculate_signal_score(df: pd.DataFrame) -> float:
             bb_score = 1.0 - abs(bb_position - 0.65) / 0.35
             score += max(0.0, bb_score)
 
-    return round(min(5.0, max(0.0, score)), 2)
+    # 6. OBV 추세 일치 (가격 5일 상승 + OBV 5일 상승 = 추세 건강)
+    if len(df) >= 6 and "obv" in df.columns and "obv_sma20" in df.columns:
+        price_up = df.iloc[-1]["close"] > df.iloc[-6]["close"]
+        obv_up = df.iloc[-1]["obv"] > df.iloc[-6]["obv"]
+        obv_above_sma = df.iloc[-1]["obv"] > df.iloc[-1]["obv_sma20"]
+        if price_up and obv_up:
+            obv_score = 0.7
+            if obv_above_sma:
+                obv_score = 1.0
+            score += obv_score
+
+    # 7. 기관/외국인 수급 가점 (데이터 있을 때만)
+    supply_score = 0.0
+    if institutional_net > 0:
+        supply_score += 0.5  # 기관 순매수
+    if foreign_net > 0:
+        supply_score += 0.5  # 외국인 순매수
+    score += supply_score
+
+    return round(min(7.0, max(0.0, score)), 2)
+
+
+def get_institutional_net_buying(code: str, days: int = 5) -> tuple[int, int]:
+    """기관/외국인 최근 N일 누적 순매수 금액 조회.
+
+    pykrx를 사용하여 KRX 데이터를 조회한다.
+    데이터 조회 실패 시 (0, 0) 반환 (graceful degradation).
+
+    Args:
+        code: 종목코드 (6자리).
+        days: 조회 기간 (영업일 수).
+
+    Returns:
+        (기관_순매수, 외국인_순매수) 튜플 (원 단위).
+    """
+    try:
+        from datetime import datetime, timedelta
+        from pykrx import stock
+
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+
+        # 투자자별 순매수 조회
+        df = stock.get_market_trading_value_by_date(
+            start, end, code, on="순매수"
+        )
+
+        if df.empty or len(df) == 0:
+            return (0, 0)
+
+        # 최근 N일만 사용
+        df = df.tail(days)
+
+        # 컬럼명은 pykrx 버전에 따라 다를 수 있음
+        inst_col = None
+        foreign_col = None
+        for col in df.columns:
+            col_lower = col.lower() if isinstance(col, str) else ""
+            if "기관" in str(col):
+                inst_col = col
+            if "외국인" in str(col):
+                foreign_col = col
+
+        inst_net = int(df[inst_col].sum()) if inst_col else 0
+        foreign_net = int(df[foreign_col].sum()) if foreign_col else 0
+
+        return (inst_net, foreign_net)
+
+    except Exception:
+        return (0, 0)

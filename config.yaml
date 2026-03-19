@@ -34,6 +34,7 @@ trading:
   max_positions: 3                  # 동시에 보유할 수 있는 최대 종목 수 (자본금에 따라 조절)
   reentry_cooldown_days: 3          # 같은 종목을 매도 후 다시 매수하기까지 대기 영업일
   initial_capital: 3_000_000        # 실거래/페이퍼 초기 자본금 (원)
+  order_type: market                # 주문 호가 유형 (market: 시장가, limit: 지정가)
 
 # --- 종목 스크리닝 (장 시작 전 후보 선별) ---
 screening:

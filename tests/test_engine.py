@@ -9,6 +9,8 @@ asyncio 기반 engine에 맞추어 모든 테스트가 async로 동작한다.
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from src.broker.tr_codes import ORDER_BUY, ORDER_SELL, PRICE_LIMIT, PRICE_MARKET
+
 import pytest
 
 # loguru TRADE 커스텀 레벨 등록
@@ -719,3 +721,94 @@ class TestTrailingStopUpdate:
         await engine.on_price_update(tick)
 
         mock_deps["ds"].update_position.assert_not_called()
+
+
+# ── 장마감 미체결 정리 테스트 ──
+
+
+class TestPostMarketCleanup:
+    """장마감 미체결 주문 정리 테스트."""
+
+    async def test_cleanup_skipped_in_paper_mode(self, engine, mock_deps):
+        """paper 모드에서는 정리 스킵."""
+        await engine._post_market_cleanup()
+        mock_deps["order_mgr"].cancel_all_pending.assert_not_called()
+
+    async def test_cleanup_cancels_pending_orders(self, engine_live, mock_deps):
+        """live 모드에서 미체결 전량 취소."""
+        mock_deps["order_mgr"].cancel_all_pending = AsyncMock(return_value={})
+        mock_deps["ds"]._lock = MagicMock()
+        mock_deps["ds"]._lock.__enter__ = MagicMock()
+        mock_deps["ds"]._lock.__exit__ = MagicMock()
+        mock_deps["ds"].conn = MagicMock()
+        mock_deps["ds"].conn.execute.return_value.fetchall.return_value = []
+
+        await engine_live._post_market_cleanup()
+
+        mock_deps["order_mgr"].cancel_all_pending.assert_awaited_once()
+
+    async def test_cleanup_restores_selling_positions(self, engine_live, mock_deps):
+        """selling 상태 포지션을 open으로 복원."""
+        mock_deps["order_mgr"].cancel_all_pending = AsyncMock(return_value={})
+
+        selling_pos = {"id": 1, "code": "005930", "status": "selling"}
+        mock_deps["ds"]._lock = MagicMock()
+        mock_deps["ds"]._lock.__enter__ = MagicMock()
+        mock_deps["ds"]._lock.__exit__ = MagicMock()
+        mock_deps["ds"].conn = MagicMock()
+        mock_deps["ds"].conn.execute.return_value.fetchall.return_value = [selling_pos]
+
+        await engine_live._post_market_cleanup()
+
+        mock_deps["ds"].update_position.assert_any_call(1, status="open")
+
+
+# ── 호가 유형 설정 테스트 ──
+
+
+class TestHogaType:
+    """config 기반 호가 유형 테스트."""
+
+    async def test_default_market_order(self, engine, mock_deps):
+        """기본값은 시장가."""
+        from src.broker.tr_codes import PRICE_MARKET
+        assert engine._get_hoga_type() == PRICE_MARKET
+
+    async def test_limit_order_from_config(self, engine, mock_deps):
+        """config에서 limit 설정 시 지정가."""
+        from src.broker.tr_codes import PRICE_LIMIT
+        mock_deps["config"].get.side_effect = lambda key, default=None: {
+            "trading.order_type": "limit",
+        }.get(key, default)
+
+        assert engine._get_hoga_type() == PRICE_LIMIT
+
+    async def test_live_sell_uses_configured_hoga(self, engine_live, mock_deps):
+        """live 매도 시 config 호가 유형 사용."""
+        from src.broker.tr_codes import PRICE_LIMIT
+
+        mock_deps["config"].get.side_effect = lambda key, default=None: {
+            "trading.order_type": "limit",
+        }.get(key, default)
+
+        pos = Position(
+            id=1,
+            code="005930",
+            name="삼성전자",
+            entry_date="2026-03-10",
+            entry_price=10000,
+            quantity=10,
+            stop_price=9300,
+            target_price=10800,
+            high_since_entry=10000,
+        )
+
+        await engine_live._execute_sell(
+            pos, price=10800, reason=ExitReason.TARGET_REACHED
+        )
+
+        call_args = mock_deps["order_mgr"].execute_order.call_args
+        assert call_args[0][3] == ORDER_SELL
+        assert call_args[0][4] == PRICE_LIMIT
+        # 지정가이므로 price가 0이 아님
+        assert call_args[0][2] == 10800

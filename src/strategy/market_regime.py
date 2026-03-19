@@ -1,7 +1,9 @@
 """시장 국면 판단 — 모든 전략에 공통 적용되는 게이트.
 
-KOSPI 지수의 200일 이동평균을 기준으로 추세장/방어 모드를 판단.
-추세장이 아니면 매수 신호를 차단하여 하락장 진입을 방지.
+3단계 판단:
+1. KOSPI 200일 이동평균 → 추세장/방어 모드
+2. KOSPI ADX → 횡보장 감지 (ADX < 15이면 추세 약함)
+3. VKOSPI(변동성지수) → 공포 구간 차단 (VKOSPI > 30이면 진입 차단)
 """
 
 from datetime import datetime, timedelta
@@ -14,16 +16,29 @@ from pykrx import stock
 class MarketRegime:
     """시장 국면 판단기.
 
-    KOSPI 200일선 기준:
-    - 지수 > 200일선 → 추세장 (매수 허용)
-    - 지수 < 200일선 → 방어 모드 (매수 차단)
+    판단 기준:
+    - KOSPI > 200일선 AND ADX >= 15 AND VKOSPI <= 30 → 추세장 (매수 허용)
+    - 그 외 → 방어 모드 (매수 차단)
     """
 
-    def __init__(self, sma_period: int = 200):
+    def __init__(
+        self,
+        sma_period: int = 200,
+        adx_period: int = 14,
+        adx_sideways_threshold: float = 15.0,
+        vkospi_fear_threshold: float = 30.0,
+    ):
         self._sma_period = sma_period
+        self._adx_period = adx_period
+        self._adx_sideways_threshold = adx_sideways_threshold
+        self._vkospi_fear_threshold = vkospi_fear_threshold
+
         self._is_bullish: bool | None = None
         self._kospi_close: int = 0
         self._kospi_sma200: float = 0.0
+        self._kospi_adx: float = 0.0
+        self._vkospi: float = 0.0
+        self._block_reason: str = ""
         self._last_check_date: str = ""
 
     def check(self, date: str | None = None) -> bool:
@@ -54,27 +69,95 @@ class MarketRegime:
 
             # 종가 컬럼명 처리 (pykrx 버전에 따라 다를 수 있음)
             close_col = "종가" if "종가" in df.columns else "close"
+            high_col = "고가" if "고가" in df.columns else "high"
+            low_col = "저가" if "저가" in df.columns else "low"
             closes = df[close_col]
 
+            # 1. KOSPI 200일선 체크
             sma200 = closes.rolling(self._sma_period).mean().iloc[-1]
             latest_close = closes.iloc[-1]
-
             self._kospi_close = int(latest_close)
             self._kospi_sma200 = float(sma200)
-            self._is_bullish = latest_close > sma200
+
+            above_sma = latest_close > sma200
+
+            # 2. ADX 횡보장 감지 (KOSPI 지수 기반)
+            self._kospi_adx = self._calculate_adx(df, close_col, high_col, low_col)
+
+            is_trending = self._kospi_adx >= self._adx_sideways_threshold
+
+            # 3. VKOSPI 공포 차단
+            self._vkospi = self._get_vkospi(date)
+            is_calm = self._vkospi <= self._vkospi_fear_threshold
+
+            # 종합 판단
+            self._is_bullish = above_sma and is_trending and is_calm
             self._last_check_date = date
 
+            # 차단 사유 기록
+            reasons = []
+            if not above_sma:
+                reasons.append(f"KOSPI {self._kospi_close:,} < 200일선 {self._kospi_sma200:,.0f}")
+            if not is_trending:
+                reasons.append(f"ADX {self._kospi_adx:.1f} < {self._adx_sideways_threshold} (횡보)")
+            if not is_calm:
+                reasons.append(f"VKOSPI {self._vkospi:.1f} > {self._vkospi_fear_threshold} (공포)")
+            self._block_reason = " | ".join(reasons) if reasons else ""
+
             regime = "추세장" if self._is_bullish else "방어모드"
-            logger.info(
-                f"시장 국면: {regime} | KOSPI {self._kospi_close:,} "
-                f"(200일선 {self._kospi_sma200:,.0f})"
+            detail = (
+                f"KOSPI {self._kospi_close:,} (200일선 {self._kospi_sma200:,.0f}), "
+                f"ADX {self._kospi_adx:.1f}, VKOSPI {self._vkospi:.1f}"
             )
+            logger.info(f"시장 국면: {regime} | {detail}")
+            if self._block_reason:
+                logger.info(f"차단 사유: {self._block_reason}")
+
             return self._is_bullish
 
         except Exception as e:
             logger.error(f"시장 국면 판단 실패: {e} — 추세장으로 간주")
             self._is_bullish = True
             return True
+
+    def _calculate_adx(
+        self, df: pd.DataFrame, close_col: str, high_col: str, low_col: str
+    ) -> float:
+        """KOSPI 지수의 ADX 계산."""
+        try:
+            import pandas_ta as ta
+
+            adx_df = ta.adx(
+                df[high_col].astype(float),
+                df[low_col].astype(float),
+                df[close_col].astype(float),
+                length=self._adx_period,
+            )
+            if adx_df is not None and not adx_df.empty:
+                adx_col = f"ADX_{self._adx_period}"
+                if adx_col in adx_df.columns:
+                    val = adx_df[adx_col].dropna()
+                    if len(val) > 0:
+                        return float(val.iloc[-1])
+        except Exception as e:
+            logger.debug(f"KOSPI ADX 계산 실패: {e}")
+        return 25.0  # 실패 시 추세 있음으로 간주
+
+    def _get_vkospi(self, date: str) -> float:
+        """VKOSPI(변동성지수) 조회."""
+        try:
+            start = (datetime.strptime(date, "%Y%m%d") - timedelta(days=10)).strftime("%Y%m%d")
+            df = stock.get_index_ohlcv_by_date(start, date, "1004")  # 1004 = VKOSPI
+
+            if df.empty or len(df) == 0:
+                return 0.0
+
+            close_col = "종가" if "종가" in df.columns else "close"
+            return float(df[close_col].iloc[-1])
+
+        except Exception as e:
+            logger.debug(f"VKOSPI 조회 실패: {e}")
+            return 0.0  # 실패 시 공포 없음으로 간주
 
     @property
     def is_bullish(self) -> bool:
@@ -90,3 +173,15 @@ class MarketRegime:
     @property
     def kospi_sma200(self) -> float:
         return self._kospi_sma200
+
+    @property
+    def kospi_adx(self) -> float:
+        return self._kospi_adx
+
+    @property
+    def vkospi(self) -> float:
+        return self._vkospi
+
+    @property
+    def block_reason(self) -> str:
+        return self._block_reason

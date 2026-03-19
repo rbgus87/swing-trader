@@ -16,6 +16,7 @@ from src.strategy.signals import (
     check_exit_signal,
     check_golden_cross_entry,
     check_golden_cross_exit,
+    get_institutional_net_buying,
 )
 
 
@@ -422,9 +423,9 @@ class TestCalculateSignalScore:
     """calculate_signal_score 테스트."""
 
     def test_score_range(self, indicators_df):
-        """점수가 0~5 범위인지 확인."""
+        """점수가 0~7 범위인지 확인."""
         score = calculate_signal_score(indicators_df)
-        assert 0.0 <= score <= 5.0
+        assert 0.0 <= score <= 7.0
 
     def test_empty_df_returns_zero(self):
         """빈 DataFrame → 0.0."""
@@ -615,3 +616,139 @@ class TestGoldenCrossExit:
         """1행만 있는 DataFrame → False."""
         df = pd.DataFrame({"sma5": [9900], "sma20": [10000]})
         assert check_golden_cross_exit(df) is False
+
+
+class TestOBVIndicator:
+    """OBV 지표 추가 테스트."""
+
+    def test_obv_columns_added(self, indicators_df):
+        """OBV 관련 컬럼이 추가되는지 확인."""
+        assert "obv" in indicators_df.columns
+        assert "obv_sma20" in indicators_df.columns
+
+    def test_obv_not_all_zero(self, indicators_df):
+        """OBV 값이 전부 0이 아닌지 확인."""
+        assert indicators_df["obv"].abs().sum() > 0
+
+
+class TestSignalScoreSupply:
+    """수급 스코어링 테스트."""
+
+    def test_score_with_institutional_buying(self):
+        """기관 순매수 시 가점."""
+        df = pd.DataFrame(
+            {
+                "close": [10000],
+                "rsi": [52],
+                "macd_hist": [0.1],
+                "volume": [500000],
+                "volume_sma20": [500000],
+                "adx": [20],
+                "bb_upper": [11000],
+                "bb_mid": [10000],
+                "bb_lower": [9000],
+            }
+        )
+        score_no_supply = calculate_signal_score(df)
+        score_inst = calculate_signal_score(df, institutional_net=1_000_000_000)
+        score_foreign = calculate_signal_score(df, foreign_net=2_000_000_000)
+        score_both = calculate_signal_score(
+            df, institutional_net=1_000_000_000, foreign_net=2_000_000_000
+        )
+
+        assert score_inst > score_no_supply
+        assert score_foreign > score_no_supply
+        assert score_both > score_inst
+        assert score_both - score_no_supply == pytest.approx(1.0)
+
+    def test_score_with_net_selling_no_bonus(self):
+        """순매도 시 가점 없음."""
+        df = pd.DataFrame(
+            {
+                "close": [10000],
+                "rsi": [52],
+                "macd_hist": [0.1],
+                "volume": [500000],
+                "volume_sma20": [500000],
+                "adx": [20],
+                "bb_upper": [11000],
+                "bb_mid": [10000],
+                "bb_lower": [9000],
+            }
+        )
+        score_no_supply = calculate_signal_score(df)
+        score_selling = calculate_signal_score(
+            df, institutional_net=-500_000_000, foreign_net=-1_000_000_000
+        )
+
+        assert score_no_supply == score_selling
+
+
+class TestOBVTrendScore:
+    """OBV 추세 일치 점수 테스트."""
+
+    def test_obv_trend_match_adds_score(self):
+        """가격+OBV 동시 상승 시 가점."""
+        # 6행 이상 필요 (5일 추세 비교)
+        df = pd.DataFrame(
+            {
+                "close": [9500, 9600, 9700, 9800, 9900, 10000],
+                "rsi": [50, 50, 50, 50, 50, 52],
+                "macd_hist": [0, 0, 0, 0, 0, 0.1],
+                "volume": [500000] * 6,
+                "volume_sma20": [500000] * 6,
+                "adx": [20] * 6,
+                "bb_upper": [11000] * 6,
+                "bb_mid": [10000] * 6,
+                "bb_lower": [9000] * 6,
+                "obv": [100, 200, 300, 400, 500, 600],  # OBV 상승
+                "obv_sma20": [50, 100, 150, 200, 250, 300],  # OBV > SMA
+            }
+        )
+
+        score_with_obv = calculate_signal_score(df)
+
+        # OBV 컬럼 제거한 버전과 비교
+        df_no_obv = df.drop(columns=["obv", "obv_sma20"])
+        score_no_obv = calculate_signal_score(df_no_obv)
+
+        assert score_with_obv > score_no_obv
+
+    def test_obv_divergence_no_bonus(self):
+        """가격 상승 + OBV 하락 (다이버전스) 시 가점 없음."""
+        df = pd.DataFrame(
+            {
+                "close": [9500, 9600, 9700, 9800, 9900, 10000],  # 상승
+                "rsi": [50, 50, 50, 50, 50, 52],
+                "macd_hist": [0, 0, 0, 0, 0, 0.1],
+                "volume": [500000] * 6,
+                "volume_sma20": [500000] * 6,
+                "adx": [20] * 6,
+                "bb_upper": [11000] * 6,
+                "bb_mid": [10000] * 6,
+                "bb_lower": [9000] * 6,
+                "obv": [600, 500, 400, 300, 200, 100],  # OBV 하락
+                "obv_sma20": [700, 600, 500, 400, 300, 200],
+            }
+        )
+
+        df_no_obv = df.drop(columns=["obv", "obv_sma20"])
+        score_with_obv = calculate_signal_score(df)
+        score_no_obv = calculate_signal_score(df_no_obv)
+
+        assert score_with_obv == score_no_obv
+
+
+class TestInstitutionalNetBuying:
+    """get_institutional_net_buying 테스트."""
+
+    def test_returns_tuple(self):
+        """항상 (int, int) 튜플 반환."""
+        result = get_institutional_net_buying("005930")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_graceful_on_invalid_code(self):
+        """잘못된 종목코드에도 (0, 0) 반환."""
+        result = get_institutional_net_buying("INVALID")
+        assert result == (0, 0)
