@@ -6,8 +6,13 @@
 3. IS vs OOS 성과 열화율 분석 → 오버피팅 감지
 
 Usage:
-    python scripts/run_walk_forward.py
-    python scripts/run_walk_forward.py --strategy adaptive --train 24 --test 3
+    # 전략별 개별 실행
+    python scripts/run_walk_forward.py --strategy golden_cross
+    python scripts/run_walk_forward.py --strategy bb_bounce
+    python scripts/run_walk_forward.py --strategy adaptive
+
+    # 3개 전략 순차 실행 (golden_cross → bb_bounce → adaptive)
+    python scripts/run_walk_forward.py --all
 """
 
 import argparse
@@ -37,13 +42,51 @@ CODES = [
     "003550", "034730", "032830", "030200", "017670",
 ]
 
-# 최적화 대상 파라미터 그리드 (최소 — 16조합, 빠른 실행)
-WF_GRID = {
+# ============================================================================
+# 전략별 파라미터 그리드
+# ============================================================================
+
+# golden_cross: 추세 추종 전략 — 진입 + 청산 파라미터 (96조합)
+WF_GRID_GOLDEN_CROSS = {
+    # 진입 파라미터 (전략 고유)
+    "adx_threshold": [15, 20, 25],
+    "rsi_entry_min": [35, 40],
+    "screening_lookback": [3, 5],
+    # 청산 파라미터 (공통)
+    "stop_atr_mult": [2.0, 2.5],
+    "target_return": [0.06, 0.08],
+    "max_hold_days": [10, 15],
+}
+
+# bb_bounce: 평균 회귀 전략 — 진입 + 청산 파라미터 (72조합)
+WF_GRID_BB_BOUNCE = {
+    # 진입 파라미터 (전략 고유)
+    "rsi_oversold": [35, 40, 45],
+    "bb_touch_pct": [0.07, 0.10, 0.15],
+    # 청산 파라미터 (공통)
+    "stop_atr_mult": [2.0, 2.5],
+    "target_return": [0.06, 0.08],
+    "max_hold_days": [10, 15],
+}
+
+# adaptive: 국면 전환 전략 — 청산 + 국면 전환 기준 (32조합)
+WF_GRID_ADAPTIVE = {
     "stop_atr_mult": [2.0, 2.5],
     "target_return": [0.06, 0.08],
     "max_hold_days": [10, 15],
     "max_stop_pct": [0.07, 0.10],
+    "adx_threshold": [20, 25],
 }
+
+# 전략명 → 그리드 매핑
+STRATEGY_GRIDS = {
+    "golden_cross": WF_GRID_GOLDEN_CROSS,
+    "bb_bounce": WF_GRID_BB_BOUNCE,
+    "adaptive": WF_GRID_ADAPTIVE,
+}
+
+# 레거시 호환 (기본 그리드)
+WF_GRID = WF_GRID_ADAPTIVE
 
 
 def run_walk_forward(
@@ -63,6 +106,9 @@ def run_walk_forward(
     Args:
         use_portfolio: True면 run_portfolio() 사용 (실전과 동일한 자본 경합).
     """
+    # 전략별 그리드 선택
+    grid = STRATEGY_GRIDS.get(strategy_name, WF_GRID)
+
     engine = BacktestEngine(initial_capital=capital)
     optimizer = ParameterOptimizer(engine)
 
@@ -75,9 +121,14 @@ def run_walk_forward(
         return []
 
     mode_label = "포트폴리오" if use_portfolio else "독립"
+    grid_size = 1
+    for v in grid.values():
+        grid_size *= len(v)
+
     print(f"\nWalk-Forward 검증: {len(windows)}개 구간 ({mode_label} 모드)")
     print(f"  Train: {train_months}개월, Test: {test_months}개월, Step: {step_months}개월")
     print(f"  전략: {strategy_name}, 자본금: {capital:,}원, 종목: {len(codes)}개")
+    print(f"  그리드: {grid_size}조합 ({', '.join(grid.keys())})")
     print(f"  기간: {start_date} ~ {end_date}")
     print()
 
@@ -97,9 +148,12 @@ def run_walk_forward(
         t0 = time.time()
 
         try:
-            # IS: 그리드 서치 (필터 완화 — 거래 1건 이상이면 유효)
+            # IS: 그리드 서치 (포트폴리오 모드로 실행 — WF 실행과 동일한 평가)
             is_results = optimizer.run_grid_search(
-                codes, tr_start, tr_end, WF_GRID,
+                codes, tr_start, tr_end, grid,
+                strategy_name=strategy_name,
+                use_portfolio=use_portfolio,
+                max_positions=max_positions,
             )
 
             if is_results.empty:
@@ -108,7 +162,7 @@ def run_walk_forward(
             else:
                 best_row = is_results.iloc[0]
                 best_params = {
-                    k: best_row[k] for k in WF_GRID.keys() if k in best_row.index
+                    k: best_row[k] for k in grid.keys() if k in best_row.index
                 }
 
             # IS 최적 성과 기록
@@ -153,7 +207,7 @@ def run_walk_forward(
     return results
 
 
-def analyze_results(results: list[dict]) -> None:
+def analyze_results(results: list[dict], strategy_name: str = "") -> None:
     """IS vs OOS 비교 분석."""
     if not results:
         print("\n분석할 결과 없음")
@@ -161,8 +215,12 @@ def analyze_results(results: list[dict]) -> None:
 
     df = pd.DataFrame(results)
 
+    header = f"Walk-Forward IS vs OOS 비교 분석"
+    if strategy_name:
+        header += f" [{strategy_name}]"
+
     print(f"\n{'='*90}")
-    print(f"  Walk-Forward IS vs OOS 비교 분석")
+    print(f"  {header}")
     print(f"{'='*90}")
 
     # 구간별 상세
@@ -249,7 +307,11 @@ def analyze_results(results: list[dict]) -> None:
     print(f"  {'='*40}\n")
 
 
-def generate_html_report(results: list[dict], output_path: str) -> str:
+def generate_html_report(
+    results: list[dict],
+    output_path: str,
+    strategy_name: str = "",
+) -> str:
     """Walk-Forward 결과 HTML 리포트 생성."""
     if not results:
         return ""
@@ -286,11 +348,13 @@ def generate_html_report(results: list[dict], output_path: str) -> str:
     # IS vs OOS 수익률 비교 차트
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
+    title_suffix = f" [{strategy_name}]" if strategy_name else ""
+
     x = range(1, len(df) + 1)
     axes[0].bar([i - 0.2 for i in x], df["is_return"], 0.35, label="IS (Train)", color="#2196F3", alpha=0.8)
     axes[0].bar([i + 0.2 for i in x], df["oos_return"], 0.35, label="OOS (Test)", color="#FF9800", alpha=0.8)
     axes[0].axhline(y=0, color="gray", linewidth=0.5)
-    axes[0].set_title("구간별 수익률: IS vs OOS")
+    axes[0].set_title(f"구간별 수익률: IS vs OOS{title_suffix}")
     axes[0].set_xlabel("구간")
     axes[0].set_ylabel("수익률 (%)")
     axes[0].legend()
@@ -299,7 +363,7 @@ def generate_html_report(results: list[dict], output_path: str) -> str:
     axes[1].bar([i - 0.2 for i in x], df["is_sharpe"], 0.35, label="IS Sharpe", color="#2196F3", alpha=0.8)
     axes[1].bar([i + 0.2 for i in x], df["oos_sharpe"], 0.35, label="OOS Sharpe", color="#FF9800", alpha=0.8)
     axes[1].axhline(y=0, color="gray", linewidth=0.5)
-    axes[1].set_title("구간별 Sharpe: IS vs OOS")
+    axes[1].set_title(f"구간별 Sharpe: IS vs OOS{title_suffix}")
     axes[1].set_xlabel("구간")
     axes[1].set_ylabel("Sharpe Ratio")
     axes[1].legend()
@@ -322,11 +386,13 @@ def generate_html_report(results: list[dict], output_path: str) -> str:
 
     ret_degradation = (1 - oos_return_avg / is_return_avg) * 100 if abs(is_return_avg) > 0.01 else 0
 
+    strategy_label = f" — {strategy_name}" if strategy_name else ""
+
     html = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>Walk-Forward 검증 리포트</title>
+<title>Walk-Forward 검증 리포트{strategy_label}</title>
 <style>
 body {{ font-family: 'Malgun Gothic', sans-serif; margin: 40px; background: #f5f5f5; }}
 h1 {{ color: #333; border-bottom: 2px solid #FF9800; padding-bottom: 10px; }}
@@ -344,7 +410,7 @@ img {{ border: 1px solid #ddd; border-radius: 4px; margin: 10px 0; }}
 </style>
 </head>
 <body>
-<h1>Walk-Forward 검증 리포트</h1>
+<h1>Walk-Forward 검증 리포트{strategy_label}</h1>
 <p>생성 시각: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
 
 <div class="summary">
@@ -383,14 +449,46 @@ swing-trader Walk-Forward 검증 엔진
     return output_path
 
 
+def run_single_strategy(args, strategy_name: str, codes: list[str]) -> None:
+    """단일 전략 Walk-Forward 실행."""
+    print(f"\n{'#'*90}")
+    print(f"  전략: {strategy_name}")
+    print(f"{'#'*90}")
+
+    t0 = time.time()
+    results = run_walk_forward(
+        codes, args.start, args.end, strategy_name,
+        args.train, args.test, args.step, args.capital,
+        max_positions=args.max_positions,
+        use_portfolio=not args.independent,
+    )
+    elapsed = time.time() - t0
+
+    analyze_results(results, strategy_name)
+
+    if results:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = generate_html_report(
+            results,
+            f"reports/walk_forward_{strategy_name}_{timestamp}.html",
+            strategy_name,
+        )
+
+    print(f"[{strategy_name}] 소요 시간: {elapsed:.0f}초")
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description="Walk-Forward 검증")
-    parser.add_argument("--strategy", default="golden_cross", help="전략 (기본: golden_cross)")
+    parser.add_argument("--strategy", default="golden_cross",
+                        help="전략 (golden_cross | bb_bounce | adaptive)")
+    parser.add_argument("--all", action="store_true",
+                        help="3개 전략 순차 실행 (golden_cross → bb_bounce → adaptive)")
     parser.add_argument("--start", default="20190101", help="시작일 (YYYYMMDD)")
-    parser.add_argument("--end", default="20250314", help="종료일 (YYYYMMDD)")
+    parser.add_argument("--end", default="20260228", help="종료일 (YYYYMMDD)")
     parser.add_argument("--train", type=int, default=24, help="Train 개월 수 (기본: 24)")
-    parser.add_argument("--test", type=int, default=6, help="Test 개월 수 (기본: 6)")
-    parser.add_argument("--step", type=int, default=12, help="Step 개월 수 (기본: 12)")
+    parser.add_argument("--test", type=int, default=3, help="Test 개월 수 (기본: 3)")
+    parser.add_argument("--step", type=int, default=6, help="Step 개월 수 (기본: 6)")
     parser.add_argument("--capital", type=int, default=3_000_000, help="자본금 (기본: 3,000,000)")
     parser.add_argument("--codes", type=str, nargs="+", default=None,
                         help="종목 코드 (미지정 시 대형주 10종목)")
@@ -406,24 +504,39 @@ def main():
         "035420", "066570", "105560", "055550", "003670",
     ]
 
-    t0 = time.time()
-    results = run_walk_forward(
-        codes, args.start, args.end, args.strategy,
-        args.train, args.test, args.step, args.capital,
-        max_positions=args.max_positions,
-        use_portfolio=not args.independent,
-    )
-    elapsed = time.time() - t0
+    t0_total = time.time()
 
-    analyze_results(results)
+    if args.all:
+        # 3개 전략 순차 실행
+        strategies = ["golden_cross", "bb_bounce", "adaptive"]
+        all_results = {}
+        for strategy in strategies:
+            results = run_single_strategy(args, strategy, codes)
+            all_results[strategy] = results
 
-    if results:
-        report_path = generate_html_report(
-            results,
-            f"reports/walk_forward_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-        )
+        # 전체 요약
+        print(f"\n{'='*90}")
+        print(f"  전체 Walk-Forward 검증 요약")
+        print(f"{'='*90}")
+        print(f"{'전략':>16} {'구간수':>6} {'OOS양(+)':>10} {'OOS평균수익':>12} {'OOS평균샤프':>12}")
+        print("-" * 60)
+        for strategy, results in all_results.items():
+            if results:
+                df = pd.DataFrame(results)
+                oos_pos = (df["oos_return"] > 0).sum()
+                print(
+                    f"{strategy:>16} "
+                    f"{len(df):>6} "
+                    f"{oos_pos}/{len(df):>8} "
+                    f"{df['oos_return'].mean():>+11.2f}% "
+                    f"{df['oos_sharpe'].mean():>12.2f}"
+                )
+            else:
+                print(f"{strategy:>16}   결과 없음")
+    else:
+        run_single_strategy(args, args.strategy, codes)
 
-    print(f"총 소요 시간: {elapsed:.0f}초")
+    print(f"\n총 소요 시간: {time.time() - t0_total:.0f}초")
 
 
 if __name__ == "__main__":

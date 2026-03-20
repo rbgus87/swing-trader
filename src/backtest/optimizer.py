@@ -1,6 +1,12 @@
-"""파라미터 최적화 -- 그리드 서치 + Walk-Forward."""
+"""파라미터 최적화 -- 그리드/랜덤 서치 + Walk-Forward.
+
+속도 최적화:
+- 랜덤 서치: 전체 조합의 50% 샘플링 (최소 24개 하한선)
+- 가격 데이터 캐싱: BacktestEngine의 _price_cache 활용
+"""
 
 import itertools
+import random
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -23,7 +29,7 @@ PARAM_GRID = {
 
 
 class ParameterOptimizer:
-    """그리드 서치 및 Walk-Forward 검증 기반 파라미터 최적화."""
+    """그리드/랜덤 서치 및 Walk-Forward 검증 기반 파라미터 최적화."""
 
     def __init__(self, engine: BacktestEngine | None = None):
         self.engine = engine or BacktestEngine()
@@ -34,28 +40,75 @@ class ParameterOptimizer:
         start_date: str,
         end_date: str,
         param_grid: dict | None = None,
+        strategy_name: str = "golden_cross",
+        use_portfolio: bool = True,
+        max_positions: int = 3,
+        sample_ratio: float = 0.5,
+        min_samples: int = 24,
     ) -> pd.DataFrame:
-        """그리드 서치 실행.
+        """그리드/랜덤 서치 실행.
+
+        전체 조합이 min_samples 이하면 전수 검사,
+        아니면 sample_ratio 비율로 랜덤 샘플링 (최소 min_samples).
 
         Args:
             codes: 종목 코드 리스트.
             start_date: 시작일 (YYYYMMDD).
             end_date: 종료일 (YYYYMMDD).
             param_grid: 파라미터 그리드 (기본: PARAM_GRID).
+            strategy_name: 전략 이름.
+            use_portfolio: True면 run_portfolio() 사용.
+            max_positions: 포트폴리오 최대 보유 종목 수.
+            sample_ratio: 랜덤 샘플링 비율 (0.0~1.0, 기본 0.5).
+            min_samples: 최소 샘플 수 (기본 24).
 
         Returns:
-            결과 DataFrame (파라미터 + 성과지표), sharpe 내림차순 정렬.
-            필터: sharpe >= 1.0, mdd >= -15%, win_rate >= 45%, profit_factor >= 1.8
+            결과 DataFrame, sharpe 내림차순 정렬.
         """
         grid = param_grid or PARAM_GRID
-        combos = self._generate_param_combinations(grid)
-        total = len(combos)
-        logger.info(f"그리드 서치 시작: {total}개 조합")
+        all_combos = self._generate_param_combinations(grid)
+        total = len(all_combos)
+
+        # 랜덤 샘플링 적용
+        if total <= min_samples:
+            combos = all_combos
+            search_mode = "전수"
+        else:
+            n_samples = max(min_samples, int(total * sample_ratio))
+            n_samples = min(n_samples, total)
+            combos = random.sample(all_combos, n_samples)
+            search_mode = f"랜덤 {n_samples}/{total}"
+
+        logger.info(
+            f"그리드 서치 시작: {search_mode} ({len(combos)}개 조합, "
+            f"전략: {strategy_name}, "
+            f"{'포트폴리오' if use_portfolio else '독립'} 모드)"
+        )
+
+        # 포트폴리오 모드: 데이터/지표를 한 번만 계산 (프리컴퓨팅)
+        context = None
+        if use_portfolio:
+            context = self.engine.prepare_portfolio_context(
+                codes, start_date, end_date, strategy_name, use_market_filter=True,
+            )
+            if context is None:
+                logger.warning("프리컴퓨팅 실패, 데이터 없음")
+                return pd.DataFrame()
 
         results = []
         for i, params in enumerate(combos):
             try:
-                result = self.engine.run(codes, start_date, end_date, params)
+                if use_portfolio:
+                    result = self.engine.run_portfolio(
+                        codes, start_date, end_date, params, strategy_name,
+                        max_positions=max_positions, use_market_filter=True,
+                        _context=context,
+                    )
+                else:
+                    result = self.engine.run(
+                        codes, start_date, end_date, params, strategy_name,
+                    )
+
                 row = {**params}
                 row["total_return"] = result.total_return
                 row["annual_return"] = result.annual_return
@@ -69,10 +122,12 @@ class ParameterOptimizer:
                 row["avg_hold_days"] = result.avg_hold_days
                 results.append(row)
 
-                if (i + 1) % 100 == 0:
-                    logger.info(f"진행: {i + 1}/{total}")
+                if (i + 1) % 10 == 0:
+                    logger.info(f"진행: {i + 1}/{len(combos)}")
             except Exception as e:
                 logger.warning(f"조합 {i + 1} 실패: {e}")
+
+        logger.info(f"그리드 서치 완료: {len(results)}/{len(combos)}개 유효")
 
         if not results:
             logger.warning("유효한 결과 없음")
@@ -116,21 +171,6 @@ class ParameterOptimizer:
         """Walk-Forward 검증.
 
         각 구간: train 기간에서 최적 파라미터 -> test 기간 OOS 성과 측정.
-
-        Args:
-            codes: 종목 코드 리스트.
-            start_date: 전체 시작일 (YYYYMMDD).
-            end_date: 전체 종료일 (YYYYMMDD).
-            train_months: 훈련 구간 개월 수.
-            test_months: 테스트 구간 개월 수.
-            step_months: 슬라이딩 스텝 개월 수.
-            strategy_name: 전략 이름.
-            param_grid: 최적화 그리드 (None이면 기본 그리드).
-            use_portfolio: True면 run_portfolio 사용 (실전 동일).
-            max_positions: 포트폴리오 최대 보유 종목 수.
-
-        Returns:
-            각 구간의 OOS BacktestResult 리스트.
         """
         windows = self._generate_walk_forward_windows(
             start_date, end_date, train_months, test_months, step_months
@@ -169,7 +209,10 @@ class ParameterOptimizer:
 
             try:
                 train_results = self.run_grid_search(
-                    codes, train_start, train_end, grid
+                    codes, train_start, train_end, grid,
+                    strategy_name=strategy_name,
+                    use_portfolio=use_portfolio,
+                    max_positions=max_positions,
                 )
 
                 if train_results.empty:
@@ -199,14 +242,7 @@ class ParameterOptimizer:
         return oos_results
 
     def _generate_param_combinations(self, param_grid: dict) -> list[dict]:
-        """파라미터 조합 생성.
-
-        Args:
-            param_grid: {파라미터명: [값 리스트]} 딕셔너리.
-
-        Returns:
-            모든 조합의 딕셔너리 리스트.
-        """
+        """파라미터 조합 생성."""
         keys = list(param_grid.keys())
         values = list(param_grid.values())
         combinations = []
@@ -222,18 +258,7 @@ class ParameterOptimizer:
         test_months: int,
         step_months: int,
     ) -> list[tuple[str, str, str, str]]:
-        """Walk-Forward 윈도우 생성.
-
-        Args:
-            start_date: 전체 시작일 (YYYYMMDD).
-            end_date: 전체 종료일 (YYYYMMDD).
-            train_months: 훈련 구간 개월 수.
-            test_months: 테스트 구간 개월 수.
-            step_months: 슬라이딩 스텝 개월 수.
-
-        Returns:
-            [(train_start, train_end, test_start, test_end), ...] 리스트.
-        """
+        """Walk-Forward 윈도우 생성."""
         start = datetime.strptime(start_date, "%Y%m%d")
         end = datetime.strptime(end_date, "%Y%m%d")
 

@@ -44,35 +44,88 @@ class BacktestEngine:
 
     def __init__(self, initial_capital: int = 10_000_000):
         self.initial_capital = initial_capital
+        self._price_cache: dict[str, pd.DataFrame] = {}
+
+    def clear_cache(self) -> None:
+        """가격 데이터 캐시 초기화."""
+        self._price_cache.clear()
 
     def load_price_data(
-        self, codes: list[str], start_date: str, end_date: str
+        self, codes: list[str], start_date: str, end_date: str,
+        warmup_days: int = 280,
     ) -> dict[str, pd.DataFrame]:
-        """pykrx로 일봉 데이터 로드 + 컬럼 매핑.
+        """pykrx로 일봉 데이터 로드 + 컬럼 매핑 (캐싱 지원).
+
+        지표 계산(SMA60, SMA120 등)에 필요한 워밍업 기간을 자동으로
+        시작일 이전에 추가 로딩합니다. 반환된 DataFrame에는 워밍업
+        데이터가 포함되어 있으며, 호출부에서 원래 기간으로 슬라이싱합니다.
+
+        캐시된 데이터가 요청 범위를 포함하면 슬라이싱으로 반환합니다.
 
         Args:
             codes: 종목 코드 리스트.
             start_date: 시작일 (YYYYMMDD).
             end_date: 종료일 (YYYYMMDD).
+            warmup_days: 지표 워밍업용 추가 캘린더일 수 (기본 120일).
 
         Returns:
             {종목코드: OHLCV DataFrame} 딕셔너리.
         """
+        from datetime import datetime as dt, timedelta
+
+        # 워밍업 기간만큼 시작일을 앞당겨 데이터 로딩
+        actual_start = dt.strptime(start_date, "%Y%m%d")
+        warmup_start = (actual_start - timedelta(days=warmup_days)).strftime("%Y%m%d")
+        warmup_start_ts = pd.Timestamp(dt.strptime(warmup_start, "%Y%m%d"))
+        end_ts = pd.Timestamp(dt.strptime(end_date, "%Y%m%d"))
+
         provider = get_provider()
         result = {}
         for code in codes:
             try:
-                df = provider.get_ohlcv_by_date_range(code, start_date, end_date)
+                # 캐시 히트: 캐시된 데이터가 요청 범위를 포함하면 슬라이싱
+                # 종료일은 영업일 기준 5일 여유 허용 (pykrx 반환 범위 차이)
+                if code in self._price_cache:
+                    cached = self._price_cache[code]
+                    end_margin = end_ts - pd.Timedelta(days=5)
+                    if cached.index[0] <= warmup_start_ts and cached.index[-1] >= end_margin:
+                        sliced = cached[(cached.index >= warmup_start_ts) & (cached.index <= end_ts)]
+                        if len(sliced) >= 60:
+                            result[code] = sliced
+                            continue
+
+                df = provider.get_ohlcv_by_date_range(code, warmup_start, end_date)
                 if df.empty or len(df) < 60:
                     logger.warning(
                         f"{code}: 데이터 부족 ({len(df) if not df.empty else 0}행), 건너뜀"
                     )
                     continue
+                # 캐시에 저장 (기존 캐시보다 범위가 넓으면 병합)
+                if code in self._price_cache:
+                    existing = self._price_cache[code]
+                    merged = pd.concat([existing, df])
+                    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+                    self._price_cache[code] = merged
+                else:
+                    self._price_cache[code] = df.copy()
                 result[code] = df
-                logger.info(f"{code}: {len(df)}행 로드 완료")
+                logger.info(f"{code}: {len(df)}행 로드 완료 (워밍업 포함)")
             except Exception as e:
                 logger.error(f"{code}: 데이터 로드 실패 - {e}")
         return result
+
+    def preload_data(
+        self, codes: list[str], start_date: str, end_date: str,
+        warmup_days: int = 280,
+    ) -> None:
+        """전체 기간 데이터를 미리 로드하여 캐시에 저장.
+
+        WF 검증 시 전체 기간을 한 번에 로드하면
+        구간별 반복 로딩을 방지할 수 있습니다.
+        """
+        logger.info(f"데이터 프리로드: {len(codes)}종목, {start_date}~{end_date}")
+        self.load_price_data(codes, start_date, end_date, warmup_days)
+        logger.info(f"프리로드 완료: 캐시 {len(self._price_cache)}종목")
 
     def generate_signals(
         self, df: pd.DataFrame, params: dict | None = None,
@@ -425,6 +478,9 @@ class BacktestEngine:
                 params=params or {},
             )
 
+        from datetime import datetime as dt
+        actual_start_dt = pd.Timestamp(dt.strptime(start_date, "%Y%m%d"))
+
         all_results = []
 
         for code, df in price_data.items():
@@ -439,6 +495,12 @@ class BacktestEngine:
                     "rsi_period": (params or {}).get("rsi_period", 14),
                 }
                 df_ind = calculate_indicators(df, **indicator_params)
+                # 워밍업 기간 제거: 원래 시작일 이후만 사용
+                df_ind = df_ind[df_ind.index >= actual_start_dt]
+                entries = entries[entries.index >= actual_start_dt]
+                exits = exits[exits.index >= actual_start_dt]
+                if df_ind.empty:
+                    continue
                 close = df_ind["close"]
                 high = df_ind["high"]
                 low = df_ind["low"]
@@ -522,6 +584,105 @@ class BacktestEngine:
         return avg_result
 
 
+    def prepare_portfolio_context(
+        self,
+        codes: list[str],
+        start_date: str,
+        end_date: str,
+        strategy_name: str = "golden_cross",
+        use_market_filter: bool = True,
+    ) -> dict | None:
+        """포트폴리오 백테스트용 데이터/지표를 미리 계산.
+
+        그리드 서치 시 한 번만 호출하면, 이후 run_portfolio()에서
+        데이터 로딩/지표 계산을 건너뛰어 대폭 빨라집니다.
+
+        Returns:
+            프리컴퓨팅된 컨텍스트 딕셔너리 (run_portfolio의 _context 인자로 전달).
+        """
+        from datetime import datetime as dt
+
+        price_data = self.load_price_data(codes, start_date, end_date)
+        if not price_data:
+            return None
+
+        actual_start_dt = pd.Timestamp(dt.strptime(start_date, "%Y%m%d"))
+
+        indicator_params = {
+            "macd_fast": 12, "macd_slow": 26,
+            "macd_signal": 9, "rsi_period": 14,
+        }
+
+        indicator_cache = {}
+        for code, df in price_data.items():
+            try:
+                df_ind = calculate_indicators(df, **indicator_params)
+                if df_ind.empty:
+                    continue
+                df_ind = df_ind[df_ind.index >= actual_start_dt]
+                if df_ind.empty:
+                    continue
+                indicator_cache[code] = df_ind
+            except Exception as e:
+                logger.error(f"{code}: 지표 계산 실패 - {e}")
+
+        if not indicator_cache:
+            return None
+
+        # KOSPI
+        is_adaptive = strategy_name == "adaptive"
+        kospi_data = kospi_sma200 = kospi_adx_series = None
+        if use_market_filter or is_adaptive:
+            try:
+                from data.provider import get_provider
+                from datetime import timedelta
+                kospi_warmup_start = (actual_start_dt - timedelta(days=300)).strftime("%Y%m%d")
+                kospi_cache_key = f"_kospi_{kospi_warmup_start}_{end_date}"
+
+                if hasattr(self, '_kospi_cache') and kospi_cache_key in self._kospi_cache:
+                    kospi_data, kospi_sma200, kospi_adx_series = self._kospi_cache[kospi_cache_key]
+                    if is_adaptive and kospi_adx_series is None:
+                        kospi_adx_series = self._calc_adx_series(kospi_data)
+                else:
+                    if not hasattr(self, '_kospi_cache'):
+                        self._kospi_cache = {}
+                    kospi_data = get_provider().get_kospi_ohlcv(kospi_warmup_start, end_date)
+                    if not kospi_data.empty and len(kospi_data) >= 200:
+                        kospi_sma200 = kospi_data["close"].rolling(200).mean()
+                        if is_adaptive:
+                            kospi_adx_series = self._calc_adx_series(kospi_data)
+                        self._kospi_cache[kospi_cache_key] = (kospi_data, kospi_sma200, kospi_adx_series)
+                        logger.info(f"KOSPI 지수 로드: {len(kospi_data)}행")
+            except Exception as e:
+                logger.warning(f"KOSPI 데이터 로드 실패: {e}")
+
+        # 주봉 SMA20
+        weekly_sma20_cache = {}
+        for code, df_ind in indicator_cache.items():
+            if hasattr(df_ind.index, "to_period"):
+                try:
+                    weekly = df_ind.resample("W").agg({"close": "last"}).dropna()
+                    if len(weekly) >= 20:
+                        ws = weekly["close"].rolling(20).mean()
+                        weekly_sma20_cache[code] = ws.reindex(df_ind.index, method="ffill")
+                except Exception:
+                    pass
+
+        all_dates = sorted(
+            set().union(*(df.index for df in indicator_cache.values()))
+        )
+
+        return {
+            "price_data": price_data,
+            "indicator_cache": indicator_cache,
+            "kospi_data": kospi_data,
+            "kospi_sma200": kospi_sma200,
+            "kospi_adx_series": kospi_adx_series,
+            "weekly_sma20_cache": weekly_sma20_cache,
+            "all_dates": all_dates,
+            "actual_start_dt": actual_start_dt,
+        }
+
     def run_portfolio(
         self,
         codes: list[str],
@@ -531,6 +692,7 @@ class BacktestEngine:
         strategy_name: str = "golden_cross",
         max_positions: int = 3,
         use_market_filter: bool = True,
+        _context: dict | None = None,
     ) -> BacktestResult:
         """포트폴리오 레벨 백테스트 — 하나의 자본금으로 다종목 순차 매매.
 
@@ -545,6 +707,7 @@ class BacktestEngine:
             strategy_name: 전략 이름 (adaptive 지원).
             max_positions: 동시 보유 최대 종목 수.
             use_market_filter: KOSPI 200일선 시장 필터 사용 여부.
+            _context: prepare_portfolio_context()의 결과 (그리드 서치 최적화용).
 
         Returns:
             BacktestResult 성과 지표.
@@ -563,80 +726,101 @@ class BacktestEngine:
         partial_target_pct = p.get("partial_target_pct", 0.5)
         partial_sell_ratio = p.get("partial_sell_ratio", 0.5)
 
-        # 데이터 로드 + 지표 계산
-        price_data = self.load_price_data(codes, start_date, end_date)
-        if not price_data:
-            logger.error("유효한 데이터 없음")
-            return self._empty_result(p)
+        # 프리컴퓨팅 컨텍스트가 있으면 재사용, 없으면 직접 계산
+        if _context:
+            price_data = _context["price_data"]
+            indicator_cache = _context["indicator_cache"]
+            kospi_data = _context["kospi_data"]
+            kospi_sma200 = _context["kospi_sma200"]
+            kospi_adx_series = _context["kospi_adx_series"]
+            weekly_sma20_cache = _context["weekly_sma20_cache"]
+            all_dates = _context["all_dates"]
+        else:
+            # 기존 방식: 직접 로드 + 계산
+            price_data = self.load_price_data(codes, start_date, end_date)
+            if not price_data:
+                logger.error("유효한 데이터 없음")
+                return self._empty_result(p)
 
-        indicator_params = {
-            "macd_fast": p.get("macd_fast", 12),
-            "macd_slow": p.get("macd_slow", 26),
-            "macd_signal": p.get("macd_signal", 9),
-            "rsi_period": p.get("rsi_period", 14),
-        }
+            indicator_params = {
+                "macd_fast": p.get("macd_fast", 12),
+                "macd_slow": p.get("macd_slow", 26),
+                "macd_signal": p.get("macd_signal", 9),
+                "rsi_period": p.get("rsi_period", 14),
+            }
 
-        indicator_cache: dict[str, pd.DataFrame] = {}
-        signals_cache: dict[str, tuple[pd.Series, pd.Series]] = {}
+            indicator_cache = {}
+            from datetime import datetime as dt
+            actual_start_dt = pd.Timestamp(dt.strptime(start_date, "%Y%m%d"))
 
-        # adaptive 모드: 국면별 전략 결정
+            for code, df in price_data.items():
+                try:
+                    df_ind = calculate_indicators(df, **indicator_params)
+                    if df_ind.empty:
+                        continue
+                    df_ind = df_ind[df_ind.index >= actual_start_dt]
+                    if df_ind.empty:
+                        continue
+                    indicator_cache[code] = df_ind
+                except Exception as e:
+                    logger.error(f"{code}: 지표 계산 실패 - {e}")
+
+            if not indicator_cache:
+                return self._empty_result(p)
+
+            # KOSPI 시장 필터 + 국면 판단 (캐싱 지원)
+            is_adaptive_check = strategy_name == "adaptive"
+            kospi_data = kospi_sma200 = kospi_adx_series = None
+            if use_market_filter or is_adaptive_check:
+                try:
+                    from data.provider import get_provider
+                    from datetime import timedelta
+                    kospi_warmup_start = (actual_start_dt - timedelta(days=300)).strftime("%Y%m%d")
+                    kospi_cache_key = f"_kospi_{kospi_warmup_start}_{end_date}"
+
+                    if hasattr(self, '_kospi_cache') and kospi_cache_key in self._kospi_cache:
+                        kospi_data, kospi_sma200, kospi_adx_series = self._kospi_cache[kospi_cache_key]
+                        if is_adaptive_check and kospi_adx_series is None:
+                            kospi_adx_series = self._calc_adx_series(kospi_data)
+                    else:
+                        if not hasattr(self, '_kospi_cache'):
+                            self._kospi_cache = {}
+                        kospi_data = get_provider().get_kospi_ohlcv(kospi_warmup_start, end_date)
+                        if not kospi_data.empty and len(kospi_data) >= 200:
+                            kospi_sma200 = kospi_data["close"].rolling(200).mean()
+                            if is_adaptive_check:
+                                kospi_adx_series = self._calc_adx_series(kospi_data)
+                            self._kospi_cache[kospi_cache_key] = (kospi_data, kospi_sma200, kospi_adx_series)
+                            logger.info(f"KOSPI 지수 로드: {len(kospi_data)}행")
+                except Exception as e:
+                    logger.warning(f"KOSPI 데이터 로드 실패: {e}")
+
+            # 주봉 SMA20
+            weekly_sma20_cache = {}
+            for code, df_ind in indicator_cache.items():
+                if hasattr(df_ind.index, "to_period"):
+                    try:
+                        weekly = df_ind.resample("W").agg({"close": "last"}).dropna()
+                        if len(weekly) >= 20:
+                            ws = weekly["close"].rolling(20).mean()
+                            weekly_sma20_cache[code] = ws.reindex(df_ind.index, method="ffill")
+                    except Exception:
+                        pass
+
+            all_dates = sorted(
+                set().union(*(df.index for df in indicator_cache.values()))
+            )
+
+        # adaptive 모드
         is_adaptive = strategy_name == "adaptive"
         regime_map = p.get("regime_strategy", {
             "trending": "golden_cross",
             "sideways": "bb_bounce",
         })
 
-        for code, df in price_data.items():
-            try:
-                df_ind = calculate_indicators(df, **indicator_params)
-                if df_ind.empty:
-                    continue
-                indicator_cache[code] = df_ind
-            except Exception as e:
-                logger.error(f"{code}: 지표 계산 실패 - {e}")
-
-        if not indicator_cache:
-            return self._empty_result(p)
-
-        # KOSPI 시장 필터 + 국면 판단
-        kospi_data = None
-        kospi_sma200 = None
-        kospi_adx_series = None
-        if use_market_filter or is_adaptive:
-            # KOSPI 지수 데이터 — DataProvider 경유 (KRX API → pykrx → KODEX200 폴백)
-            try:
-                from data.provider import get_provider
-                kospi_data = get_provider().get_kospi_ohlcv(start_date, end_date)
-                if not kospi_data.empty and len(kospi_data) >= 200:
-                    kospi_sma200 = kospi_data["close"].rolling(200).mean()
-                    if is_adaptive:
-                        kospi_adx_series = self._calc_adx_series(kospi_data)
-                    logger.info(f"KOSPI 지수 로드: {len(kospi_data)}행")
-            except Exception as e:
-                logger.warning(f"KOSPI 데이터 로드 실패: {e}")
-
-        # 주봉 SMA20 계산 (종목별)
-        weekly_sma20_cache: dict[str, pd.Series] = {}
-        for code, df_ind in indicator_cache.items():
-            if hasattr(df_ind.index, "to_period"):
-                try:
-                    weekly = df_ind.resample("W").agg({"close": "last"}).dropna()
-                    if len(weekly) >= 20:
-                        ws = weekly["close"].rolling(20).mean()
-                        weekly_sma20_cache[code] = ws.reindex(
-                            df_ind.index, method="ffill"
-                        )
-                except Exception:
-                    pass
-
-        # 날짜별 신호 생성 — adaptive 모드는 국면별 전략 전환
-        all_dates = sorted(
-            set().union(*(df.index for df in indicator_cache.values()))
-        )
-
-        # 전략별 신호 사전 생성
+        # 신호 생성 (파라미터 의존적이므로 항상 재계산)
+        signals_cache: dict[str, tuple[pd.Series, pd.Series]] = {}
         if is_adaptive:
-            # 두 전략의 신호를 모두 미리 생성
             for strat_name in set(regime_map.values()):
                 for code, df in price_data.items():
                     if code not in indicator_cache:
@@ -688,8 +872,13 @@ class BacktestEngine:
                         current_regime = "sideways"
 
             active_strategy = strategy_name
-            if is_adaptive and current_regime != "bearish":
-                active_strategy = regime_map.get(current_regime, "bb_bounce")
+            bearish_max_positions = max(1, max_positions // 3)  # 약세장 포지션 제한
+            if is_adaptive:
+                if current_regime == "bearish":
+                    # 약세장: bb_bounce 허용 (포지션 축소)
+                    active_strategy = "bb_bounce"
+                else:
+                    active_strategy = regime_map.get(current_regime, "bb_bounce")
 
             # 1. 기존 포지션 청산 체크
             codes_to_close = []
@@ -789,11 +978,19 @@ class BacktestEngine:
                 del positions[code]
 
             # 2. 새 진입 (시장 필터 + 포지션 제한 + 주봉 SMA20)
-            if market_ok and current_regime != "bearish":
+            # adaptive 모드: bearish에서도 bb_bounce 허용 (포지션 축소)
+            # 비-adaptive: 기존 로직 유지 (market_ok 필수)
+            allow_entry = market_ok and current_regime != "bearish"
+            if is_adaptive and current_regime == "bearish":
+                allow_entry = True  # bb_bounce로 진입 허용
+
+            current_max_pos = bearish_max_positions if (is_adaptive and current_regime == "bearish") else max_positions
+
+            if allow_entry:
                 for code, df_ind in indicator_cache.items():
                     if code in positions:
                         continue
-                    if len(positions) >= max_positions:
+                    if len(positions) >= current_max_pos:
                         break
                     if date not in df_ind.index:
                         continue
@@ -940,8 +1137,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--capital",
         type=int,
-        default=10_000_000,
-        help="초기 자본금 (기본: 10,000,000원)",
+        default=3_000_000,
+        help="초기 자본금 (기본: 3,000,000원)",
     )
     parser.add_argument(
         "--optimize",

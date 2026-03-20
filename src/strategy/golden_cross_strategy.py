@@ -114,16 +114,23 @@ class GoldenCrossStrategy(BaseStrategy):
 
         adx_threshold = p.get("adx_threshold", 20)
         volume_multiplier = p.get("volume_multiplier", 1.0)
+        rsi_entry_min = p.get("rsi_entry_min", 40)
+        screening_lookback = p.get("screening_lookback", 3)
 
-        # Entry: SMA5/20 골든크로스 + RSI >= 50 + ADX >= threshold + 거래량
-        cond_cross = (df_ind["sma5"] > df_ind["sma20"]) & (
+        # Entry: 최근 N일 내 SMA5/20 골든크로스 발생 + 유지 + RSI + ADX + 거래량
+        # 정확한 크로스 발생일
+        cross_day = (df_ind["sma5"] > df_ind["sma20"]) & (
             df_ind["sma5"].shift(1) <= df_ind["sma20"].shift(1)
         )
-        cond_rsi = df_ind["rsi"] >= 50
+        # 최근 N일 내 크로스 발생 (당일 포함)
+        cond_cross = cross_day.rolling(window=screening_lookback, min_periods=1).max().astype(bool)
+        # 현재 SMA5 > SMA20 유지 중
+        cond_maintain = df_ind["sma5"] > df_ind["sma20"]
+        cond_rsi = df_ind["rsi"] >= rsi_entry_min
         cond_adx = df_ind["adx"] >= adx_threshold
         cond_vol = df_ind["volume"] >= df_ind["volume_sma20"] * volume_multiplier
 
-        raw_entries = cond_cross & cond_rsi & cond_adx & cond_vol
+        raw_entries = cond_cross & cond_maintain & cond_rsi & cond_adx & cond_vol
 
         # Exit: 데드크로스 OR RSI > 70 OR ATR 손절
         stop_atr_mult = p.get("stop_atr_mult", 2.0)

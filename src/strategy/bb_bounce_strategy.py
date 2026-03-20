@@ -23,8 +23,8 @@ class BbBounceStrategy(BaseStrategy):
             return False
         latest = df.iloc[-1]
 
-        rsi_oversold = self.params.get("rsi_oversold", 35)
-        bb_touch_pct = self.params.get("bb_touch_pct", 0.05)  # 하단 대비 5% 이내
+        rsi_oversold = self.params.get("rsi_oversold", 40)
+        bb_touch_pct = self.params.get("bb_touch_pct", 0.10)  # 하단 대비 10% 이내
 
         # 1. BB 하단 근접 (종가가 하단 밴드 + 5% 이내)
         bb_lower = latest.get("bb_lower", 0)
@@ -57,8 +57,8 @@ class BbBounceStrategy(BaseStrategy):
         latest = df_daily.iloc[-1]
         prev = df_daily.iloc[-2]
 
-        rsi_oversold = self.params.get("rsi_oversold", 35)
-        rsi_recovery = self.params.get("rsi_recovery", 40)
+        rsi_oversold = self.params.get("rsi_oversold", 40)
+        rsi_recovery = self.params.get("rsi_recovery", 45)
 
         # 1. 전일 BB 하단 터치 (전일 종가 <= 하단 밴드 근처)
         bb_lower = prev.get("bb_lower", 0)
@@ -104,11 +104,14 @@ class BbBounceStrategy(BaseStrategy):
 
         df_ind = calculate_indicators(df, **indicator_params)
 
-        rsi_oversold = p.get("rsi_oversold", 35)
+        rsi_oversold = p.get("rsi_oversold", 40)
+        bb_touch_pct = p.get("bb_touch_pct", 0.10)
         stop_atr_mult = p.get("stop_atr_mult", 2.0)
 
-        # Entry: BB 하단 터치 + RSI 과매도 + 반등 시작
-        cond_bb_touch = df_ind["close"].shift(1) <= df_ind["bb_lower"].shift(1) * 1.02
+        # Entry: BB 하단 근접 + RSI 과매도 + 반등 시작
+        bb_range = df_ind["bb_upper"] - df_ind["bb_lower"]
+        distance_to_lower = (df_ind["close"] - df_ind["bb_lower"]) / bb_range.replace(0, float("nan"))
+        cond_bb_touch = distance_to_lower.shift(1) <= bb_touch_pct
         cond_bounce = df_ind["close"] > df_ind["close"].shift(1)
         cond_rsi_oversold = df_ind["rsi"].shift(1) <= rsi_oversold
         cond_rsi_recovery = df_ind["rsi"] > rsi_oversold
