@@ -166,12 +166,17 @@ class KrxOpenAPI:
         Returns:
             DatetimeIndex를 가진 OHLCV DataFrame.
         """
+        from src.utils.market_calendar import is_trading_day
+
         start = datetime.strptime(start_date, "%Y%m%d")
         end = datetime.strptime(end_date, "%Y%m%d")
 
         rows = []
         current = start
         while current <= end:
+            if not is_trading_day(current.date()):
+                current += timedelta(days=1)
+                continue
             date_str = current.strftime("%Y%m%d")
             try:
                 df = self.get_stocks_by_date(date_str, market)
@@ -305,12 +310,18 @@ class KrxOpenAPI:
         Returns:
             DatetimeIndex를 가진 OHLCV DataFrame.
         """
+        from src.utils.market_calendar import is_trading_day
+
         start = datetime.strptime(start_date, "%Y%m%d")
         end = datetime.strptime(end_date, "%Y%m%d")
 
         rows = []
         current = start
         while current <= end:
+            # 비거래일(주말/공휴일) 스킵 → API 호출 절감
+            if not is_trading_day(current.date()):
+                current += timedelta(days=1)
+                continue
             date_str = current.strftime("%Y%m%d")
             try:
                 df = self.get_index_by_date(date_str, index_type)

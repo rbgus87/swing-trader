@@ -6,8 +6,13 @@ KST 기준 장 시간(09:00~15:30) 판정, 거래일 체크(주말/공휴일 제
 
 from datetime import date, datetime, time, timedelta
 
-import holidays
 import pytz
+
+try:
+    import holidays
+    _KR_HOLIDAYS_AVAILABLE = True
+except ImportError:
+    _KR_HOLIDAYS_AVAILABLE = False
 
 # KST 타임존 상수
 KST = pytz.timezone("Asia/Seoul")
@@ -73,11 +78,52 @@ def is_trading_day(target_date: date | None = None) -> bool:
         return False
 
     # 한국 공휴일 체크
-    kr_holidays = holidays.KR(years=target_date.year)
-    if target_date in kr_holidays:
-        return False
+    if _KR_HOLIDAYS_AVAILABLE:
+        try:
+            kr_holidays = holidays.KR(years=target_date.year)
+            if target_date in kr_holidays:
+                return False
+        except Exception:
+            pass  # holidays 모듈 오류 시 공휴일 무시 (주말 체크는 통과)
 
     return True
+
+
+def get_prev_trading_day(target_date: date | None = None) -> date:
+    """직전 거래일 반환.
+
+    Args:
+        target_date: 기준 날짜. None이면 오늘(KST).
+
+    Returns:
+        target_date 이전 가장 가까운 거래일.
+    """
+    if target_date is None:
+        target_date = now_kst().date()
+
+    prev_day = target_date - timedelta(days=1)
+    while not is_trading_day(prev_day):
+        prev_day -= timedelta(days=1)
+    return prev_day
+
+
+def get_latest_trading_day(target_date: date | None = None) -> date:
+    """가장 최근 거래일 반환 (당일 포함 가능).
+
+    target_date가 거래일이면 그대로 반환, 아니면 직전 거래일.
+
+    Args:
+        target_date: 기준 날짜. None이면 오늘(KST).
+
+    Returns:
+        target_date 이하 가장 최근 거래일.
+    """
+    if target_date is None:
+        target_date = now_kst().date()
+
+    if is_trading_day(target_date):
+        return target_date
+    return get_prev_trading_day(target_date)
 
 
 def get_next_trading_day(target_date: date | None = None) -> date:

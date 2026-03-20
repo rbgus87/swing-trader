@@ -69,6 +69,9 @@ class MarketRegime:
                 self._is_bullish = True
                 return True
 
+            # KODEX200 ETF 프록시 여부 감지
+            is_proxy = getattr(df, "attrs", {}).get("source") == "kodex200_proxy"
+
             # DataProvider가 영문 컬럼으로 통일
             close_col = "close"
             high_col = "high"
@@ -115,8 +118,10 @@ class MarketRegime:
             self._block_reason = " | ".join(reasons) if reasons else ""
 
             regime = "추세장" if self._is_bullish else "방어모드"
+            source_label = "KODEX200(프록시)" if is_proxy else "KOSPI"
             detail = (
-                f"KOSPI {self._kospi_close:,} (200일선 {self._kospi_sma200:,.0f}), "
+                f"{source_label} {self._kospi_close:,} "
+                f"(200일선 {self._kospi_sma200:,.0f}), "
                 f"ADX {self._kospi_adx:.1f}, VKOSPI {self._vkospi:.1f}"
             )
             logger.info(f"시장 국면: {regime} | {detail}")

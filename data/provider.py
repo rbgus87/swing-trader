@@ -16,6 +16,7 @@ from loguru import logger
 
 from data.column_mapper import OHLCV_MAP, map_columns
 from data.krx_api import KrxOpenAPI
+from src.utils.market_calendar import get_prev_trading_day
 
 
 class DataProvider:
@@ -90,10 +91,15 @@ class DataProvider:
         Returns:
             전종목 DataFrame.
         """
+        # KRX API/pykrx는 당일 장마감 전 데이터 미제공 → 전 거래일로 보정
         if date is None:
-            from datetime import timedelta
-            # KRX API는 당일 데이터 미제공 → 전일 기준
-            date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+            date = get_prev_trading_day().strftime("%Y%m%d")
+        else:
+            from datetime import date as date_type
+            target = datetime.strptime(date, "%Y%m%d").date()
+            today = datetime.now().date()
+            if target >= today:
+                date = get_prev_trading_day(today).strftime("%Y%m%d")
 
         if self._krx.available:
             try:
@@ -157,11 +163,15 @@ class DataProvider:
         except Exception as e:
             logger.warning(f"pykrx KOSPI 지수 실패: {e}")
 
-        # 방법 3: KODEX 200 ETF 프록시
+        # 방법 3: KODEX 200 ETF 프록시 (가격 스케일이 다름에 주의)
         try:
             df = self.get_ohlcv_by_date_range("069500", start_date, end_date)
             if not df.empty:
-                logger.info(f"KOSPI 프록시 (KODEX200): {len(df)}행")
+                df.attrs["source"] = "kodex200_proxy"
+                logger.warning(
+                    f"KOSPI 지수 대신 KODEX200 ETF 프록시 사용: {len(df)}행 "
+                    "(가격 스케일이 지수와 다름)"
+                )
                 return df
         except Exception as e:
             logger.error(f"KODEX200 프록시 실패: {e}")

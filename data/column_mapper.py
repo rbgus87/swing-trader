@@ -15,6 +15,7 @@ OHLCV_MAP: dict[str, str] = {
     "거래량": "volume",
     "거래대금": "amount",
     "등락률": "change_rate",
+    "지수명": "name",
 }
 
 # 펀더멘탈 컬럼 매핑
