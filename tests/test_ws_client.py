@@ -10,7 +10,7 @@ from src.models import Tick
 class TestWebSocketConnection:
     @pytest.fixture
     def ws_client(self):
-        return KiwoomWebSocketClient("wss://test.api.com/ws", "test_ws_key")
+        return KiwoomWebSocketClient("wss://test.api.com/ws", access_token="test_token")
 
     @pytest.mark.asyncio
     async def test_connect(self, ws_client):
@@ -47,7 +47,7 @@ class TestWebSocketConnection:
 class TestSubscription:
     @pytest.fixture
     def ws_client(self):
-        client = KiwoomWebSocketClient("wss://test.api.com/ws", "key")
+        client = KiwoomWebSocketClient("wss://test.api.com/ws", access_token="token")
         client._ws = AsyncMock()
         client._running = True
         return client
@@ -80,7 +80,7 @@ class TestSubscription:
 class TestDispatch:
     @pytest.fixture
     def ws_client(self):
-        return KiwoomWebSocketClient("wss://test.api.com/ws", "key")
+        return KiwoomWebSocketClient("wss://test.api.com/ws", access_token="token")
 
     @pytest.mark.asyncio
     async def test_tick_dispatch(self, ws_client):
@@ -134,3 +134,18 @@ class TestDispatch:
         data = {"type": "0B", "item": "005930", "values": {"10": "-50000", "15": "100"}}
         await ws_client._dispatch(data)
         assert received[0].price == 50000
+
+
+class TestHeaders:
+    def test_bearer_token_header(self):
+        """Bearer 토큰 헤더만 포함 (approval_key 없음)."""
+        client = KiwoomWebSocketClient("wss://test.api.com/ws", access_token="my_token")
+        headers = client._build_headers()
+        assert headers == {"authorization": "Bearer my_token"}
+        assert "approval_key" not in headers
+
+    def test_no_token_empty_headers(self):
+        """토큰 없으면 빈 헤더."""
+        client = KiwoomWebSocketClient("wss://test.api.com/ws")
+        headers = client._build_headers()
+        assert headers == {}

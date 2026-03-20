@@ -283,6 +283,14 @@ class KrxOpenAPI:
             return pd.DataFrame()
 
         df = pd.DataFrame(records)
+        # 컬럼 매핑 확인 (매핑 실패 시 원인 파악용)
+        mapped = {k for k in KRX_INDEX_COLUMNS if k in df.columns}
+        unmapped = set(KRX_INDEX_COLUMNS.keys()) - mapped
+        if unmapped:
+            logger.warning(
+                f"KRX 인덱스 컬럼 매핑 누락: {unmapped} "
+                f"(API 응답 컬럼: {[c for c in df.columns if c not in ('IDX_NM',)]})"
+            )
         df = df.rename(columns={
             k: v for k, v in KRX_INDEX_COLUMNS.items() if k in df.columns
         })
@@ -316,25 +324,43 @@ class KrxOpenAPI:
         start = datetime.strptime(start_date, "%Y%m%d")
         end = datetime.strptime(end_date, "%Y%m%d")
 
-        rows = []
+        # 거래일 목록 생성
+        trading_dates = []
         current = start
         while current <= end:
-            # 비거래일(주말/공휴일) 스킵 → API 호출 절감
-            if not is_trading_day(current.date()):
-                current += timedelta(days=1)
-                continue
+            if is_trading_day(current.date()):
+                trading_dates.append(current)
+            current += timedelta(days=1)
+
+        total = len(trading_dates)
+        logger.info(f"KOSPI 지수 조회 시작 ({total}거래일)")
+        # GUI 프로그레스 바 시작
+        logger.log("PROGRESS", f"KOSPI 지수 조회|0|{total}")
+
+        # 콘솔: tqdm 프로그레스 바
+        try:
+            from tqdm import tqdm
+            date_iter = tqdm(trading_dates, desc="KOSPI 지수", unit="일", leave=False, ncols=60)
+        except ImportError:
+            date_iter = trading_dates
+
+        rows = []
+        for i, current in enumerate(date_iter, 1):
             date_str = current.strftime("%Y%m%d")
             try:
                 df = self.get_index_by_date(date_str, index_type)
                 if not df.empty and "name" in df.columns:
-                    match = df[df["name"].str.contains(index_name, na=False)]
+                    match = df[df["name"] == index_name]
+                    if match.empty:
+                        match = df[df["name"].str.contains(index_name, na=False)]
                     if not match.empty:
                         row = match.iloc[0].to_dict()
                         row["date"] = current
                         rows.append(row)
             except Exception:
                 pass
-            current += timedelta(days=1)
+            # GUI 프로그레스 바: 매 건마다 실시간 업데이트
+            logger.log("PROGRESS", f"KOSPI 지수 조회|{i}|{total}")
 
         if not rows:
             return pd.DataFrame()

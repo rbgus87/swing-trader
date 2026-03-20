@@ -75,12 +75,15 @@ def setup_logger(
         encoding="utf-8",
     )
 
-    # 매매 전용 로그 핸들러
-    try:
-        logger.level(TRADE_LEVEL, no=25, color="<yellow>")
-    except TypeError:
-        # 이미 등록된 레벨이면 무시
-        pass
+    # 커스텀 레벨 등록
+    for lvl_name, lvl_no, lvl_color in [
+        (TRADE_LEVEL, 25, "<yellow>"),
+        ("PROGRESS", 15, "<blue>"),  # DEBUG(10) < PROGRESS(15) < INFO(20)
+    ]:
+        try:
+            logger.level(lvl_name, no=lvl_no, color=lvl_color)
+        except TypeError:
+            pass  # 이미 등록된 레벨이면 무시
 
     logger.add(
         str(log_path / "trades.log"),

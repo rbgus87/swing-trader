@@ -17,23 +17,39 @@ class GoldenCrossStrategy(BaseStrategy):
     name = "golden_cross"
 
     def check_screening_entry(self, df: pd.DataFrame) -> bool:
-        """장전 스크리닝: SMA5/20 골든크로스 + RSI >= 50 + ADX >= threshold + 거래량."""
-        if len(df) < 2:
-            return False
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
+        """장전 스크리닝: 최근 N일 내 골든크로스 발생 + 유지 + RSI + ADX + 거래량.
 
+        당일 정확히 크로스가 발생하지 않아도,
+        최근 screening_lookback(기본 5)일 내 발생 후 유지 중이면 통과.
+        """
+        lookback = self.params.get("screening_lookback", 5)
+        if len(df) < lookback + 1:
+            return False
+
+        latest = df.iloc[-1]
         adx_threshold = self.params.get("adx_threshold", 20)
         volume_multiplier = self.params.get("volume_multiplier", 1.0)
 
-        cond_cross = (latest["sma5"] > latest["sma20"]) and (
-            prev["sma5"] <= prev["sma20"]
-        )
+        # 현재 SMA5 > SMA20 (골든크로스 유지 중)
+        if latest["sma5"] <= latest["sma20"]:
+            return False
+
+        # 최근 N일 내 크로스 발생 확인
+        recent = df.iloc[-(lookback + 1):]
+        cross_found = False
+        for i in range(1, len(recent)):
+            if (recent.iloc[i]["sma5"] > recent.iloc[i]["sma20"] and
+                    recent.iloc[i - 1]["sma5"] <= recent.iloc[i - 1]["sma20"]):
+                cross_found = True
+                break
+        if not cross_found:
+            return False
+
         cond_rsi = latest["rsi"] >= 50
         cond_adx = latest["adx"] >= adx_threshold
         cond_vol = latest["volume"] >= latest["volume_sma20"] * volume_multiplier
 
-        return all([cond_cross, cond_rsi, cond_adx, cond_vol])
+        return all([cond_rsi, cond_adx, cond_vol])
 
     def check_realtime_entry(
         self, df_daily: pd.DataFrame, df_60m: pd.DataFrame | None = None

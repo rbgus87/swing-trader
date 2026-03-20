@@ -218,11 +218,11 @@ class TestKiwoomAPI:
 
     @pytest.mark.asyncio
     async def test_connect_with_websocket(self):
-        """connect(use_websocket=True) 시 REST + WS 연결."""
+        """connect(use_websocket=True) 시 REST + WS 연결 (Bearer 토큰)."""
         api = self._make_api()
         api._rest = AsyncMock()
         api._rest.authenticate = AsyncMock(return_value="test_token")
-        api._rest.get_ws_key = AsyncMock(return_value="test_ws_key")
+        api._rest.access_token = "test_token"
 
         with patch("src.broker.kiwoom_api.KiwoomWebSocketClient") as MockWS:
             mock_ws_instance = AsyncMock()
@@ -231,8 +231,7 @@ class TestKiwoomAPI:
             await api.connect(use_websocket=True)
 
             api._rest.authenticate.assert_awaited_once()
-            api._rest.get_ws_key.assert_awaited_once()
-            MockWS.assert_called_once_with("wss://test.ws.com", "test_ws_key")
+            MockWS.assert_called_once_with("wss://test.ws.com", access_token="test_token")
             mock_ws_instance.connect.assert_awaited_once()
             assert api.connected is True
 

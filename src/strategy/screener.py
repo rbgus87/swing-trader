@@ -333,8 +333,12 @@ class Screener:
         Returns:
             매수 후보 종목 코드 리스트 (점수 내림차순).
         """
+        import time as _time
+
         if date is None:
             date = datetime.now().strftime("%Y%m%d")
+
+        screening_start = _time.monotonic()
 
         start_date = (
             datetime.strptime(date, "%Y%m%d") - timedelta(days=200)
@@ -343,31 +347,38 @@ class Screener:
         # 고정 종목 리스트가 있으면 watchlist 우선 사용 (하위 호환)
         if self.watchlist:
             codes = self.watchlist
-            logger.info(f"스크리닝 시작: watchlist {len(codes)}종목, 기준일 {date}")
+            logger.info(f"[1/3] Light Filter: watchlist {len(codes)}종목, 기준일 {date}")
         else:
             # 0차: Light Pre-Filter (1콜로 시총+가격 사전 필터)
+            step_start = _time.monotonic()
             light_codes, market_caps = self._light_pre_filter(date)
 
             if light_codes:
                 all_codes = light_codes
-                logger.info(
-                    f"스크리닝 시작: {len(all_codes)}종목 (light filter 통과), "
-                    f"국면 {regime or 'all'}, 기준일 {date}"
-                )
             else:
-                # light filter 실패 시 전종목 코드 사용
                 all_codes = self.get_all_codes()
-                logger.info(
-                    f"스크리닝 시작: 전체 {len(all_codes)}종목, "
-                    f"국면 {regime or 'all'}, 기준일 {date}"
-                )
+
+            elapsed = _time.monotonic() - step_start
+            logger.info(
+                f"[1/3] Light Filter 완료 ({elapsed:.0f}초) — "
+                f"{len(all_codes)}종목, 국면 {regime or 'all'}, 기준일 {date}"
+            )
 
             # 1차: Pre-Screening (기술적 조건 필터)
+            step_start = _time.monotonic()
             codes = self._run_pre_screening(all_codes, date, regime, market_caps)
+            elapsed = _time.monotonic() - step_start
 
             if not codes:
-                logger.warning("Pre-screening 결과 0종목 — light filter 종목으로 fallback")
+                logger.warning(
+                    f"[2/3] Pre-Screen 완료 ({elapsed:.0f}초) — "
+                    f"0종목 통과, light filter 종목으로 fallback"
+                )
                 codes = all_codes
+            else:
+                logger.info(
+                    f"[2/3] Pre-Screen 완료 ({elapsed:.0f}초) — {len(codes)}종목 통과"
+                )
 
         # adaptive 모드: 국면에 맞는 전략으로 전환
         if self._is_adaptive and regime:
@@ -375,20 +386,41 @@ class Screener:
             target_type = regime_map.get(regime)
             if target_type and target_type != self._strategy.name:
                 self._strategy = get_strategy(target_type, self.strategy_config)
-                logger.info(f"스크리닝 전략 전환: {target_type} (국면: {regime})")
+                logger.info(f"  전략 전환: {target_type} (국면: {regime})")
 
         # 2차: 기존 전략 기반 매수 신호 + 점수
+        step_start = _time.monotonic()
+        logger.info(f"[3/3] 전략 스크리닝: {len(codes)}종목 ({self._strategy.name})")
         candidates: list[tuple[str, float]] = []
+        drop_data = 0      # OHLCV 부족
+        drop_liquidity = 0  # 유동성 탈락
+        drop_indicator = 0  # 지표 계산 실패
+        drop_signal = 0     # 전략 신호 없음
 
         for code in codes:
             try:
                 # 일봉 OHLCV 수집 (캐시 우선)
                 df = self._get_ohlcv(code, start_date, date)
                 if df.empty or len(df) < 130:
+                    drop_data += 1
                     continue
 
                 # 유동성 필터
                 if not self._apply_liquidity_filter(code, df):
+                    if drop_liquidity == 0:
+                        # 첫 탈락 시 원인 로깅
+                        has_amount = "amount" in df.columns and df["amount"].tail(5).sum() > 0
+                        if has_amount:
+                            amt = df["amount"].tail(5).mean()
+                        else:
+                            amt = (df["close"] * df["volume"]).tail(5).mean()
+                        logger.info(
+                            f"  유동성 탈락 샘플 ({code}): "
+                            f"거래대금 {amt:,.0f}원, "
+                            f"기준 {self.min_daily_amount:,.0f}원, "
+                            f"amount컬럼={'있음' if has_amount else '없음/0'}"
+                        )
+                    drop_liquidity += 1
                     continue
 
                 # 지표 계산
@@ -403,6 +435,7 @@ class Screener:
                 )
 
                 if df_with_ind.empty:
+                    drop_indicator += 1
                     continue
 
                 # 매수 신호 체크 (전략 인터페이스 사용)
@@ -411,16 +444,37 @@ class Screener:
                 if has_signal:
                     score = calculate_signal_score(df_with_ind)
                     candidates.append((code, score))
+                else:
+                    drop_signal += 1
 
             except Exception as e:
                 logger.warning(f"종목 {code} 스크리닝 실패: {e}")
                 continue
 
+        elapsed = _time.monotonic() - step_start
+
+        # 탈락 통계 로깅
+        total_dropped = drop_data + drop_liquidity + drop_indicator + drop_signal
+        if total_dropped > 0:
+            logger.info(
+                f"[3/3] 탈락 상세: 데이터부족 {drop_data}, "
+                f"유동성 {drop_liquidity}, 지표실패 {drop_indicator}, "
+                f"신호없음 {drop_signal}"
+            )
+
         # 점수 내림차순 정렬, 상위 N종목
         candidates.sort(key=lambda x: x[1], reverse=True)
         result = [code for code, _ in candidates[: self.top_n]]
 
-        logger.info(f"스크리닝 완료: {len(candidates)}종목 신호 발생, 상위 {len(result)}종목 선정")
+        total_elapsed = _time.monotonic() - screening_start
+        minutes = int(total_elapsed // 60)
+        seconds = int(total_elapsed % 60)
+        time_str = f"{minutes}분 {seconds}초" if minutes > 0 else f"{seconds}초"
+        logger.info(
+            f"[3/3] 전략 스크리닝 완료 ({elapsed:.0f}초) — "
+            f"{len(candidates)}종목 신호, 상위 {len(result)}종목 선정"
+        )
+        logger.info(f"스크리닝 완료 (총 {time_str})")
         return result
 
     def _run_pre_screening(self, codes: list[str], date: str,
@@ -468,14 +522,29 @@ class Screener:
         ).strftime("%Y%m%d")
 
         cache: dict[str, pd.DataFrame] = {}
-        for code in codes:
+        total = len(codes)
+        # GUI 프로그레스 바 시작
+        logger.log("PROGRESS", f"OHLCV 로드|0|{total}")
+
+        # 콘솔: tqdm 프로그레스 바
+        try:
+            from tqdm import tqdm
+            code_iter = tqdm(codes, desc="Batch OHLCV", unit="종목", leave=False, ncols=60)
+        except ImportError:
+            code_iter = codes
+
+        # GUI 프로그레스 바: 5% 간격
+        progress_interval = max(1, total // 20)
+        for i, code in enumerate(code_iter, 1):
             try:
                 df = self._get_ohlcv(code, start_date, date)
                 if not df.empty:
                     cache[code] = df
             except Exception:
                 pass
-        logger.info(f"[Batch OHLCV] {len(cache)}/{len(codes)}종목 로드 완료")
+            if i % progress_interval == 0 or i == total:
+                logger.log("PROGRESS", f"OHLCV 로드|{i}|{total}")
+        logger.info(f"[Batch OHLCV] {len(cache)}/{total}종목 로드 완료")
         return cache
 
     def _pre_screen_pullback_with_cache(
@@ -686,14 +755,17 @@ class Screener:
             return False
 
         # 거래대금 필터 (최근 5일 평균)
-        if "amount" in df.columns:
+        if "amount" in df.columns and df["amount"].tail(5).sum() > 0:
             recent_amount = df["amount"].tail(5).mean()
-            if recent_amount < self.min_daily_amount:
-                return False
         else:
-            # amount 컬럼이 없으면 close * volume 으로 근사
+            # amount 컬럼이 없거나 0이면 close * volume 으로 근사
             recent_amount = (df["close"] * df["volume"]).tail(5).mean()
-            if recent_amount < self.min_daily_amount:
-                return False
+
+        if recent_amount < self.min_daily_amount:
+            logger.debug(
+                f"유동성 탈락 ({code}): 거래대금 {recent_amount:,.0f} "
+                f"< 기준 {self.min_daily_amount:,.0f}"
+            )
+            return False
 
         return True

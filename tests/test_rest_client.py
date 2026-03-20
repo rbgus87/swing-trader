@@ -108,22 +108,6 @@ class TestKiwoomRestClient:
         assert result[0]["close"] == 50000
 
     @pytest.mark.asyncio
-    async def test_get_ws_key(self, client):
-        """WebSocket 접속키 발급."""
-        client._access_token = "token"
-        client._token_expires = datetime.now() + timedelta(hours=23)
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"ws_key": "ws_test_key"}
-        mock_response.raise_for_status = MagicMock()
-
-        with patch.object(client._client, "post", new_callable=AsyncMock, return_value=mock_response):
-            key = await client.get_ws_key()
-
-        assert key == "ws_test_key"
-        assert client._ws_key == "ws_test_key"
-
-    @pytest.mark.asyncio
     async def test_close(self, client):
         """클라이언트 종료."""
         with patch.object(client._client, "aclose", new_callable=AsyncMock) as mock_close:

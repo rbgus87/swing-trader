@@ -53,7 +53,7 @@ trading:
 
 # --- 종목 스크리닝 (장 시작 전 후보 선별) ---
 screening:
-  min_daily_amount: 5_000_000_000   # 최소 일 거래대금 (원) — 50억 미만 종목 제외 (유동성 확보)
+  min_daily_amount: 1_000_000_000   # 최소 일 거래대금 (원) — 10억 미만 종목 제외 (유동성 확보)
   min_market_cap: 30_000_000_000    # 최소 시가총액 (원) — 300억 미만 종목 제외 (소형주 제외)
   min_price: 1000                   # 최소 주가 (원) — 1,000원 미만 동전주 제외
   max_price: 500000                 # 최대 주가 (원) — 50만원 초과 고가주 제외
@@ -127,11 +127,11 @@ backtest:
   initial_capital: 1_000_000        # 백테스트 초기 자본금 (원)
 
 # --- 브로커 연결 설정 (키움 REST API) ---
+# paper/live 모두 실전 서버 사용 (paper 모드는 주문만 시뮬레이션)
 broker:
   type: rest                        # 브로커 연결 방식 (rest: REST API, ocx: 레거시 OCX)
   base_url: "https://api.kiwoom.com"                              # REST API 기본 URL
   ws_url: "wss://api.kiwoom.com:10000/api/dostk/websocket"        # WebSocket URL (실시간 시세)
-  # paper/live 모두 실거래 서버 사용 (paper 모드는 주문만 시뮬레이션)
 
 # --- 스케줄러 (자동 작업 시간) ---
 schedule:

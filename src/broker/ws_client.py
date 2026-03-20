@@ -15,10 +15,8 @@ from src.utils.market_calendar import is_ws_active_hours
 class KiwoomWebSocketClient:
     """WebSocket 기반 실시간 데이터 클라이언트."""
 
-    def __init__(self, ws_url: str, approval_key: str | None = None,
-                 access_token: str | None = None):
+    def __init__(self, ws_url: str, access_token: str | None = None):
         self._ws_url = ws_url
-        self._approval_key = approval_key
         self._access_token = access_token
         self._ws = None
         self._running = False
@@ -28,16 +26,14 @@ class KiwoomWebSocketClient:
         self.on_order_callback = None      # async 체결 수신 콜백
 
     def _build_headers(self) -> dict:
-        """WebSocket 연결 헤더 구성."""
+        """WebSocket 연결 헤더 구성 (Bearer 토큰 인증)."""
         headers = {}
-        if self._approval_key:
-            headers["approval_key"] = self._approval_key
         if self._access_token:
-            headers["Authorization"] = f"Bearer {self._access_token}"
+            headers["authorization"] = f"Bearer {self._access_token}"
         return headers
 
     async def connect(self):
-        """WebSocket 연결 (approval_key 또는 Bearer 토큰)."""
+        """WebSocket 연결 (Bearer 토큰 인증)."""
         self._ws = await websockets.connect(
             self._ws_url,
             ping_interval=30,
@@ -120,9 +116,16 @@ class KiwoomWebSocketClient:
                 except Exception as e:
                     err_str = str(e)
                     if "1000" in err_str:
-                        # 서버가 정상 종료 (1000 OK) — 장 마감 등
-                        logger.info("WebSocket 서버 정상 종료 (장 마감 또는 서버 점검)")
-                        self._running = False
+                        # close code 1000: 구독 종목이 있고 장중이면 재연결
+                        if self._subscribed and is_ws_active_hours():
+                            logger.warning("WebSocket close 1000 (장중) — 재연결 시도")
+                            await self._reconnect()
+                        elif not self._subscribed:
+                            logger.info("WebSocket close 1000 — 구독 종목 없음, 대기")
+                            self._running = False
+                        else:
+                            logger.info("WebSocket 서버 정상 종료 (장 마감)")
+                            self._running = False
                         break
                     if self._running:
                         logger.warning(f"WebSocket 수신 에러: {e}")

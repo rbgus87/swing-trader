@@ -37,15 +37,11 @@ CODES = [
     "003550", "034730", "032830", "030200", "017670",
 ]
 
-# 최적화 대상 파라미터 그리드 (소규모)
+# 최적화 대상 파라미터 그리드 (최소 — 16조합, 빠른 실행)
 WF_GRID = {
-    "rsi_min": [35, 40],
-    "rsi_max": [65, 70],
-    "volume_multiplier": [1.0, 1.5],
     "stop_atr_mult": [2.0, 2.5],
     "target_return": [0.06, 0.08],
     "max_hold_days": [10, 15],
-    "trailing_activate_pct": [0.05, 0.07],
     "max_stop_pct": [0.07, 0.10],
 }
 
@@ -59,8 +55,14 @@ def run_walk_forward(
     test_months: int,
     step_months: int,
     capital: int,
+    max_positions: int = 3,
+    use_portfolio: bool = True,
 ) -> list[dict]:
-    """Walk-Forward 실행 + IS/OOS 결과 수집."""
+    """Walk-Forward 실행 + IS/OOS 결과 수집.
+
+    Args:
+        use_portfolio: True면 run_portfolio() 사용 (실전과 동일한 자본 경합).
+    """
     engine = BacktestEngine(initial_capital=capital)
     optimizer = ParameterOptimizer(engine)
 
@@ -72,11 +74,21 @@ def run_walk_forward(
         print("Walk-Forward 윈도우 생성 실패 (기간 부족)")
         return []
 
-    print(f"\nWalk-Forward 검증: {len(windows)}개 구간")
+    mode_label = "포트폴리오" if use_portfolio else "독립"
+    print(f"\nWalk-Forward 검증: {len(windows)}개 구간 ({mode_label} 모드)")
     print(f"  Train: {train_months}개월, Test: {test_months}개월, Step: {step_months}개월")
     print(f"  전략: {strategy_name}, 자본금: {capital:,}원, 종목: {len(codes)}개")
     print(f"  기간: {start_date} ~ {end_date}")
     print()
+
+    def _run(codes, start, end, params, strategy):
+        """포트폴리오 또는 독립 백테스트 실행."""
+        if use_portfolio:
+            return engine.run_portfolio(
+                codes, start, end, params, strategy,
+                max_positions=max_positions, use_market_filter=True,
+            )
+        return engine.run(codes, start, end, params, strategy)
 
     results = []
 
@@ -85,13 +97,13 @@ def run_walk_forward(
         t0 = time.time()
 
         try:
-            # IS: 그리드 서치 (필터 완화)
+            # IS: 그리드 서치 (필터 완화 — 거래 1건 이상이면 유효)
             is_results = optimizer.run_grid_search(
                 codes, tr_start, tr_end, WF_GRID,
             )
 
             if is_results.empty:
-                print(f"    ⚠ Train 결과 없음, 기본 파라미터 사용")
+                print(f"    ⚠ 필터 통과 없음, 기본 파라미터 사용")
                 best_params = {}
             else:
                 best_row = is_results.iloc[0]
@@ -100,21 +112,19 @@ def run_walk_forward(
                 }
 
             # IS 최적 성과 기록
-            is_result = engine.run(
-                codes, tr_start, tr_end, best_params, strategy_name,
-            )
+            is_result = _run(codes, tr_start, tr_end, best_params, strategy_name)
 
             # OOS: 미래 성과 측정
-            oos_result = engine.run(
-                codes, te_start, te_end, best_params, strategy_name,
-            )
+            oos_result = _run(codes, te_start, te_end, best_params, strategy_name)
 
             elapsed = time.time() - t0
             print(
                 f"    IS: 수익률 {is_result.total_return:+.2f}%, "
-                f"Sharpe {is_result.sharpe_ratio:.2f} | "
+                f"Sharpe {is_result.sharpe_ratio:.2f}, "
+                f"거래 {is_result.trade_count}건 | "
                 f"OOS: 수익률 {oos_result.total_return:+.2f}%, "
-                f"Sharpe {oos_result.sharpe_ratio:.2f} | "
+                f"Sharpe {oos_result.sharpe_ratio:.2f}, "
+                f"거래 {oos_result.trade_count}건 | "
                 f"{elapsed:.0f}초"
             )
 
@@ -379,15 +389,29 @@ def main():
     parser.add_argument("--start", default="20190101", help="시작일 (YYYYMMDD)")
     parser.add_argument("--end", default="20250314", help="종료일 (YYYYMMDD)")
     parser.add_argument("--train", type=int, default=24, help="Train 개월 수 (기본: 24)")
-    parser.add_argument("--test", type=int, default=3, help="Test 개월 수 (기본: 3)")
-    parser.add_argument("--step", type=int, default=3, help="Step 개월 수 (기본: 3)")
+    parser.add_argument("--test", type=int, default=6, help="Test 개월 수 (기본: 6)")
+    parser.add_argument("--step", type=int, default=12, help="Step 개월 수 (기본: 12)")
     parser.add_argument("--capital", type=int, default=3_000_000, help="자본금 (기본: 3,000,000)")
+    parser.add_argument("--codes", type=str, nargs="+", default=None,
+                        help="종목 코드 (미지정 시 대형주 10종목)")
+    parser.add_argument("--max-positions", type=int, default=3,
+                        help="포트폴리오 최대 보유 종목 수 (기본: 3)")
+    parser.add_argument("--independent", action="store_true",
+                        help="독립 종목별 백테스트 (기본: 포트폴리오)")
     args = parser.parse_args()
+
+    # 종목 지정 없으면 대형주 10종목 (적절한 신호 빈도 확보)
+    codes = args.codes or [
+        "005930", "000660", "005380", "000270", "068270",
+        "035420", "066570", "105560", "055550", "003670",
+    ]
 
     t0 = time.time()
     results = run_walk_forward(
-        CODES, args.start, args.end, args.strategy,
+        codes, args.start, args.end, args.strategy,
         args.train, args.test, args.step, args.capital,
+        max_positions=args.max_positions,
+        use_portfolio=not args.independent,
     )
     elapsed = time.time() - t0
 

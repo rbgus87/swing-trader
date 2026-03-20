@@ -41,7 +41,7 @@ class TradingEngine:
         self._ds.connect()
         self._ds.create_tables()
 
-        # 키움 API (REST + WebSocket) — paper/live 모두 실거래 서버 사용
+        # 키움 API (REST + WebSocket) — paper/live 모두 실전 서버 사용
         # paper 모드는 주문만 시뮬레이션하고, 시세는 실서버에서 수신
         base_url = config.get("broker.base_url", "https://api.kiwoom.com")
         ws_url = config.get(
@@ -243,7 +243,17 @@ class TradingEngine:
                 if open_positions:
                     subscribe_codes.update(p["code"] for p in open_positions)
                 if subscribe_codes:
-                    await self._realtime.subscribe_list(list(subscribe_codes))
+                    # WebSocket이 닫혀있으면 재연결 후 구독
+                    if not (self._kiwoom._ws and self._kiwoom._ws.connected):
+                        try:
+                            logger.info("WebSocket 재연결 (스크리닝 구독용)")
+                            await self._kiwoom.connect(use_websocket=True)
+                        except Exception as e:
+                            logger.warning(f"WebSocket 재연결 실패: {e}")
+                    try:
+                        await self._realtime.subscribe_list(list(subscribe_codes))
+                    except Exception as ws_err:
+                        logger.warning(f"WebSocket 구독 실패 (스크리닝 결과는 유지): {ws_err}")
                 logger.info(
                     f"스크리닝 완료: {len(self._candidates)}종목 후보 선정"
                     f" (국면: {regime or 'bearish'})"

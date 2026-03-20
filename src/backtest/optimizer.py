@@ -106,8 +106,12 @@ class ParameterOptimizer:
         start_date: str,
         end_date: str,
         train_months: int = 24,
-        test_months: int = 3,
-        step_months: int = 3,
+        test_months: int = 6,
+        step_months: int = 12,
+        strategy_name: str = "golden_cross",
+        param_grid: dict | None = None,
+        use_portfolio: bool = True,
+        max_positions: int = 3,
     ) -> list[BacktestResult]:
         """Walk-Forward 검증.
 
@@ -120,6 +124,10 @@ class ParameterOptimizer:
             train_months: 훈련 구간 개월 수.
             test_months: 테스트 구간 개월 수.
             step_months: 슬라이딩 스텝 개월 수.
+            strategy_name: 전략 이름.
+            param_grid: 최적화 그리드 (None이면 기본 그리드).
+            use_portfolio: True면 run_portfolio 사용 (실전 동일).
+            max_positions: 포트폴리오 최대 보유 종목 수.
 
         Returns:
             각 구간의 OOS BacktestResult 리스트.
@@ -131,6 +139,21 @@ class ParameterOptimizer:
         if not windows:
             logger.warning("Walk-Forward 윈도우 생성 실패")
             return []
+
+        grid = param_grid or {
+            "stop_atr_mult": [2.0, 2.5],
+            "target_return": [0.06, 0.08],
+            "max_hold_days": [10, 15],
+            "max_stop_pct": [0.07, 0.10],
+        }
+
+        def _run(codes, start, end, params):
+            if use_portfolio:
+                return self.engine.run_portfolio(
+                    codes, start, end, params, strategy_name,
+                    max_positions=max_positions, use_market_filter=True,
+                )
+            return self.engine.run(codes, start, end, params, strategy_name)
 
         logger.info(f"Walk-Forward: {len(windows)}개 구간")
         oos_results = []
@@ -145,46 +168,30 @@ class ParameterOptimizer:
             )
 
             try:
-                # Train: 소규모 그리드로 최적 파라미터 탐색
-                small_grid = {
-                    "macd_fast": [10, 12],
-                    "macd_slow": [24, 26],
-                    "macd_signal": [9],
-                    "rsi_period": [14],
-                    "rsi_min": [35, 40],
-                    "rsi_max": [65, 70],
-                    "volume_multiplier": [1.5],
-                    "stop_atr_mult": [1.5, 2.0],
-                    "target_return": [0.08],
-                }
-
                 train_results = self.run_grid_search(
-                    codes, train_start, train_end, small_grid
+                    codes, train_start, train_end, grid
                 )
 
                 if train_results.empty:
-                    logger.warning(f"구간 {i + 1}: 훈련 결과 없음, 건너뜀")
-                    continue
+                    logger.warning(f"구간 {i + 1}: 훈련 결과 없음, 기본 파라미터 사용")
+                    best_params = {}
+                else:
+                    best_row = train_results.iloc[0]
+                    best_params = {
+                        k: best_row[k]
+                        for k in grid.keys()
+                        if k in best_row.index
+                    }
 
-                # 최적 파라미터 추출
-                best_row = train_results.iloc[0]
-                best_params = {
-                    k: best_row[k]
-                    for k in small_grid.keys()
-                    if k in best_row.index
-                }
-
-                # Test: OOS 성과 측정
-                oos_result = self.engine.run(
-                    codes, test_start, test_end, best_params
-                )
+                oos_result = _run(codes, test_start, test_end, best_params)
                 oos_result.params = best_params
                 oos_results.append(oos_result)
 
                 logger.info(
                     f"구간 {i + 1} OOS: "
                     f"수익률 {oos_result.total_return:.2f}%, "
-                    f"Sharpe {oos_result.sharpe_ratio:.2f}"
+                    f"Sharpe {oos_result.sharpe_ratio:.2f}, "
+                    f"거래 {oos_result.trade_count}건"
                 )
             except Exception as e:
                 logger.error(f"구간 {i + 1} 실패: {e}")

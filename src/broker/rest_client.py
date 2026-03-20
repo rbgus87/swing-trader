@@ -22,7 +22,6 @@ class KiwoomRestClient:
         self._secretkey = secretkey
         self._access_token: str | None = None
         self._token_expires: datetime | None = None
-        self._ws_key: str | None = None
         self._client = httpx.AsyncClient(
             base_url=base_url, timeout=10.0,
             limits=httpx.Limits(max_connections=10)
@@ -62,29 +61,6 @@ class KiwoomRestClient:
 
         logger.info(f"접근토큰 발급 완료 (만료: {self._token_expires})")
         return self._access_token
-
-    async def get_approval_key(self) -> str:
-        """WebSocket 접속용 approval_key 발급.
-
-        POST /oauth2/Approval
-        base_url에 맞는 서버(실서버/모의서버)로 요청합니다.
-        """
-        await self._rate_limiter.wait()
-        response = await self._client.post(
-            "/oauth2/Approval",
-            json={
-                "grant_type": "client_credentials",
-                "appkey": self._appkey,
-                "secretkey": self._secretkey,
-            }
-        )
-        response.raise_for_status()
-        data = response.json()
-        approval_key = data.get("approval_key", "")
-        if not approval_key:
-            raise ValueError(f"approval_key 발급 실패. 응답: {data}")
-        logger.info("WebSocket approval_key 발급 완료")
-        return approval_key
 
     async def _ensure_token(self):
         """토큰 만료 시 자동 갱신 (만료 10분 전 선제 갱신)."""
