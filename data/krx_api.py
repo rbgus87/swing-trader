@@ -51,10 +51,11 @@ KRX_STOCK_COLUMNS = {
 
 KRX_INDEX_COLUMNS = {
     "IDX_NM": "name",
-    "TDD_OPNPRC": "open",
-    "TDD_HGPRC": "high",
-    "TDD_LWPRC": "low",
-    "TDD_CLSPRC": "close",
+    # 지수 엔드포인트는 *_IDX 접미사 사용 (주식 TDD_* 와 다름)
+    "OPNPRC_IDX": "open",
+    "HGPRC_IDX": "high",
+    "LWPRC_IDX": "low",
+    "CLSPRC_IDX": "close",
     "ACC_TRDVOL": "volume",
     "ACC_TRDVAL": "amount",
 }
