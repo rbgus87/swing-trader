@@ -1039,9 +1039,18 @@ class BacktestEngine:
                             if price <= ws.loc[date]:
                                 continue
 
-                    # 포지션 사이징 (가용 자본 / max_positions)
-                    position_budget = cash / max(1, max_positions - len(positions))
+                    # 거래량 필터 — 20일 평균 대비 최소 배율 이상
+                    vol_min_ratio = p.get("volume_min_ratio", 0.8)
+                    if "volume" in df_ind.columns:
+                        cur_vol = df_ind["volume"].iloc[idx]
+                        vol_sma20 = df_ind["volume"].rolling(20).mean().iloc[idx]
+                        if not pd.isna(vol_sma20) and vol_sma20 > 0:
+                            if cur_vol / vol_sma20 < vol_min_ratio:
+                                continue
+
+                    # 포지션 사이징 (가용 자본 / 남은 포지션)
                     cost_per_share = price * (1 + COMMISSION_RATE + SLIPPAGE_RATE)
+                    position_budget = cash / max(1, current_max_pos - len(positions))
                     shares = int(position_budget // cost_per_share)
                     if shares <= 0:
                         continue
