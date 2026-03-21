@@ -849,6 +849,12 @@ class BacktestEngine:
 
         adx_threshold = p.get("adx_threshold", 25)
 
+        # 연속 손실 차단 (쿨다운)
+        consecutive_losses = 0
+        cooldown_max_losses = p.get("cooldown_max_losses", 3)  # N연패 시 차단
+        cooldown_days = p.get("cooldown_days", 5)  # M일간 진입 중지
+        cooldown_until = None  # 쿨다운 종료일
+
         for date in all_dates:
             # 시장 필터
             market_ok = True
@@ -974,15 +980,33 @@ class BacktestEngine:
                     })
                     codes_to_close.append(code)
 
+                    # 연속 손실 카운트 업데이트
+                    if pnl_pct < 0:
+                        consecutive_losses += 1
+                        if consecutive_losses >= cooldown_max_losses:
+                            from datetime import timedelta as td
+                            cooldown_until = date + td(days=cooldown_days)
+                    else:
+                        consecutive_losses = 0
+
             for code in codes_to_close:
                 del positions[code]
 
-            # 2. 새 진입 (시장 필터 + 포지션 제한 + 주봉 SMA20)
+            # 쿨다운 해제 체크
+            if cooldown_until is not None and date >= cooldown_until:
+                cooldown_until = None
+                consecutive_losses = 0
+
+            # 2. 새 진입 (시장 필터 + 포지션 제한 + 쿨다운 + 주봉 SMA20)
             # adaptive 모드: bearish에서도 bb_bounce 허용 (포지션 축소)
             # 비-adaptive: 기존 로직 유지 (market_ok 필수)
             allow_entry = market_ok and current_regime != "bearish"
             if is_adaptive and current_regime == "bearish":
                 allow_entry = True  # bb_bounce로 진입 허용
+
+            # 쿨다운 중이면 진입 차단
+            if cooldown_until is not None:
+                allow_entry = False
 
             current_max_pos = bearish_max_positions if (is_adaptive and current_regime == "bearish") else max_positions
 
