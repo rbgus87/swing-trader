@@ -821,7 +821,14 @@ class BacktestEngine:
         # 신호 생성 (파라미터 의존적이므로 항상 재계산)
         signals_cache: dict[str, tuple[pd.Series, pd.Series]] = {}
         if is_adaptive:
-            for strat_name in set(regime_map.values()):
+            # 멀티전략 지원: regime_map 값이 리스트일 수 있음
+            all_strat_names = set()
+            for v in regime_map.values():
+                if isinstance(v, list):
+                    all_strat_names.update(v)
+                elif isinstance(v, str):
+                    all_strat_names.add(v)
+            for strat_name in all_strat_names:
                 for code, df in price_data.items():
                     if code not in indicator_cache:
                         continue
@@ -877,14 +884,19 @@ class BacktestEngine:
                     else:
                         current_regime = "sideways"
 
-            active_strategy = strategy_name
+            active_strategies = [strategy_name]  # 멀티전략 리스트
             bearish_max_positions = max(1, max_positions // 3)  # 약세장 포지션 제한
             if is_adaptive:
                 if current_regime == "bearish":
                     # 약세장: bb_bounce 허용 (포지션 축소)
-                    active_strategy = "bb_bounce"
+                    active_strategies = ["bb_bounce"]
                 else:
-                    active_strategy = regime_map.get(current_regime, "bb_bounce")
+                    mapped = regime_map.get(current_regime, "bb_bounce")
+                    if isinstance(mapped, list):
+                        active_strategies = mapped
+                    else:
+                        active_strategies = [mapped]
+            active_strategy = active_strategies[0]  # 하위 호환 (청산용)
 
             # 1. 기존 포지션 청산 체크
             codes_to_close = []
@@ -1024,12 +1036,16 @@ class BacktestEngine:
                     bar_high = int(df_ind["high"].iloc[idx])
                     cur_atr = float(df_ind["atr"].iloc[idx]) if not pd.isna(df_ind["atr"].iloc[idx]) else price * 0.02
 
-                    # 전략 매수 신호 체크
-                    sig_key = (code, active_strategy)
-                    if sig_key not in signals_cache:
-                        continue
-                    entries, _ = signals_cache[sig_key]
-                    if date not in entries.index or not entries.loc[date]:
+                    # 전략 매수 신호 체크 — 멀티전략 OR (하나라도 신호 시 진입)
+                    has_entry = False
+                    for ast in active_strategies:
+                        sig_key = (code, ast)
+                        if sig_key in signals_cache:
+                            entries, _ = signals_cache[sig_key]
+                            if date in entries.index and entries.loc[date]:
+                                has_entry = True
+                                break
+                    if not has_entry:
                         continue
 
                     # 주봉 SMA20 필터

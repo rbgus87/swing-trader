@@ -33,7 +33,7 @@ pre_screening:
     disparity_sma60_min: 100         # 이격도(종가/SMA60) 하한 (%)
     disparity_sma60_max: 200         # 이격도(종가/SMA60) 상한 (%)
 
-  # 조건식 2: 변동성 수축 (sideways 국면용 — bb_bounce/bb30 전략과 매칭)
+  # 조건식 2: 변동성 수축 (sideways 국면용 — bb_bounce 전략과 매칭)
   # 횡보 압축 후 방향성 출현 예상 종목 (평균회귀용 거래량 기준 완화)
   squeeze:
     price_range_period: 20           # 변동폭 측정 기간 (일)
@@ -67,12 +67,10 @@ screening:
 strategy:
   type: adaptive                    # adaptive: 시장 국면별 자동 전환 | bb_bounce | golden_cross | macd_rsi | breakout
   # 국면별 전략 매핑 (type=adaptive 일 때만 사용)
-  # 리스트 형식: 복수 전략 동시 활성화 (OR 로직 — 하나라도 신호 시 진입)
+  # 리스트 형식도 지원: 복수 전략 동시 활성화 (OR 로직)
   regime_strategy:
     trending: golden_cross           # 추세장 (ADX >= 25, KOSPI > 200일선)
-    sideways:                        # 횡보장 (ADX < 25, KOSPI > 200일선)
-      - bb_bounce                    # BB(20,2σ) 하단 반등 — WF 검증 완료
-      - bb30                         # BB(30,1σ) 하단 반등 — 빈번한 신호
+    sideways: bb_bounce              # 횡보장 (ADX < 25, KOSPI > 200일선) — WF 검증 완료
     # bearish: 매수 차단 (MarketRegime 게이트)
   timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
   timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)
@@ -92,12 +90,6 @@ strategy:
   # 볼린저밴드 (Bollinger Bands)
   bb_period: 20                     # 볼린저밴드 기간 (20일)
   bb_std: 2.0                       # 볼린저밴드 표준편차 배수 (2.0σ)
-
-  # 볼린저30 (BB30) — 좁은 밴드 평균 회귀 전략 (최적화 완료)
-  bb30_period: 30                   # 볼린저30 기간 (30일)
-  bb30_std: 1.2                     # 볼린저30 표준편차 배수 (최적화: 1.0→1.2)
-  rsi_oversold: 35                  # bb30 RSI 과매도 기준 (최적화: 40→35)
-  bb_touch_pct: 0.05                # BB 하단 터치 범위 (최적화: 0.10→0.05)
 
   # 거래량 필터
   volume_multiplier: 1.0            # 20일 평균 거래량 대비 배수 (1.0 = 평균 이상이면 OK)
