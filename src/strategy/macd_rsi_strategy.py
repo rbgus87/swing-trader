@@ -15,6 +15,7 @@ class MacdRsiStrategy(BaseStrategy):
     """MACD-RSI 스윙 전략."""
 
     name = "macd_rsi"
+    category = "trend"
 
     def check_screening_entry(self, df: pd.DataFrame) -> bool:
         """장전 스크리닝: MACD 양전환 + RSI 적정 + 거래량."""

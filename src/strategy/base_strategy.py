@@ -16,6 +16,7 @@ class BaseStrategy(ABC):
     """전략 추상 클래스."""
 
     name: str = ""  # 전략 이름 (config.yaml의 strategy.type 값)
+    category: str = "trend"  # 전략 카테고리: "trend" | "mean_reversion"
 
     def __init__(self, params: dict | None = None):
         self.params = params or {}

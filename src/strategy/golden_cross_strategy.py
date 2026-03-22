@@ -15,6 +15,7 @@ class GoldenCrossStrategy(BaseStrategy):
     """골든크로스 변형 스윙 전략."""
 
     name = "golden_cross"
+    category = "trend"
 
     def check_screening_entry(self, df: pd.DataFrame) -> bool:
         """장전 스크리닝: 최근 N일 내 골든크로스 발생 + 유지 + RSI + ADX + 거래량.

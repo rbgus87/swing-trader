@@ -43,13 +43,19 @@ class Screener:
         self.strategy_type = self.strategy_config.get("type", "golden_cross")
         self._is_adaptive = self.strategy_type == "adaptive"
 
-        # adaptive 모드: 기본 전략으로 초기화 (국면별 전환은 run_daily_screening에서)
+        # adaptive 모드: 기본 전략 리스트로 초기화 (국면별 전환은 run_daily_screening에서)
         if self._is_adaptive:
             regime_map = self.strategy_config.get("regime_strategy", {})
-            default_type = regime_map.get("sideways", "bb_bounce")
-            self._strategy = get_strategy(default_type, self.strategy_config)
+            default_names = regime_map.get("sideways", "bb_bounce")
+            if isinstance(default_names, str):
+                default_names = [default_names]
+            self._strategies = [
+                get_strategy(n, self.strategy_config) for n in default_names
+            ]
+            self._strategy = self._strategies[0]  # 하위 호환
         else:
             self._strategy = get_strategy(self.strategy_type, self.strategy_config)
+            self._strategies = [self._strategy]
         self._ds = datastore
 
         # Pre-screening 설정
@@ -74,6 +80,8 @@ class Screener:
         self._sq_range_max = squeeze.get("price_range_max", 0.15)
         self._sq_min_price = squeeze.get("min_price", 3000)
         self._sq_max_price = squeeze.get("max_price", 200000)
+        # 평균회귀 전략용 거래량 기준 (기본 0.8x — BB 하단 터치 시 거래량 급증 불필요)
+        self._sq_volume_ratio = squeeze.get("volume_ratio_threshold", 0.8)
 
     def get_all_codes(self, market: str | None = None) -> list[str]:
         """전종목 코드 수집.
@@ -299,12 +307,12 @@ class Screener:
                 if price_range > self._sq_range_max:
                     continue
 
-                # 거래량비율
+                # 거래량비율 (squeeze는 완화된 기준 적용)
                 vol_sma20 = volume.tail(20).mean()
                 if vol_sma20 == 0:
                     continue
                 vol_ratio = volume.iloc[-1] / vol_sma20
-                if vol_ratio < self._pre_volume_ratio:
+                if vol_ratio < self._sq_volume_ratio:
                     continue
 
                 passed.append(code)
@@ -380,17 +388,27 @@ class Screener:
                     f"[2/3] Pre-Screen 완료 ({elapsed:.0f}초) — {len(codes)}종목 통과"
                 )
 
-        # adaptive 모드: 국면에 맞는 전략으로 전환
+        # adaptive 모드: 국면에 맞는 전략 리스트로 전환
         if self._is_adaptive and regime:
             regime_map = self.strategy_config.get("regime_strategy", {})
-            target_type = regime_map.get(regime)
-            if target_type and target_type != self._strategy.name:
-                self._strategy = get_strategy(target_type, self.strategy_config)
-                logger.info(f"  전략 전환: {target_type} (국면: {regime})")
+            target_names = regime_map.get(regime)
+            if target_names:
+                if isinstance(target_names, str):
+                    target_names = [target_names]
+                current_names = sorted(s.name for s in self._strategies)
+                if current_names != sorted(target_names):
+                    self._strategies = [
+                        get_strategy(n, self.strategy_config)
+                        for n in target_names
+                    ]
+                    self._strategy = self._strategies[0]
+                    names_str = ", ".join(target_names)
+                    logger.info(f"  전략 전환: [{names_str}] (국면: {regime})")
 
-        # 2차: 기존 전략 기반 매수 신호 + 점수
+        # 2차: 전략 기반 매수 신호 + 점수 (멀티전략 OR 로직)
         step_start = _time.monotonic()
-        logger.info(f"[3/3] 전략 스크리닝: {len(codes)}종목 ({self._strategy.name})")
+        strategy_names = ", ".join(s.name for s in self._strategies)
+        logger.info(f"[3/3] 전략 스크리닝: {len(codes)}종목 ([{strategy_names}])")
         candidates: list[tuple[str, float]] = []
         drop_data = 0      # OHLCV 부족
         drop_liquidity = 0  # 유동성 탈락
@@ -438,8 +456,11 @@ class Screener:
                     drop_indicator += 1
                     continue
 
-                # 매수 신호 체크 (전략 인터페이스 사용)
-                has_signal = self._strategy.check_screening_entry(df_with_ind)
+                # 매수 신호 체크 — 멀티전략 OR (하나라도 신호 시 통과)
+                has_signal = any(
+                    s.check_screening_entry(df_with_ind)
+                    for s in self._strategies
+                )
 
                 if has_signal:
                     score = calculate_signal_score(df_with_ind)
@@ -642,7 +663,7 @@ class Screener:
                 vol_sma20 = df["volume"].tail(20).mean()
                 if vol_sma20 == 0:
                     continue
-                if df["volume"].iloc[-1] / vol_sma20 < self._pre_volume_ratio:
+                if df["volume"].iloc[-1] / vol_sma20 < self._sq_volume_ratio:
                     continue
 
                 passed.append(code)

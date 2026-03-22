@@ -299,7 +299,14 @@ class TestOnPriceUpdate:
         mock_deps["risk_mgr"].pre_check.return_value = RiskCheckResult(
             approved=True
         )
-        mock_deps["config"].get.return_value = 10_000_000
+        # 키별 config 반환값 분기
+        def _config_side_effect(key, default=None):
+            if key == "trading.entry_start_time":
+                return "00:00"
+            if key == "trading.entry_end_time":
+                return "23:59"
+            return default if default is not None else 10_000_000
+        mock_deps["config"].get.side_effect = _config_side_effect
         # OHLCV 캐시 데이터 반환하도록 mock
         mock_deps["ds"].get_cached_ohlcv.return_value = [
             {"date": f"2026-03-{i:02d}", "open": 9900, "high": 10200,

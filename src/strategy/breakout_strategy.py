@@ -16,6 +16,7 @@ class BreakoutStrategy(BaseStrategy):
     """N일 고가 돌파 전략."""
 
     name = "breakout"
+    category = "trend"
 
     def check_screening_entry(self, df: pd.DataFrame) -> bool:
         """장전 스크리닝: N일 신고가 돌파 + 거래량 급증."""

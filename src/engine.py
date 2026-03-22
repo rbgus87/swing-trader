@@ -67,19 +67,26 @@ class TradingEngine:
         )
         self._telegram = TelegramBot()
 
-        # 전략 인스턴스
+        # 전략 인스턴스 (멀티전략 지원)
         self._strategy_config = config.data.get("strategy", {})
         self._strategy_type = self._strategy_config.get("type", "golden_cross")
         self._is_adaptive = self._strategy_type == "adaptive"
 
         if self._is_adaptive:
-            # adaptive 모드: 기본 전략으로 초기화, 장전 스크리닝에서 전환
+            # adaptive 모드: 기본 전략 리스트로 초기화, 장전 스크리닝에서 전환
             regime_map = self._strategy_config.get("regime_strategy", {})
-            default_type = regime_map.get("sideways", "bb_bounce")
-            self._strategy = get_strategy(default_type, self._strategy_config)
-            logger.info(f"전략 로드: adaptive (기본 {default_type})")
+            default_names = regime_map.get("sideways", "bb_bounce")
+            if isinstance(default_names, str):
+                default_names = [default_names]
+            self._strategies = [
+                get_strategy(n, self._strategy_config) for n in default_names
+            ]
+            self._strategy = self._strategies[0]  # 하위 호환
+            names = ", ".join(s.name for s in self._strategies)
+            logger.info(f"전략 로드: adaptive (기본 [{names}])")
         else:
             self._strategy = get_strategy(self._strategy_type, self._strategy_config)
+            self._strategies = [self._strategy]
             logger.info(f"전략 로드: {self._strategy_type}")
 
         # 시장 국면 판단기
@@ -297,6 +304,12 @@ class TradingEngine:
         # 시장 국면 게이트: 방어 모드이면 매수 차단
         if not self._market_regime.is_bullish:
             return
+        # 시간대 진입 제한: 장 초반 변동성/장 마감 갭 리스크 회피
+        now_hm = datetime.now().strftime("%H:%M")
+        entry_start = config.get("trading.entry_start_time", "09:30")
+        entry_end = config.get("trading.entry_end_time", "14:30")
+        if not (entry_start <= now_hm <= entry_end):
+            return
         # 쓰로틀링: 같은 종목은 30초 간격으로만 진입 판단 (지표 계산 부하 방지)
         if tick.code in self._candidates:
             now = time.monotonic()
@@ -385,7 +398,7 @@ class TradingEngine:
         return None
 
     async def _check_entry_conditions(self, tick: Tick):
-        """후보 종목 진입 조건 체크 — 전략 인터페이스 기반."""
+        """후보 종목 진입 조건 체크 — 멀티전략 + 카테고리별 게이트."""
         from src.strategy.signals import (
             calculate_indicators,
             calculate_signal_score,
@@ -394,6 +407,7 @@ class TradingEngine:
         import pandas as pd
 
         score = 0.0
+        matched_strategy = None
         try:
             from datetime import timedelta
 
@@ -418,18 +432,39 @@ class TradingEngine:
                 institutional_net=inst_net,
                 foreign_net=foreign_net,
             )
-            min_score = config.get("strategy.min_signal_score", 1.5)
-            if score < min_score:
-                return
 
-            # 주봉 SMA20 필터: 주간 추세 확인 후 진입
-            if not self._check_weekly_trend(df_daily):
-                return
-
-            # 전략 인터페이스로 진입 판단 (일봉 + 60분봉)
             df_60m = self._minute_ohlcv_cache.get(tick.code)
-            if not self._strategy.check_realtime_entry(df_daily, df_60m):
+
+            # 멀티전략 순회: 카테고리별 게이트 분기
+            for strategy in self._strategies:
+                is_mr = strategy.category == "mean_reversion"
+
+                # Signal Score 게이트: trend 전략만 적용
+                if not is_mr:
+                    min_score = config.get("strategy.min_signal_score", 1.5)
+                    if score < min_score:
+                        continue
+                else:
+                    # 평균회귀: 완화된 최소 점수 (0.5)
+                    min_score_mr = config.get("strategy.min_signal_score_mr", 0.5)
+                    if score < min_score_mr:
+                        continue
+
+                # 주봉 SMA20 필터: trend 전략만 적용
+                if not is_mr and not self._check_weekly_trend(df_daily):
+                    continue
+
+                # 전략별 실시간 진입 판단
+                if strategy.check_realtime_entry(df_daily, df_60m):
+                    matched_strategy = strategy
+                    break
+
+            if not matched_strategy:
                 return
+            logger.info(
+                f"진입 신호: {tick.code} by {matched_strategy.name} "
+                f"(score={score:.1f})"
+            )
         except Exception as e:
             logger.warning(f"진입 조건 체크 실패 ({tick.code}): {e}")
             return
@@ -773,23 +808,35 @@ class TradingEngine:
             self.halt()
 
     def _switch_strategy_by_regime(self):
-        """시장 국면에 따라 전략 인스턴스 전환 (adaptive 모드)."""
+        """시장 국면에 따라 전략 인스턴스 전환 (adaptive 모드, 멀티전략 지원)."""
         regime = self._market_regime.regime_type
         regime_map = self._strategy_config.get("regime_strategy", {})
-        new_type = regime_map.get(regime)
+        new_names = regime_map.get(regime)
 
-        if not new_type:
+        if not new_names:
             return  # 매핑 없으면 현재 전략 유지
 
-        current_name = self._strategy.name
-        if current_name == new_type:
-            logger.info(f"전략 유지: {current_name} (국면: {regime})")
+        # str → list 하위 호환
+        if isinstance(new_names, str):
+            new_names = [new_names]
+
+        current_names = sorted(s.name for s in self._strategies)
+        target_names = sorted(new_names)
+
+        if current_names == target_names:
+            logger.info(f"전략 유지: {current_names} (국면: {regime})")
             return
 
-        self._strategy = get_strategy(new_type, self._strategy_config)
-        logger.info(f"전략 전환: {current_name} → {new_type} (국면: {regime})")
+        self._strategies = [
+            get_strategy(n, self._strategy_config) for n in new_names
+        ]
+        self._strategy = self._strategies[0]  # 하위 호환
+        names_str = ", ".join(new_names)
+        logger.info(
+            f"전략 전환: {current_names} → [{names_str}] (국면: {regime})"
+        )
         self._telegram.send(
-            f"전략 전환: {current_name} → {new_type} "
+            f"전략 전환: [{names_str}] "
             f"(국면: {regime}, ADX {self._market_regime.kospi_adx:.1f})"
         )
 
