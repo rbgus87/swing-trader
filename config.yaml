@@ -72,6 +72,7 @@ strategy:
     trending:                          # 추세장 (ADX >= 25, KOSPI > 200일선)
       - golden_cross                   #   추세 시작 포착 (SMA5/20 크로스)
       - macd_pullback                  #   추세 중 눌림목 재진입 (MACD>Signal + RSI 반등)
+      - volume_breakout                #   거래량 선행 돌파 (매집→가격 돌파 초기 포착)
     sideways: bb_bounce                # 횡보장 (ADX < 25, KOSPI > 200일선) — WF 검증 완료
     # bearish: 매수 차단 (MarketRegime 게이트)
   timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
@@ -99,6 +100,10 @@ strategy:
 
   # 거래량 필터
   volume_multiplier: 1.0            # 20일 평균 거래량 대비 배수 (1.0 = 평균 이상이면 OK)
+
+  # 거래량 돌파 전략 (volume_breakout) 파라미터
+  vol_breakout_multiplier: 1.5      # N일 최대 거래량 대비 배수 (튜닝: 0.8→1.5, 강한 돌파만 허용)
+  vol_lookback: 20                  # 거래량 돌파 기준 기간 (일)
 
   # 청산 조건
   max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도

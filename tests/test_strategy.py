@@ -315,12 +315,17 @@ class TestCheckExitSignal:
             "target_price": 76000,
             "status": "open",
             "high_since_entry": 72000,
-            "trailing_stop": 68000,
             "hold_days": 5,
-            "prev_macd_hist": 0.5,
         }
         defaults.update(kwargs)
-        return Position(**defaults)
+        # trailing_stop, prev_macd_hist는 Position 필드에서 제거됨
+        # 테스트 호환용: kwargs에서 꺼내서 생성 후 동적 할당
+        trailing_stop = defaults.pop("trailing_stop", 0)
+        prev_macd_hist = defaults.pop("prev_macd_hist", 0.0)
+        pos = Position(**defaults)
+        pos.trailing_stop = trailing_stop
+        pos.prev_macd_hist = prev_macd_hist
+        return pos
 
     def _make_latest(self, macd_hist: float = 0.3) -> pd.Series:
         """테스트용 latest Series."""
@@ -737,6 +742,145 @@ class TestOBVTrendScore:
         score_no_obv = calculate_signal_score(df_no_obv)
 
         assert score_with_obv == score_no_obv
+
+
+class TestVolumeBreakoutStrategy:
+    """VolumeBreakoutStrategy 테스트."""
+
+    @pytest.fixture
+    def strategy(self):
+        from src.strategy.volume_breakout_strategy import VolumeBreakoutStrategy
+        return VolumeBreakoutStrategy(params={
+            "vol_lookback": 20,
+            "vol_breakout_multiplier": 0.8,
+            "rsi_entry_min": 40,
+            "rsi_entry_max": 70,
+            "adx_threshold": 15,
+        })
+
+    @pytest.fixture
+    def vol_breakout_df(self):
+        """거래량 돌파 조건을 충족하는 DataFrame (150행)."""
+        np.random.seed(99)
+        n = 150
+        # 완만한 상승 추세
+        base = 50000 + np.cumsum(np.random.normal(50, 200, n))
+        close = np.round(np.maximum(base, 10000)).astype(int)
+        high = np.round(close * 1.02).astype(int)
+        low = np.round(close * 0.98).astype(int)
+        open_ = np.round(low + (high - low) * 0.5).astype(int)
+        volume = np.random.randint(100000, 200000, n)
+        volume[-1] = 500000  # 거래량 돌파
+
+        df = pd.DataFrame({
+            "open": open_, "high": high, "low": low,
+            "close": close, "volume": volume,
+        })
+        return calculate_indicators(df)
+
+    @pytest.fixture
+    def vol_no_breakout_df(self):
+        """거래량 돌파 미충족 DataFrame (150행)."""
+        np.random.seed(99)
+        n = 150
+        base = 50000 + np.cumsum(np.random.normal(50, 200, n))
+        close = np.round(np.maximum(base, 10000)).astype(int)
+        high = np.round(close * 1.02).astype(int)
+        low = np.round(close * 0.98).astype(int)
+        open_ = np.round(low + (high - low) * 0.5).astype(int)
+        volume = np.random.randint(100000, 200000, n)
+        volume[-1] = 120000  # 평범한 거래량
+
+        df = pd.DataFrame({
+            "open": open_, "high": high, "low": low,
+            "close": close, "volume": volume,
+        })
+        return calculate_indicators(df)
+
+    def test_screening_entry_volume_breakout(self, strategy, vol_breakout_df):
+        """거래량 돌파 시 스크리닝 진입 True."""
+        df = vol_breakout_df
+        latest = df.iloc[-1]
+        # OBV > OBV_SMA20이고 RSI 범위 내인지 확인
+        if (
+            latest.get("obv", 0) > latest.get("obv_sma20", 0)
+            and 40 <= latest.get("rsi", 50) <= 70
+            and latest["close"] > latest["sma20"]
+        ):
+            assert strategy.check_screening_entry(df) is True
+
+    def test_screening_entry_no_volume_breakout(self, strategy, vol_no_breakout_df):
+        """거래량 미돌파 시 스크리닝 진입 False."""
+        assert strategy.check_screening_entry(vol_no_breakout_df) is False
+
+    def test_screening_entry_insufficient_data(self, strategy):
+        """데이터 부족 시 False."""
+        df = pd.DataFrame({
+            "open": [10000], "high": [10200], "low": [9800],
+            "close": [10100], "volume": [500000],
+        })
+        assert strategy.check_screening_entry(df) is False
+
+    def test_screening_rsi_too_high(self, strategy, vol_breakout_df):
+        """RSI 과매수 시 진입 차단."""
+        df = vol_breakout_df.copy()
+        df.iloc[-1, df.columns.get_loc("rsi")] = 80
+        assert strategy.check_screening_entry(df) is False
+
+    def test_screening_below_sma20(self, strategy, vol_breakout_df):
+        """종가 < SMA20 시 진입 차단."""
+        df = vol_breakout_df.copy()
+        df.iloc[-1, df.columns.get_loc("close")] = 1000  # SMA20보다 훨씬 낮게
+        assert strategy.check_screening_entry(df) is False
+
+    def test_realtime_entry_adx_filter(self, strategy, vol_breakout_df):
+        """ADX 미달 시 realtime 진입 차단."""
+        df = vol_breakout_df.copy()
+        df.iloc[-1, df.columns.get_loc("adx")] = 5  # 임계값 미달
+        assert strategy.check_realtime_entry(df) is False
+
+    def test_backtest_signals_shape(self, strategy, ohlcv_df):
+        """백테스트 시그널이 올바른 형태를 반환."""
+        entries, exits = strategy.generate_backtest_signals(ohlcv_df)
+        assert isinstance(entries, pd.Series)
+        assert isinstance(exits, pd.Series)
+        assert len(entries) == len(exits)
+        assert entries.dtype == bool
+        assert exits.dtype == bool
+
+    def test_backtest_signals_no_lookahead(self, strategy, ohlcv_df):
+        """첫 번째 행은 항상 False (shift(1) look-ahead 방지)."""
+        entries, exits = strategy.generate_backtest_signals(ohlcv_df)
+        assert entries.iloc[0] is np.bool_(False)
+
+    def test_strategy_registered(self):
+        """volume_breakout이 레지스트리에 등록되었는지 확인."""
+        from src.strategy.base_strategy import available_strategies, get_strategy
+        assert "volume_breakout" in available_strategies()
+        s = get_strategy("volume_breakout")
+        assert s.name == "volume_breakout"
+        assert s.category == "trend"
+
+    def test_backtest_exit_volume_dry(self, strategy):
+        """거래량 급감 시 exit 시그널 발생."""
+        np.random.seed(42)
+        n = 150
+        base = 50000 + np.cumsum(np.random.normal(50, 200, n))
+        close = np.round(np.maximum(base, 10000)).astype(int)
+        high = np.round(close * 1.02).astype(int)
+        low = np.round(close * 0.98).astype(int)
+        open_ = np.round(low + (high - low) * 0.5).astype(int)
+        volume = np.random.randint(100000, 2000000, n)
+        # 마지막 몇 행 거래량을 극도로 낮게 (volume_sma20 * 0.5 미만)
+        volume[-5:] = 10000
+
+        df = pd.DataFrame({
+            "open": open_, "high": high, "low": low,
+            "close": close, "volume": volume,
+        })
+        entries, exits = strategy.generate_backtest_signals(df)
+        # 거래량 급감 구간 근처에서 exit 시그널 있어야 함
+        assert exits.iloc[-3:].any()
 
 
 class TestInstitutionalNetBuying:

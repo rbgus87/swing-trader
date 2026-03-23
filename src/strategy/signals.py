@@ -284,8 +284,9 @@ def check_exit_signal(
     if position.stop_price > 0 and current_price <= position.stop_price:
         return ExitReason.STOP_LOSS
 
-    # 2. 트레일링스탑 발동
-    if position.trailing_stop > 0 and current_price <= position.trailing_stop:
+    # 2. 트레일링스탑 발동 (stop_price에 통합됨, 하위 호환용 유지)
+    trailing = getattr(position, "trailing_stop", 0)
+    if trailing > 0 and current_price <= trailing:
         return ExitReason.TRAILING_STOP
 
     # 3. 목표가 도달
@@ -297,7 +298,7 @@ def check_exit_signal(
     if pnl_pct >= 0.02:
         macd_hist = latest["macd_hist"] if "macd_hist" in latest.index else None
         if macd_hist is not None:
-            if position.prev_macd_hist > 0 and macd_hist < 0:
+            if getattr(position, "prev_macd_hist", 0) > 0 and macd_hist < 0:
                 return ExitReason.MACD_DEAD
 
     # 5. 최대 보유기간 초과
