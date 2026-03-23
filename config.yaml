@@ -46,7 +46,7 @@ pre_screening:
 # 모드 제어는 .env의 IS_PAPER_TRADING으로 관리 (True=모의, False=실거래)
 trading:
   universe: kospi_kosdaq            # 매매 대상 시장 (kospi | kosdaq | kospi_kosdaq)
-  max_positions: 7                  # 동시에 보유할 수 있는 최대 종목 수 (자본금에 따라 조절)
+  max_positions: 8                  # 동시에 보유할 수 있는 최대 종목 수 (백테스트 최적: 30종목/8포지션)
   reentry_cooldown_days: 3          # 같은 종목을 매도 후 다시 매수하기까지 대기 영업일
   reentry_cooldown_trend_days: 1    # 추세 유지 시 (SMA5>SMA20, ADX>임계값) 단축 쿨다운
   initial_capital: 3_000_000        # 실거래/페이퍼 초기 자본금 (원)
@@ -107,7 +107,7 @@ strategy:
 
   # 청산 조건
   max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도
-  target_return: 0.12               # 목표 수익률 (0.12 = +12%) — 도달 시 자동 매도 (최적화: 0.06→0.12, 수익 길게)
+  target_return: 0.10               # 목표 수익률 (0.10 = +10%) — 도달 시 자동 매도 (최적화: 0.12→0.10, 빠른 익절+승률 향상)
 
   # 부분 매도 설정
   partial_sell_enabled: true         # 부분 매도 활성화
