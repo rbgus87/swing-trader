@@ -106,7 +106,7 @@ class TradingEngine:
         self._atr_cache: dict[str, float] = {}  # 종목별 ATR 캐시
         self._last_entry_check: dict[str, float] = {}  # 종목별 마지막 진입 체크 시각 (throttle)
         self._minute_ohlcv_cache: dict[str, "pd.DataFrame"] = {}  # 종목별 60분봉 캐시
-        self._partial_sold_ids: set[int] = set()  # 부분 매도 완료된 포지션 ID
+        # partial_sold는 DB positions.partial_sold 컬럼으로 관리
         self._daily_trades_cache: list[dict] | None = None  # 당일 매매 기록 캐시
 
         # MDD 초기 자본 설정
@@ -359,7 +359,7 @@ class TradingEngine:
         partial_enabled = config.get("strategy.partial_sell_enabled", False)
         if (
             partial_enabled
-            and pos.id not in self._partial_sold_ids
+            and not getattr(pos, "partial_sold", False)
             and pos.target_price > 0
         ):
             partial_pct = config.get("strategy.partial_target_pct", 0.5)
@@ -572,8 +572,9 @@ class TradingEngine:
         if is_partial:
             # 부분 매도: 수량 감소, 포지션 유지
             remaining_qty = position.quantity - sell_qty
-            self._ds.update_position(position.id, quantity=remaining_qty, status="open")
-            self._partial_sold_ids.add(position.id)
+            self._ds.update_position(
+                position.id, quantity=remaining_qty, status="open", partial_sold=1
+            )
             logger.info(f"부분 매도 완료: {position.code} {sell_qty}주 매도, {remaining_qty}주 잔여 (트레일링 계속)")
         else:
             if self.mode == "paper":
@@ -884,6 +885,7 @@ class TradingEngine:
             status=d.get("status", "open"),
             high_since_entry=d.get("high_since_entry", d["entry_price"]),
             hold_days=hold_days,
+            partial_sold=bool(d.get("partial_sold", 0)),
             updated_at=d.get("updated_at", ""),
         )
 
@@ -906,11 +908,7 @@ class TradingEngine:
         # 2. "selling" 상태 포지션 복원 (체결 안 된 매도 주문)
         restored_count = 0
         try:
-            with self._ds._lock:
-                cursor = self._ds.conn.execute(
-                    "SELECT * FROM positions WHERE status = 'selling'"
-                )
-                selling_positions = [dict(row) for row in cursor.fetchall()]
+            selling_positions = self._ds.get_positions_by_status("selling")
 
             for pos_dict in selling_positions:
                 self._ds.update_position(pos_dict["id"], status="open")
@@ -995,7 +993,7 @@ class TradingEngine:
         self._atr_cache.clear()  # ATR 캐시 리프레시
         self._last_entry_check.clear()  # 진입 체크 쓰로틀 초기화
         self._minute_ohlcv_cache.clear()  # 60분봉 캐시 초기화
-        self._partial_sold_ids.clear()  # 부분 매도 추적 초기화
+        # partial_sold 초기화 불필요 (DB 기반)
         self._daily_trades_cache = None  # 당일 trades 캐시 초기화
 
         # OHLCV 캐시 정리 (400일 이상 된 데이터 삭제)
@@ -1131,12 +1129,9 @@ class TradingEngine:
 
             positions = self._ds.get_open_positions()
             # selling 상태인 포지션도 별도 조회
-            with self._ds._lock:
-                cursor = self._ds.conn.execute(
-                    "SELECT * FROM positions WHERE code = ? AND status = 'selling'",
-                    (code,),
-                )
-                selling_positions = [dict(row) for row in cursor.fetchall()]
+            selling_positions = self._ds.get_positions_by_code_and_status(
+                code, "selling"
+            )
 
             for pos_dict in selling_positions:
                 self._ds.update_position(pos_dict["id"], status="closed")

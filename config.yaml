@@ -46,7 +46,7 @@ pre_screening:
 # 모드 제어는 .env의 IS_PAPER_TRADING으로 관리 (True=모의, False=실거래)
 trading:
   universe: kospi_kosdaq            # 매매 대상 시장 (kospi | kosdaq | kospi_kosdaq)
-  max_positions: 3                  # 동시에 보유할 수 있는 최대 종목 수 (자본금에 따라 조절)
+  max_positions: 7                  # 동시에 보유할 수 있는 최대 종목 수 (자본금에 따라 조절)
   reentry_cooldown_days: 3          # 같은 종목을 매도 후 다시 매수하기까지 대기 영업일
   reentry_cooldown_trend_days: 1    # 추세 유지 시 (SMA5>SMA20, ADX>임계값) 단축 쿨다운
   initial_capital: 3_000_000        # 실거래/페이퍼 초기 자본금 (원)
@@ -76,7 +76,7 @@ strategy:
     # bearish: 매수 차단 (MarketRegime 게이트)
   timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
   timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)
-  adx_threshold: 20                 # ADX 추세 강도 기준 (골든크로스 전용)
+  adx_threshold: 15                 # ADX 추세 강도 기준 (튜닝: 20→15, 약한 추세에서도 진입 허용)
 
   # 이동평균선 (Moving Average)
   macd_fast: 12                     # MACD 빠른선 기간 (기본 12일)
@@ -86,19 +86,23 @@ strategy:
 
   # RSI (Relative Strength Index, 상대강도지수)
   rsi_period: 14                    # RSI 계산 기간 (14일)
-  rsi_entry_min: 40                 # 매수 허용 RSI 하한 (40 미만이면 하락세로 판단)
+  rsi_entry_min: 35                 # 매수 허용 RSI 하한 (튜닝: 40→35, 진입 기회 확대)
   rsi_entry_max: 65                 # 매수 허용 RSI 상한 (65 초과면 과매수로 판단)
 
   # 볼린저밴드 (Bollinger Bands)
   bb_period: 20                     # 볼린저밴드 기간 (20일)
   bb_std: 2.0                       # 볼린저밴드 표준편차 배수 (2.0σ)
+  bb_touch_pct: 0.15                # BB 하단 터치 범위 (튜닝: 0.10→0.15, BB 진입 확대)
+  rsi_oversold: 45                  # BB 과매도 기준 (튜닝: 40→45, BB 진입 확대)
+  rsi_pullback: 45                  # MACD Pullback 눌림 RSI 기준
+  screening_lookback: 5             # 골든크로스 lookback 기간 (일)
 
   # 거래량 필터
   volume_multiplier: 1.0            # 20일 평균 거래량 대비 배수 (1.0 = 평균 이상이면 OK)
 
   # 청산 조건
-  max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도 (최적화: 15→10)
-  target_return: 0.06               # 목표 수익률 (0.06 = +6%) — 도달 시 자동 매도 (최적화: 0.12→0.06)
+  max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도
+  target_return: 0.12               # 목표 수익률 (0.12 = +12%) — 도달 시 자동 매도 (최적화: 0.06→0.12, 수익 길게)
 
   # 부분 매도 설정
   partial_sell_enabled: true         # 부분 매도 활성화
@@ -113,12 +117,12 @@ risk:
   sizing_method: half_kelly         # 포지션 크기 결정 방식 (half_kelly | fixed)
 
   # 손절 (Stop Loss)
-  stop_atr_multiplier: 2.5          # 초기 손절가 = 진입가 - ATR × 이 값 (ATR: 평균진폭)
+  stop_atr_multiplier: 1.5          # 초기 손절가 = 진입가 - ATR × 이 값 (최적화: 2.5→1.5, 빠른 손절)
   max_stop_pct: 0.07                # 최대 손절 비율 (0.07 = -7%) — 최적화: 0.10→0.07
 
   # 트레일링 스톱 (수익 보호)
-  trailing_atr_multiplier: 2.0      # 트레일링 = 고점 - ATR × 이 값 (최적화: 2.5→2.0)
-  trailing_activate_pct: 0.07       # 트레일링 활성화 수익률 (0.07 = +7% 이상 수익 시 시작)
+  trailing_atr_multiplier: 2.0      # 트레일링 = 고점 - ATR × 이 값
+  trailing_activate_pct: 0.10       # 트레일링 활성화 수익률 (최적화: 0.06→0.10, 조기 청산 방지)
 
   # 일일 손실 관리
   daily_loss_limit: -0.03           # 일일 손실 한도 (-0.03 = -3%) — 초과 시 당일 매매 중단

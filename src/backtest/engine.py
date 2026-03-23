@@ -1023,20 +1023,37 @@ class BacktestEngine:
             current_max_pos = bearish_max_positions if (is_adaptive and current_regime == "bearish") else max_positions
 
             if allow_entry:
+                # === 동적 스크리닝: 매일 유동성+기술적 필터 적용 후 점수 순 진입 ===
+                screening_top_n = p.get("screening_top_n", 0)  # 0=비활성, >0=상위 N종목만
+                min_daily_amount = p.get("min_daily_amount", 1_000_000_000)
+                min_price = p.get("min_price", 1000)
+                max_price = p.get("max_price", 500000)
+
+                # 1단계: 매수 신호 + 유동성 + 가격 필터 통과 종목 수집
+                daily_candidates = []
                 for code, df_ind in indicator_cache.items():
                     if code in positions:
                         continue
-                    if len(positions) >= current_max_pos:
-                        break
                     if date not in df_ind.index:
                         continue
 
                     idx = df_ind.index.get_loc(date)
                     price = int(df_ind["close"].iloc[idx])
-                    bar_high = int(df_ind["high"].iloc[idx])
-                    cur_atr = float(df_ind["atr"].iloc[idx]) if not pd.isna(df_ind["atr"].iloc[idx]) else price * 0.02
 
-                    # 전략 매수 신호 체크 — 멀티전략 OR (하나라도 신호 시 진입)
+                    # 가격 범위 필터
+                    if screening_top_n > 0:
+                        if price < min_price or price > max_price:
+                            continue
+
+                    # 유동성 필터: 5일 평균 거래대금
+                    if screening_top_n > 0 and idx >= 5:
+                        recent_amount = (
+                            df_ind["close"].iloc[idx-4:idx+1] * df_ind["volume"].iloc[idx-4:idx+1]
+                        ).mean()
+                        if recent_amount < min_daily_amount:
+                            continue
+
+                    # 전략 매수 신호 체크 — 멀티전략 OR
                     has_entry = False
                     for ast in active_strategies:
                         sig_key = (code, ast)
@@ -1047,6 +1064,15 @@ class BacktestEngine:
                                 break
                     if not has_entry:
                         continue
+
+                    # 모멘텀 필터: 60일 수익률 하한 이하 종목 제외
+                    momentum_floor = p.get("momentum_floor", -0.15)
+                    if idx >= 60:
+                        past_close = df_ind["close"].iloc[idx - 60]
+                        if past_close > 0:
+                            momentum_60d = (price - past_close) / past_close
+                            if momentum_60d < momentum_floor:
+                                continue
 
                     # 주봉 SMA20 필터
                     if code in weekly_sma20_cache:
@@ -1063,6 +1089,30 @@ class BacktestEngine:
                         if not pd.isna(vol_sma20) and vol_sma20 > 0:
                             if cur_vol / vol_sma20 < vol_min_ratio:
                                 continue
+
+                    # Signal Score 계산 (동적 스크리닝 모드에서 순위용)
+                    sig_score = 0.0
+                    if screening_top_n > 0:
+                        from src.strategy.signals import calculate_signal_score
+                        sig_score = calculate_signal_score(df_ind.iloc[:idx+1])
+
+                    daily_candidates.append((code, sig_score))
+
+                # 2단계: Signal Score 내림차순 정렬 → 상위 N종목만 진입
+                if screening_top_n > 0:
+                    daily_candidates.sort(key=lambda x: x[1], reverse=True)
+                    daily_candidates = daily_candidates[:screening_top_n]
+
+                # 3단계: 진입 실행
+                for code, _score in daily_candidates:
+                    if len(positions) >= current_max_pos:
+                        break
+
+                    df_ind = indicator_cache[code]
+                    idx = df_ind.index.get_loc(date)
+                    price = int(df_ind["close"].iloc[idx])
+                    bar_high = int(df_ind["high"].iloc[idx])
+                    cur_atr = float(df_ind["atr"].iloc[idx]) if not pd.isna(df_ind["atr"].iloc[idx]) else price * 0.02
 
                     # 포지션 사이징 (가용 자본 / 남은 포지션)
                     cost_per_share = price * (1 + COMMISSION_RATE + SLIPPAGE_RATE)

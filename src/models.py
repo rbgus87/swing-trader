@@ -44,11 +44,10 @@ class Position:
     quantity: int
     stop_price: int
     target_price: int
-    status: str = "open"  # "open" | "closed"
+    status: str = "open"  # "open" | "closed" | "selling"
     high_since_entry: int = 0
-    trailing_stop: int = 0
     hold_days: int = 0
-    prev_macd_hist: float = 0.0
+    partial_sold: bool = False
     updated_at: str = ""
 
 

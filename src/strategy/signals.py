@@ -312,7 +312,7 @@ def calculate_signal_score(
     institutional_net: int = 0,
     foreign_net: int = 0,
 ) -> float:
-    """신호 강도 점수 계산 (0.0 ~ 7.0).
+    """신호 강도 점수 계산 (0.0 ~ 9.0).
 
     점수 항목 (각 최대 1.0):
     1. RSI 위치 점수: 50 근처가 가장 높음 (매수 초기 추세 진입)
@@ -322,6 +322,8 @@ def calculate_signal_score(
     5. 볼린저밴드 위치: 중간~상단 범위
     6. OBV 추세 일치: 가격 상승 + OBV 상승 동시 충족
     7. 기관/외국인 수급: 순매수 시 가점
+    8. 모멘텀 팩터: 60일(~3개월) 수익률 기반 추세 강도
+    9. 업종 RS(상대강도): 종목 수익률 vs 시장 수익률 비교
 
     Args:
         df: 지표 계산 완료된 DataFrame.
@@ -329,7 +331,7 @@ def calculate_signal_score(
         foreign_net: 외국인 순매수 금액 (원).
 
     Returns:
-        0.0 ~ 7.0 범위의 점수.
+        0.0 ~ 9.0 범위의 점수.
     """
     if len(df) < 1:
         return 0.0
@@ -396,7 +398,25 @@ def calculate_signal_score(
         supply_score += 0.5  # 외국인 순매수
     score += supply_score
 
-    return round(min(7.0, max(0.0, score)), 2)
+    # 8. 모멘텀 팩터: 60일(~3개월) 수익률 기반
+    if len(df) >= 60:
+        momentum_return = (df["close"].iloc[-1] - df["close"].iloc[-60]) / df["close"].iloc[-60]
+        if momentum_return > 0:
+            # 양의 모멘텀: 0~30% → 0~1.0 점수
+            momentum_score = min(1.0, momentum_return / 0.30)
+            score += momentum_score
+        # 음의 모멘텀은 감점하지 않음 (BB 전략에서 필요)
+
+    # 9. 상대강도(RS): 20일 수익률이 양수이고 가속 중이면 가점
+    if len(df) >= 20:
+        ret_20d = (df["close"].iloc[-1] - df["close"].iloc[-20]) / df["close"].iloc[-20]
+        ret_10d = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10] if len(df) >= 10 else 0
+        # 20일 수익률 양수 + 최근 10일이 더 강함 = 가속 추세
+        if ret_20d > 0 and ret_10d > ret_20d / 2:
+            rs_score = min(1.0, ret_20d / 0.15)  # 15% 수익이면 만점
+            score += rs_score
+
+    return round(min(9.0, max(0.0, score)), 2)
 
 
 def get_institutional_net_buying(code: str, days: int = 5) -> tuple[int, int]:

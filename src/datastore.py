@@ -16,7 +16,7 @@ from src.models import Position, TradeRecord
 _POSITION_UPDATABLE_COLUMNS = frozenset({
     "code", "name", "entry_date", "entry_price", "quantity",
     "stop_price", "target_price", "status", "updated_at",
-    "high_since_entry", "hold_days",
+    "high_since_entry", "hold_days", "partial_sold",
 })
 
 
@@ -65,31 +65,33 @@ class DataStore:
                 CREATE TABLE IF NOT EXISTS positions (
                     id INTEGER PRIMARY KEY,
                     code TEXT NOT NULL,
-                    name TEXT,
+                    name TEXT NOT NULL DEFAULT '',
                     entry_date TEXT NOT NULL,
                     entry_price INTEGER NOT NULL,
                     quantity INTEGER NOT NULL,
                     stop_price INTEGER NOT NULL,
-                    target_price INTEGER,
-                    status TEXT DEFAULT 'open',
+                    target_price INTEGER DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'closed', 'selling')),
                     high_since_entry INTEGER DEFAULT 0,
                     hold_days INTEGER DEFAULT 0,
-                    updated_at TEXT
+                    partial_sold INTEGER DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS trades (
                     id INTEGER PRIMARY KEY,
                     code TEXT NOT NULL,
-                    name TEXT,
-                    side TEXT NOT NULL,
+                    name TEXT NOT NULL DEFAULT '',
+                    side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
                     price INTEGER NOT NULL,
                     quantity INTEGER NOT NULL,
                     amount INTEGER NOT NULL,
-                    fee REAL,
-                    tax REAL,
-                    pnl REAL,
-                    pnl_pct REAL,
-                    reason TEXT,
+                    fee REAL DEFAULT 0,
+                    tax REAL DEFAULT 0,
+                    pnl REAL DEFAULT 0,
+                    pnl_pct REAL DEFAULT 0,
+                    reason TEXT DEFAULT '',
                     executed_at TEXT NOT NULL
                 );
 
@@ -134,9 +136,60 @@ class DataStore:
                 -- 성능 인덱스: trades(executed_at) (get_trades_by_date 최적화)
                 CREATE INDEX IF NOT EXISTS idx_trades_executed_at
                     ON trades(executed_at);
+
+                -- 스키마 버전 관리
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );
                 """
             )
             self.conn.commit()
+            self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        """스키마 마이그레이션 실행.
+
+        현재 버전을 확인하고, 미적용된 마이그레이션을 순차 실행.
+        """
+        current = self._get_schema_version()
+
+        if current < 1:
+            # v1: partial_sold 컬럼 추가 (기존 DB 호환)
+            try:
+                self.conn.execute(
+                    "ALTER TABLE positions ADD COLUMN partial_sold INTEGER DEFAULT 0"
+                )
+                logger.info("마이그레이션 v1: positions.partial_sold 컬럼 추가")
+            except sqlite3.OperationalError:
+                pass  # 이미 존재
+            self._set_schema_version(1)
+
+        # 향후 마이그레이션은 여기에 추가:
+        # if current < 2:
+        #     ...
+        #     self._set_schema_version(2)
+
+    def _get_schema_version(self) -> int:
+        """현재 스키마 버전 조회."""
+        try:
+            cursor = self.conn.execute(
+                "SELECT MAX(version) FROM schema_version"
+            )
+            row = cursor.fetchone()
+            return row[0] if row and row[0] is not None else 0
+        except sqlite3.OperationalError:
+            return 0
+
+    def _set_schema_version(self, version: int) -> None:
+        """스키마 버전 기록."""
+        from datetime import datetime
+        self.conn.execute(
+            "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)",
+            (version, datetime.now().isoformat()),
+        )
+        self.conn.commit()
+        logger.info(f"스키마 버전 → v{version}")
 
     # ── Positions ──────────────────────────────────────────────
 
@@ -155,8 +208,8 @@ class DataStore:
                 INSERT INTO positions
                     (code, name, entry_date, entry_price, quantity,
                      stop_price, target_price, status, high_since_entry,
-                     updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     partial_sold, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pos.code,
@@ -168,6 +221,7 @@ class DataStore:
                     pos.target_price,
                     pos.status,
                     pos.high_since_entry,
+                    0,
                     pos.updated_at,
                 ),
             )
@@ -223,6 +277,40 @@ class DataStore:
                 "SELECT COUNT(*) FROM positions WHERE status = ?", ("open",)
             )
             return cursor.fetchone()[0]
+
+    def get_positions_by_status(self, status: str) -> list[dict]:
+        """특정 상태의 포지션 목록 조회.
+
+        Args:
+            status: 포지션 상태 ("open", "closed", "selling").
+
+        Returns:
+            dict 리스트 (각 row).
+        """
+        with self._lock:
+            cursor = self.conn.execute(
+                "SELECT * FROM positions WHERE status = ?", (status,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_positions_by_code_and_status(
+        self, code: str, status: str
+    ) -> list[dict]:
+        """특정 종목+상태의 포지션 목록 조회.
+
+        Args:
+            code: 종목코드.
+            status: 포지션 상태.
+
+        Returns:
+            dict 리스트.
+        """
+        with self._lock:
+            cursor = self.conn.execute(
+                "SELECT * FROM positions WHERE code = ? AND status = ?",
+                (code, status),
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
     # ── Trades ─────────────────────────────────────────────────
 
