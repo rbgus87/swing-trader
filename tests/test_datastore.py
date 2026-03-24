@@ -101,10 +101,23 @@ class TestTradeCRUD:
         row_id = tmp_db.record_trade(trade)
         assert row_id >= 1
 
+        # get_last_trade는 side='sell'만 조회 (재진입 쿨다운용)
+        # buy만 기록한 상태에서는 None 반환이 정상
+        last = tmp_db.get_last_trade("005930")
+        assert last is None
+
+        # sell 기록 추가 후 조회
+        sell_trade = TradeRecord(
+            code="005930", name="삼성전자", side="sell",
+            price=75000, quantity=10, amount=750000,
+            fee=105.0, tax=1500.0, pnl=50000.0, pnl_pct=7.14,
+            reason="target_reached", executed_at="2025-01-20 14:00:00",
+        )
+        tmp_db.record_trade(sell_trade)
         last = tmp_db.get_last_trade("005930")
         assert last is not None
-        assert last["price"] == 70000
-        assert last["side"] == "buy"
+        assert last["price"] == 75000
+        assert last["side"] == "sell"
 
     def test_get_last_trade_no_data(self, tmp_db: DataStore):
         """기록 없는 종목 조회 시 None 반환."""

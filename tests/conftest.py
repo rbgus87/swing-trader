@@ -35,6 +35,8 @@ def sample_config():
             "universe": "kospi_kosdaq",
             "max_positions": 5,
             "reentry_cooldown_days": 3,
+            "entry_start_time": "00:00",
+            "entry_end_time": "23:59",
         },
         "screening": {
             "min_daily_amount": 5_000_000_000,
@@ -215,10 +217,6 @@ def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
         success=True, order_no="ORD001", message="OK"
     )
 
-    # RealtimeDataManager mock — subscribe_list는 async
-    mock_realtime = MagicMock()
-    mock_realtime.subscribe_list = AsyncMock(return_value=None)
-
     # Screener mock (동기)
     mock_screener = MagicMock()
 
@@ -228,7 +226,6 @@ def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
     with (
         patch("src.engine.KiwoomAPI", return_value=mock_kiwoom),
         patch("src.engine.OrderManager", return_value=mock_order_mgr),
-        patch("src.engine.RealtimeDataManager", return_value=mock_realtime),
         patch("src.engine.Screener", return_value=mock_screener),
         patch("src.engine.TelegramBot", return_value=mock_telegram),
         patch("src.engine.AsyncIOScheduler", return_value=mock_scheduler),

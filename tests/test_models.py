@@ -84,8 +84,7 @@ class TestPosition:
             stop_price=65000,
             target_price=75000,
         )
-        assert pos.trailing_stop == 0
-        assert pos.prev_macd_hist == 0.0
+        assert pos.partial_sold is False
         assert pos.updated_at == ""
 
 
@@ -137,7 +136,7 @@ class TestExitReason:
         assert ExitReason.MAX_HOLD.value == "max_hold"
 
     def test_enum_count(self):
-        assert len(ExitReason) == 5
+        assert len(ExitReason) == 6
 
 
 class TestTradeRecord:

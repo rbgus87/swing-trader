@@ -329,6 +329,7 @@ class TestSimulatePortfolio:
         params = {
             "target_return": 0.08,
             "max_hold_days": 100,
+            "partial_sell_enabled": False,  # 부분매도 비활성화하여 단순 목표가 테스트
         }
 
         trades, equity = engine._simulate_portfolio(
