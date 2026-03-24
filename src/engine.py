@@ -59,6 +59,7 @@ class TradingEngine:
         self._polling_interval: int = config.get(
             "schedule.polling_interval", 30
         )
+        self._poll_stock_names: dict[str, str] = {}  # 폴링에서 수집한 종목명
 
         self._screener = Screener(config.data, datastore=self._ds)
         self._risk_mgr = RiskManager(self._ds, config.data)
@@ -287,7 +288,9 @@ class TradingEngine:
 
         # 첫 틱 수신 로깅 (종목별 1회)
         if tick.code not in self._latest_prices:
-            logger.info(f"첫 틱 수신: {tick.code} = {tick.price:,}원")
+            name = self._poll_stock_names.get(tick.code, "")
+            label = f"{tick.code} {name}" if name else tick.code
+            logger.info(f"첫 틱 수신: {label} = {tick.price:,}원")
 
         # 최신 가격 캐시 갱신
         self._latest_prices[tick.code] = tick.price
@@ -1132,6 +1135,10 @@ class TradingEngine:
                                 volume=volume,
                                 timestamp=datetime.now(),
                             )
+                            # 종목명 캐시 (첫 틱 로그용)
+                            stk_nm = data.get("stk_nm", "")
+                            if stk_nm:
+                                self._poll_stock_names[code] = stk_nm
                             await self.on_price_update(tick)
                             success_count += 1
                         else:
