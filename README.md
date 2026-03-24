@@ -42,8 +42,8 @@ Paper(모의) 모드와 Live(실거래) 모드를 지원하며, vectorbt 기반 
 | 구분 | 기술 |
 |------|------|
 | 언어 | Python 3.10+ |
-| 이벤트루프 | PyQt5 (키움 OCX 이벤트 처리) |
-| 브로커 API | 키움 OpenAPI+ OCX |
+| 이벤트루프 | asyncio (REST/WebSocket 비동기 처리) |
+| 브로커 API | 키움 REST API (httpx + websockets) |
 | 시장 데이터 | pykrx |
 | 기술 지표 | pandas-ta |
 | 백테스트 | vectorbt |
@@ -57,7 +57,7 @@ Paper(모의) 모드와 Live(실거래) 모드를 지원하며, vectorbt 기반 
 
 ### 사전 요구사항
 
-- Windows 10/11 (키움 OCX 필수)
+- Windows 10/11
 - Python 3.10+ (32bit 또는 64bit)
 - 키움증권 OpenAPI+ 설치 및 인증서 등록
 
@@ -140,7 +140,7 @@ swing-trader/
 │   ├── models.py              # 데이터 모델
 │   ├── datastore.py           # SQLite 저장소
 │   ├── broker/                # 키움 OpenAPI+ 브로커
-│   │   ├── kiwoom_api.py      # OCX 래퍼
+│   │   ├── kiwoom_api.py      # REST/WS 래퍼
 │   │   ├── order_manager.py   # 주문 관리
 │   │   ├── realtime_data.py   # 실시간 시세
 │   │   ├── rate_limiter.py    # API 요청 제한

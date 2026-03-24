@@ -144,13 +144,14 @@ backtest:
 # --- 브로커 연결 설정 (키움 REST API) ---
 # paper/live 모두 실전 서버 사용 (paper 모드는 주문만 시뮬레이션)
 broker:
-  type: rest                        # 브로커 연결 방식 (rest: REST API, ocx: 레거시 OCX)
+  type: rest                        # 키움 REST API
   base_url: "https://api.kiwoom.com"                              # REST API 기본 URL
-  ws_url: "wss://api.kiwoom.com:10000/api/dostk/websocket"        # WebSocket URL (실시간 시세)
+  # ws_url 제거 — REST polling 모드 사용 (WebSocket은 다른 프로그램과 API 키 충돌)
 
 # --- 스케줄러 (자동 작업 시간) ---
 schedule:
   screening_time: "08:30"           # 장전 스크리닝 실행 시간 (08:30 → 장 시작 전 후보 선별)
-  ws_connect_time: "08:50"          # WebSocket 연결 시간 (08:50 → 장 시작 10분 전 연결 + 구독)
+  polling_start_time: "09:25"       # REST polling 시작 시간 (09:25 → 매수 진입 5분 전)
+  polling_stop_time: "15:35"        # REST polling 종료 시간 (15:35 → 장 마감 5분 후)
+  polling_interval: 30              # polling 간격 (초) — 일봉/60분봉 기반 스윙매매에 충분
   daily_report_time: "16:00"        # 일간 리포트 발송 시간 (16:00 → 장 마감 후 텔레그램 발송)
-  ws_disconnect_time: "18:10"       # WebSocket 종료 시간 (18:10 → 시간외 종료 후 명시적 해제)

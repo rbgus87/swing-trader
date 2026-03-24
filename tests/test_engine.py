@@ -42,7 +42,6 @@ def mock_deps():
         patch("src.engine.DataStore") as MockDS,
         patch("src.engine.KiwoomAPI") as MockKiwoom,
         patch("src.engine.OrderManager") as MockOrderMgr,
-        patch("src.engine.RealtimeDataManager") as MockRealtime,
         patch("src.engine.Screener") as MockScreener,
         patch("src.engine.RiskManager") as MockRiskMgr,
         patch("src.engine.PositionSizer") as MockSizer,
@@ -104,11 +103,6 @@ def mock_deps():
             )
         )
 
-        # RealtimeDataManager mock (async subscribe/subscribe_list)
-        realtime_instance = MockRealtime.return_value
-        realtime_instance.subscribe = AsyncMock(return_value=None)
-        realtime_instance.subscribe_list = AsyncMock(return_value=None)
-
         # TelegramBot mock (sync)
         telegram_instance = MockTelegram.return_value
         telegram_instance.send.return_value = True
@@ -126,7 +120,6 @@ def mock_deps():
             "ds": ds_instance,
             "kiwoom": kiwoom_instance,
             "order_mgr": order_instance,
-            "realtime": realtime_instance,
             "screener": MockScreener.return_value,
             "risk_mgr": risk_instance,
             "sizer": sizer_instance,
@@ -432,7 +425,7 @@ class TestExecuteSell:
 class TestPaperVsLive:
     """Paper/Live 모드 차이 검증."""
 
-    async def test_paper_mode_no_ocx_order_on_buy(self, engine, mock_deps):
+    async def test_paper_mode_no_api_order_on_buy(self, engine, mock_deps):
         """paper 모드에서 주문 미호출 (매수)."""
         mock_deps["config"].get.return_value = 0.08
         tick = _make_tick(code="005930", price=10000)
@@ -442,7 +435,7 @@ class TestPaperVsLive:
         # OrderManager.execute_order가 호출되지 않음
         mock_deps["order_mgr"].execute_order.assert_not_called()
 
-    async def test_paper_mode_no_ocx_order_on_sell(self, engine, mock_deps):
+    async def test_paper_mode_no_api_order_on_sell(self, engine, mock_deps):
         """paper 모드에서 주문 미호출 (매도)."""
         pos = Position(
             id=1,
@@ -536,13 +529,16 @@ class TestHaltAndStop:
         mock_deps["config"].get.side_effect = lambda key, default=None: {
             "schedule.screening_time": "08:30",
             "schedule.daily_report_time": "16:00",
-            "schedule.reconnect_time": "08:45",
+            "schedule.polling_start_time": "09:25",
+            "schedule.polling_stop_time": "15:35",
+            "schedule.polling_interval": 30,
+            "watchlist": [],
         }.get(key, default)
 
         await engine.start()
         assert engine._running is True
         mock_deps["scheduler"].start.assert_called_once()
-        mock_deps["kiwoom"].connect.assert_called()
+        # polling은 장 시간대일 때만 시작됨
 
 
 # ── 장전 스크리닝 테스트 ──
@@ -552,7 +548,7 @@ class TestPreMarketScreening:
     """장전 스크리닝 테스트."""
 
     async def test_screening_success(self, engine, mock_deps):
-        """스크리닝 성공 시 후보 등록 + 구독."""
+        """스크리닝 성공 시 후보 등록."""
         mock_deps["screener"].run_daily_screening.return_value = [
             "005930",
             "000660",
@@ -561,9 +557,6 @@ class TestPreMarketScreening:
         await engine._pre_market_screening()
 
         assert engine._candidates == ["005930", "000660"]
-        mock_deps["realtime"].subscribe_list.assert_called_once_with(
-            ["005930", "000660"]
-        )
         mock_deps["telegram"].send.assert_called()
 
     async def test_screening_failure_sends_error(self, engine, mock_deps):
@@ -577,32 +570,39 @@ class TestPreMarketScreening:
         mock_deps["telegram"].send_system_error.assert_called()
 
 
-# ── 재연결 테스트 ──
+# ── REST polling 테스트 ──
 
 
-class TestEnsureConnection:
-    """키움 API 연결 확인/재연결 테스트."""
+class TestPolling:
+    """REST polling 시작/중지 테스트."""
 
-    async def test_reconnect_when_disconnected(self, engine, mock_deps):
-        """연결 끊김 시 재연결 시도."""
-        mock_deps["kiwoom"]._connected = False
-        await engine._ensure_connection()
-        mock_deps["kiwoom"].connect.assert_called()
-        assert engine._reconnect_count == 1
-
-    async def test_max_reconnect_exceeded(self, engine, mock_deps):
-        """최대 재연결 횟수 초과 시 에러."""
-        mock_deps["kiwoom"]._connected = False
-        engine._reconnect_count = 5
-        await engine._ensure_connection()
-        mock_deps["telegram"].send_system_error.assert_called()
-
-    async def test_no_reconnect_when_connected(self, engine, mock_deps):
-        """연결 정상이면 재연결 안 함."""
+    async def test_start_polling_creates_task(self, engine, mock_deps):
+        """_start_polling 호출 시 polling task 생성."""
         mock_deps["kiwoom"]._connected = True
-        initial_count = engine._reconnect_count
-        await engine._ensure_connection()
-        assert engine._reconnect_count == initial_count
+        engine._running = True
+        with patch("src.utils.market_calendar.is_trading_day", return_value=True):
+            await engine._start_polling()
+            assert engine._polling_task is not None
+            # 즉시 정리 (무한 루프 방지)
+            engine._running = False
+            await engine._stop_polling()
+
+    async def test_stop_polling_cancels_task(self, engine, mock_deps):
+        """_stop_polling 호출 시 polling task 취소."""
+        mock_deps["kiwoom"]._connected = True
+        engine._running = True
+        with patch("src.utils.market_calendar.is_trading_day", return_value=True):
+            await engine._start_polling()
+            assert engine._polling_task is not None
+            engine._running = False
+            await engine._stop_polling()
+            assert engine._polling_task is None
+
+    async def test_start_polling_skips_non_trading_day(self, engine, mock_deps):
+        """비거래일이면 polling 시작 생략."""
+        with patch("src.utils.market_calendar.is_trading_day", return_value=False):
+            await engine._start_polling()
+            assert engine._polling_task is None
 
 
 # ── 일일 리셋 테스트 ──
@@ -744,11 +744,7 @@ class TestPostMarketCleanup:
     async def test_cleanup_cancels_pending_orders(self, engine_live, mock_deps):
         """live 모드에서 미체결 전량 취소."""
         mock_deps["order_mgr"].cancel_all_pending = AsyncMock(return_value={})
-        mock_deps["ds"]._lock = MagicMock()
-        mock_deps["ds"]._lock.__enter__ = MagicMock()
-        mock_deps["ds"]._lock.__exit__ = MagicMock()
-        mock_deps["ds"].conn = MagicMock()
-        mock_deps["ds"].conn.execute.return_value.fetchall.return_value = []
+        mock_deps["ds"].get_positions_by_status = MagicMock(return_value=[])
 
         await engine_live._post_market_cleanup()
 
@@ -759,11 +755,7 @@ class TestPostMarketCleanup:
         mock_deps["order_mgr"].cancel_all_pending = AsyncMock(return_value={})
 
         selling_pos = {"id": 1, "code": "005930", "status": "selling"}
-        mock_deps["ds"]._lock = MagicMock()
-        mock_deps["ds"]._lock.__enter__ = MagicMock()
-        mock_deps["ds"]._lock.__exit__ = MagicMock()
-        mock_deps["ds"].conn = MagicMock()
-        mock_deps["ds"].conn.execute.return_value.fetchall.return_value = [selling_pos]
+        mock_deps["ds"].get_positions_by_status = MagicMock(return_value=[selling_pos])
 
         await engine_live._post_market_cleanup()
 

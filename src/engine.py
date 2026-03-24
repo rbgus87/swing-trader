@@ -14,7 +14,6 @@ from loguru import logger
 
 from src.broker.kiwoom_api import KiwoomAPI
 from src.broker.order_manager import OrderManager
-from src.broker.realtime_data import RealtimeDataManager
 from src.broker.tr_codes import ORDER_BUY, ORDER_SELL, PRICE_LIMIT, PRICE_MARKET
 from src.datastore import DataStore
 from src.models import ExitReason, Position, Signal, Tick, TradeRecord
@@ -41,8 +40,8 @@ class TradingEngine:
         self._ds.connect()
         self._ds.create_tables()
 
-        # 키움 API (REST + WebSocket) — paper/live 모두 실전 서버 사용
-        # paper 모드는 주문만 시뮬레이션하고, 시세는 실서버에서 수신
+        # 키움 API (REST polling) — paper/live 모두 실전 서버 사용
+        # paper 모드는 주문만 시뮬레이션하고, 시세는 REST polling으로 수신
         base_url = config.get("broker.base_url", "https://api.kiwoom.com")
         ws_url = config.get(
             "broker.ws_url",
@@ -54,7 +53,12 @@ class TradingEngine:
         self._kiwoom = KiwoomAPI(base_url, ws_url, appkey, secretkey)
         account = config.get_env("KIWOOM_ACCOUNT", "")
         self._order_mgr = OrderManager(self._kiwoom, account)
-        self._realtime = RealtimeDataManager(self._kiwoom)
+
+        # REST polling 상태
+        self._polling_task: asyncio.Task | None = None
+        self._polling_interval: int = config.get(
+            "schedule.polling_interval", 30
+        )
 
         self._screener = Screener(config.data, datastore=self._ds)
         self._risk_mgr = RiskManager(self._ds, config.data)
@@ -94,8 +98,6 @@ class TradingEngine:
 
         # 상태
         self._candidates: list[str] = []  # 당일 매수 후보
-        self._reconnect_count = 0
-        self._max_reconnect = 5
         self._initial_capital = config.get(
             "trading.initial_capital",
             config.get("backtest.initial_capital", 1_000_000),
@@ -115,8 +117,7 @@ class TradingEngine:
         # 스케줄러
         self._scheduler = AsyncIOScheduler()
 
-        # 콜백 등록
-        self._kiwoom.on_tick_callback = self.on_price_update
+        # 체결 콜백 등록 (REST polling 모드에서도 체결 이벤트는 별도 처리)
         self._kiwoom.on_chejan_callback = self.on_chejan
 
     async def start(self):
@@ -127,8 +128,8 @@ class TradingEngine:
         # 스케줄러 등록
         screening_time = config.get("schedule.screening_time", "08:30")
         report_time = config.get("schedule.daily_report_time", "16:00")
-        ws_connect_time = config.get("schedule.ws_connect_time", "08:50")
-        ws_disconnect_time = config.get("schedule.ws_disconnect_time", "18:10")
+        polling_start_time = config.get("schedule.polling_start_time", "09:25")
+        polling_stop_time = config.get("schedule.polling_stop_time", "15:35")
 
         h, m = screening_time.split(":")
         self._scheduler.add_job(
@@ -140,14 +141,14 @@ class TradingEngine:
             self._daily_report, "cron", hour=int(h), minute=int(m)
         )
 
-        h, m = ws_connect_time.split(":")
+        h, m = polling_start_time.split(":")
         self._scheduler.add_job(
-            self._ws_connect, "cron", hour=int(h), minute=int(m)
+            self._start_polling, "cron", hour=int(h), minute=int(m)
         )
 
-        h, m = ws_disconnect_time.split(":")
+        h, m = polling_stop_time.split(":")
         self._scheduler.add_job(
-            self._ws_disconnect, "cron", hour=int(h), minute=int(m)
+            self._stop_polling, "cron", hour=int(h), minute=int(m)
         )
 
         # 미체결 주문 정리 (15:35 — 장 마감 5분 후)
@@ -166,7 +167,7 @@ class TradingEngine:
 
         self._scheduler.start()
 
-        # watchlist → 후보 등록 (WebSocket 연결 전에 준비)
+        # watchlist → 후보 등록 (polling 시작 전에 준비)
         watchlist = config.get("watchlist", [])
         if watchlist:
             self._candidates = list(watchlist)
@@ -174,10 +175,16 @@ class TradingEngine:
         else:
             logger.info("watchlist 미설정 — 스크리닝 기반 모드")
 
-        # 장 시간대이면 즉시 WebSocket 연결 (프로그램이 장중에 시작된 경우)
-        from src.utils.market_calendar import is_ws_active_hours
-        if is_ws_active_hours():
-            await self._ws_connect()
+        # 장 시간대이면 즉시 REST polling 시작 (프로그램이 장중에 시작된 경우)
+        from src.utils.market_calendar import is_trading_day, now_kst
+        kst_now = now_kst()
+        ps_h, ps_m = polling_start_time.split(":")
+        pe_h, pe_m = polling_stop_time.split(":")
+        from datetime import time as dt_time
+        polling_start_t = dt_time(int(ps_h), int(ps_m))
+        polling_stop_t = dt_time(int(pe_h), int(pe_m))
+        if is_trading_day(kst_now.date()) and polling_start_t <= kst_now.time() < polling_stop_t:
+            await self._start_polling()
 
         # 서비스 시작 알림
         self._telegram.send_startup(self.mode)
@@ -189,6 +196,7 @@ class TradingEngine:
         except Exception as e:
             logger.warning(f"종료 알림 전송 실패 (무시): {e}")
         self._running = False
+        await self._stop_polling()
         self._scheduler.shutdown(wait=False)
         await self._kiwoom.disconnect()
         self._ds.close()
@@ -240,27 +248,12 @@ class TradingEngine:
                 )
             else:
                 # 모드 B: pre-screening + screening 2단계 선별
-                regime = self._market_regime.regime_type if is_bullish else None
+                # 글로벌 국면은 약세 게이트만 담당, 종목별 국면은 screener 내부에서 판단
+                regime = None  # pre-screening은 두 조건식 합집합 사용
                 self._candidates = await asyncio.to_thread(
                     self._screener.run_daily_screening, today, regime
                 )
-                # 보유 포지션도 WebSocket 구독 보장
-                open_positions = self._ds.get_open_positions()
-                subscribe_codes = set(self._candidates)
-                if open_positions:
-                    subscribe_codes.update(p["code"] for p in open_positions)
-                if subscribe_codes:
-                    # WebSocket이 닫혀있으면 재연결 후 구독
-                    if not (self._kiwoom._ws and self._kiwoom._ws.connected):
-                        try:
-                            logger.info("WebSocket 재연결 (스크리닝 구독용)")
-                            await self._kiwoom.connect(use_websocket=True)
-                        except Exception as e:
-                            logger.warning(f"WebSocket 재연결 실패: {e}")
-                    try:
-                        await self._realtime.subscribe_list(list(subscribe_codes))
-                    except Exception as ws_err:
-                        logger.warning(f"WebSocket 구독 실패 (스크리닝 결과는 유지): {ws_err}")
+                # polling 루프가 후보+보유 종목 가격을 자동으로 조회함
                 logger.info(
                     f"스크리닝 완료: {len(self._candidates)}종목 후보 선정"
                     f" (국면: {regime or 'bearish'})"
@@ -743,8 +736,7 @@ class TradingEngine:
         self._ds.insert_position(pos)
         self._invalidate_positions_cache()
 
-        # 매수 종목 실시간 구독 보장 (watchlist에 없는 종목일 경우)
-        await self._realtime.subscribe(tick.code)
+        # polling 루프가 보유 종목을 자동으로 포함하므로 별도 구독 불필요
 
         trade = TradeRecord(
             code=tick.code,
@@ -1061,80 +1053,96 @@ class TradingEngine:
 
         logger.info(f"60분봉 갱신 완료: {success}/{len(codes)}종목")
 
-    async def _ws_connect(self):
-        """WebSocket 연결 + 구독 (08:50 스케줄)."""
+    async def _start_polling(self):
+        """REST polling 시작 (09:25 스케줄)."""
         from src.utils.market_calendar import is_trading_day, now_kst
         if not is_trading_day(now_kst().date()):
-            logger.info("비거래일 — WebSocket 연결 생략")
+            logger.info("비거래일 — REST polling 생략")
             return
 
-        try:
-            await self._kiwoom.connect(use_websocket=True)
-            # 새 연결 시 close 카운터 리셋
-            if self._kiwoom._ws:
-                self._kiwoom._ws._close_1000_count = 0
-        except Exception as e:
-            logger.error(f"WebSocket 연결 실패: {e}")
-            self._telegram.send_system_error(str(e), "ws_connect")
+        if self._polling_task and not self._polling_task.done():
+            logger.debug("polling 이미 실행 중")
             return
 
-        # 구독 대상: watchlist + 보유 포지션
-        subscribe_codes: set[str] = set()
-        if self._candidates:
-            subscribe_codes.update(self._candidates)
-        open_positions = self._ds.get_open_positions()
-        if open_positions:
-            subscribe_codes.update(p["code"] for p in open_positions)
-        if subscribe_codes:
-            await self._realtime.subscribe_list(list(subscribe_codes))
-            logger.info(f"WebSocket 연결 + 구독 완료: {len(subscribe_codes)}종목")
-
-            # 구독 후 연결 안정성 확인 (서버 close 타이밍 이슈 대응)
-            await asyncio.sleep(3)
-            if self._kiwoom._ws and not self._kiwoom._ws.connected:
-                logger.warning("WebSocket 구독 직후 연결 끊김 — 즉시 재연결")
-                try:
-                    await self._kiwoom.connect(use_websocket=True)
-                    await self._realtime.subscribe_list(list(subscribe_codes))
-                    logger.info("WebSocket 재연결 + 재구독 성공")
-                except Exception as e:
-                    logger.error(f"WebSocket 재연결 실패: {e}")
-                    self._telegram.send_system_error(str(e), "ws_reconnect")
-
-    async def _ws_disconnect(self):
-        """WebSocket 명시적 종료 (18:10 스케줄)."""
-        if self._kiwoom._ws and self._kiwoom._ws.connected:
-            await self._kiwoom.disconnect()
-            logger.info("WebSocket 장마감 종료 (18:10)")
-        else:
-            logger.debug("WebSocket 이미 종료 상태")
-
-    async def _ensure_connection(self):
-        """키움 API 연결 확인/재연결 — _ws_connect에 통합, 레거시 호환용."""
-        if self._kiwoom._connected:
-            logger.info("키움 API 연결 상태: 정상")
-            return
-
-        self._reconnect_count += 1
-        if self._reconnect_count <= self._max_reconnect:
-            logger.warning(
-                f"키움 재연결 시도 ({self._reconnect_count}/{self._max_reconnect})"
-            )
+        # REST 인증 확인
+        if not self._kiwoom._connected:
             try:
-                await self._kiwoom.connect()
-                logger.info("키움 API 재연결 성공")
+                await self._kiwoom.connect(use_websocket=False)
             except Exception as e:
-                logger.error(f"키움 API 재연결 실패: {e}")
-                self._telegram.send_system_error(
-                    "ConnectionLost",
-                    "kiwoom_api",
-                    f"재연결 시도 ({self._reconnect_count}/{self._max_reconnect})",
-                )
+                logger.error(f"REST 인증 실패: {e}")
+                self._telegram.send_system_error(str(e), "polling_start")
+                return
+
+        self._polling_task = asyncio.create_task(self._polling_loop())
+        logger.info(
+            f"REST polling 시작 (간격: {self._polling_interval}초)"
+        )
+
+    async def _stop_polling(self):
+        """REST polling 중지 (15:35 스케줄)."""
+        if self._polling_task and not self._polling_task.done():
+            self._polling_task.cancel()
+            try:
+                await self._polling_task
+            except asyncio.CancelledError:
+                pass
+            self._polling_task = None
+            logger.info("REST polling 중지")
         else:
-            logger.error("최대 재연결 횟수 초과")
-            self._telegram.send_system_error(
-                "MaxReconnectExceeded", "kiwoom_api"
-            )
+            logger.debug("polling 이미 중지 상태")
+
+    async def _polling_loop(self):
+        """REST polling 메인 루프 — 30초 간격으로 후보+보유 종목 현재가 조회."""
+        logger.info("polling 루프 진입")
+        try:
+            while self._running:
+                cycle_start = asyncio.get_event_loop().time()
+
+                # polling 대상: 후보 종목 + 보유 포지션
+                poll_codes: set[str] = set()
+                if self._candidates:
+                    poll_codes.update(self._candidates)
+                open_positions = self._get_cached_positions()
+                if open_positions:
+                    poll_codes.update(p["code"] for p in open_positions)
+
+                if not poll_codes:
+                    logger.debug("polling 대상 없음 — 다음 주기 대기")
+                    await asyncio.sleep(self._polling_interval)
+                    continue
+
+                # 종목별 현재가 REST 조회 (rate limit: 0.3초 간격)
+                for code in poll_codes:
+                    if not self._running:
+                        break
+                    try:
+                        data = await self._kiwoom.get_current_price(code)
+                        price = int(data.get("cur_pr", 0) or data.get("stk_pr", 0) or 0)
+                        volume = int(data.get("tr_vol", 0) or data.get("acc_vol", 0) or 0)
+                        if price > 0:
+                            tick = Tick(
+                                code=code,
+                                price=price,
+                                volume=volume,
+                                timestamp=datetime.now(),
+                            )
+                            await self.on_price_update(tick)
+                    except Exception as e:
+                        logger.warning(f"현재가 조회 실패 ({code}): {e}")
+                    # rate limit 준수: 5 TR/sec → 0.3초 간격
+                    await asyncio.sleep(0.3)
+
+                # 주기 맞춤 대기 (polling_interval - 소요시간)
+                elapsed = asyncio.get_event_loop().time() - cycle_start
+                wait = max(0, self._polling_interval - elapsed)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+        except asyncio.CancelledError:
+            logger.info("polling 루프 취소됨")
+            raise
+        except Exception as e:
+            logger.error(f"polling 루프 오류: {e}")
+            self._telegram.send_system_error(str(e), "polling_loop")
 
     async def on_chejan(self, data: dict):
         """체결 이벤트 수신 — selling 포지션의 최종 종료 처리."""

@@ -22,7 +22,7 @@ tech_stack:
 
   backend:
     framework: "none"            # 프레임워크 없이 순수 Python
-    event_loop: "PyQt5"          # 키움 OCX 이벤트 처리용
+    event_loop: "asyncio"         # async 이벤트 루프
     scheduler: "APScheduler"     # 장 시작/마감 작업 스케줄링
     database: "SQLite"           # 매매일지, 포지션, OHLCV 캐시
     config:
@@ -31,7 +31,7 @@ tech_stack:
     logging: "loguru"            # 파일 + 콘솔 동시 출력
 
   data:
-    broker_api: "키움 OpenAPI+ OCX"   # Windows 전용
+    broker_api: "키움 REST API"        # httpx + websockets
     market_data: "pykrx"              # 전종목 일봉/재무 데이터
     indicators: "pandas-ta"           # 기술적 지표 계산
     dataframe: "pandas"
@@ -50,10 +50,10 @@ tech_stack:
 
 ```yaml
 platform_constraints:
-  os: "Windows"                  # 키움 OCX 필수 → Windows 전용
-  architecture: "x86_64"         # 32bit OCX 호환 필요
-  threading: "single"            # OCX → PyQt5 메인 스레드만 허용
-  python_arch: "32bit"           # 키움 OCX 32비트 호환 (또는 64bit with 64bit OCX)
+  os: "Windows"                  # 키움 REST API (Windows 권장)
+  architecture: "x86_64"
+  threading: "asyncio"           # async 단일 스레드
+  python_arch: "64bit"           # Python 3.11+ 64bit
 ```
 
 ---

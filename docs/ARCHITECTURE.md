@@ -5,7 +5,7 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    main.py (진입점)                       │
-│              PyQt5 이벤트루프 기반 단일 프로세스            │
+│              asyncio 이벤트루프 기반 단일 프로세스           │
 └───────────────┬─────────────────────────┬───────────────┘
                 │                         │
        ┌────────▼────────┐      ┌─────────▼────────┐
@@ -57,7 +57,7 @@ class TradingEngine:
 
 ### Broker Layer (`src/broker/`)
 
-**kiwoom_api.py** — OCX 이벤트 래퍼
+**kiwoom_api.py** — REST/WS 래퍼
 ```python
 # 키움 API 이벤트 → Python 콜백 변환
 OnReceiveTrData   → on_tr_data(tr_code, data)

@@ -116,11 +116,13 @@ def calculate_indicators(
         result["high"], result["low"], result["close"], length=atr_period
     )
 
-    # ADX
+    # ADX + Directional Indicators (+DI, -DI)
     adx_df = ta.adx(
         result["high"], result["low"], result["close"], length=adx_period
     )
     result["adx"] = adx_df[f"ADX_{adx_period}"]
+    result["plus_di"] = adx_df[f"DMP_{adx_period}"]
+    result["minus_di"] = adx_df[f"DMN_{adx_period}"]
 
     # 거래량 이동평균
     result["volume_sma20"] = ta.sma(result["volume"], length=volume_sma_period)

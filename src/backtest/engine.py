@@ -854,16 +854,16 @@ class BacktestEngine:
         equity_dates = []
         equity_vals = []
 
-        adx_threshold = p.get("adx_threshold", 25)
-
         # 연속 손실 차단 (쿨다운)
         consecutive_losses = 0
         cooldown_max_losses = p.get("cooldown_max_losses", 3)  # N연패 시 차단
         cooldown_days = p.get("cooldown_days", 5)  # M일간 진입 중지
         cooldown_until = None  # 쿨다운 종료일
 
+        bearish_max_positions = max(1, max_positions // 3)  # 글로벌 약세장 포지션 제한
+
         for date in all_dates:
-            # 시장 필터
+            # 글로벌 시장 필터 (KOSPI < SMA200 → 약세 게이트)
             market_ok = True
             if use_market_filter and kospi_data is not None and kospi_sma200 is not None:
                 if date in kospi_data.index:
@@ -871,32 +871,8 @@ class BacktestEngine:
                     if not pd.isna(kospi_sma200.iloc[idx]):
                         market_ok = kospi_data["close"].iloc[idx] > kospi_sma200.iloc[idx]
 
-            # adaptive 국면 판단
-            current_regime = "sideways"
-            if is_adaptive and kospi_data is not None and kospi_adx_series is not None:
-                if date in kospi_data.index:
-                    idx = kospi_data.index.get_loc(date)
-                    k_adx = kospi_adx_series.iloc[idx] if not pd.isna(kospi_adx_series.iloc[idx]) else 25
-                    if not market_ok:
-                        current_regime = "bearish"
-                    elif k_adx >= adx_threshold:
-                        current_regime = "trending"
-                    else:
-                        current_regime = "sideways"
-
-            active_strategies = [strategy_name]  # 멀티전략 리스트
-            bearish_max_positions = max(1, max_positions // 3)  # 약세장 포지션 제한
-            if is_adaptive:
-                if current_regime == "bearish":
-                    # 약세장: bb_bounce 허용 (포지션 축소)
-                    active_strategies = ["bb_bounce"]
-                else:
-                    mapped = regime_map.get(current_regime, "bb_bounce")
-                    if isinstance(mapped, list):
-                        active_strategies = mapped
-                    else:
-                        active_strategies = [mapped]
-            active_strategy = active_strategies[0]  # 하위 호환 (청산용)
+            # active_strategy는 청산 시 신호 키 조회용 (기본값)
+            active_strategy = strategy_name
 
             # 1. 기존 포지션 청산 체크
             codes_to_close = []
@@ -1010,26 +986,23 @@ class BacktestEngine:
                 consecutive_losses = 0
 
             # 2. 새 진입 (시장 필터 + 포지션 제한 + 쿨다운 + 주봉 SMA20)
-            # adaptive 모드: bearish에서도 bb_bounce 허용 (포지션 축소)
-            # 비-adaptive: 기존 로직 유지 (market_ok 필수)
-            allow_entry = market_ok and current_regime != "bearish"
-            if is_adaptive and current_regime == "bearish":
-                allow_entry = True  # bb_bounce로 진입 허용
+            # 글로벌 약세 게이트: KOSPI < SMA200이면 진입 차단
+            allow_entry = market_ok
 
             # 쿨다운 중이면 진입 차단
             if cooldown_until is not None:
                 allow_entry = False
 
-            current_max_pos = bearish_max_positions if (is_adaptive and current_regime == "bearish") else max_positions
+            current_max_pos = max_positions
 
             if allow_entry:
-                # === 동적 스크리닝: 매일 유동성+기술적 필터 적용 후 점수 순 진입 ===
+                # === 동적 스크리닝: 매일 유동성+기술적 필터 + 종목별 국면 판단 ===
                 screening_top_n = p.get("screening_top_n", 0)  # 0=비활성, >0=상위 N종목만
                 min_daily_amount = p.get("min_daily_amount", 1_000_000_000)
                 min_price = p.get("min_price", 1000)
                 max_price = p.get("max_price", 500000)
 
-                # 1단계: 매수 신호 + 유동성 + 가격 필터 통과 종목 수집
+                # 1단계: 매수 신호 + 유동성 + 가격 필터 + 종목별 국면 판단
                 daily_candidates = []
                 for code, df_ind in indicator_cache.items():
                     if code in positions:
@@ -1053,14 +1026,32 @@ class BacktestEngine:
                         if recent_amount < min_daily_amount:
                             continue
 
-                    # 전략 매수 신호 체크 — 멀티전략 OR
+                    # 종목별 국면 판단 (투표 기반)
+                    stock_regime = self._judge_stock_regime(df_ind, idx)
+
+                    # 하락 국면 종목 → 진입 차단
+                    if stock_regime == "bearish":
+                        continue
+
+                    # adaptive 모드: 종목 국면에 따른 전략 선택
+                    if is_adaptive:
+                        mapped = regime_map.get(stock_regime, "bb_bounce")
+                        if isinstance(mapped, list):
+                            stock_strategies = mapped
+                        else:
+                            stock_strategies = [mapped]
+                    else:
+                        stock_strategies = [strategy_name]
+
+                    # 전략 매수 신호 체크 — 종목별 국면에 맞는 전략 OR
                     has_entry = False
-                    for ast in active_strategies:
+                    for ast in stock_strategies:
                         sig_key = (code, ast)
                         if sig_key in signals_cache:
                             entries, _ = signals_cache[sig_key]
                             if date in entries.index and entries.loc[date]:
                                 has_entry = True
+                                active_strategy = ast  # 진입 전략 기록
                                 break
                     if not has_entry:
                         continue
@@ -1177,6 +1168,65 @@ class BacktestEngine:
         except Exception:
             pass
         return pd.Series(25.0, index=df.index)
+
+    @staticmethod
+    def _judge_stock_regime(df_ind: pd.DataFrame, idx: int) -> str:
+        """종목별 국면 판단 (투표 기반) — 백테스트용.
+
+        3개 지표 중 2개 이상 충족 시 '추세(trending)', 아니면 '횡보(sideways)'.
+        ADX > 25 AND -DI > +DI 이면 '하락(bearish)' (진입 차단).
+
+        Args:
+            df_ind: 지표 계산 완료된 DataFrame.
+            idx: 현재 날짜의 인덱스 위치.
+
+        Returns:
+            "trending" / "sideways" / "bearish"
+        """
+        try:
+            row = df_ind.iloc[idx]
+
+            adx = row.get("adx", 0)
+            plus_di = row.get("plus_di", 0)
+            minus_di = row.get("minus_di", 0)
+
+            if pd.isna(adx):
+                adx = 0
+            if pd.isna(plus_di):
+                plus_di = 0
+            if pd.isna(minus_di):
+                minus_di = 0
+
+            # 하락 추세 필터
+            if adx > 25 and minus_di > plus_di:
+                return "bearish"
+
+            # Vote 1: ADX + DI 방향
+            is_adx_trend = (adx > 25) and (plus_di > minus_di)
+
+            # Vote 2: 이동평균 정배열
+            sma20 = row.get("sma20", 0)
+            sma60 = row.get("sma60", 0)
+            close = row.get("close", 0)
+            if pd.isna(sma20):
+                sma20 = 0
+            if pd.isna(sma60):
+                sma60 = 0
+            is_ma_trend = (sma20 > sma60) and (close > sma20)
+
+            # Vote 3: 20일 가격 모멘텀
+            is_momentum_up = False
+            if idx >= 20:
+                close_now = df_ind["close"].iloc[idx]
+                close_20d_ago = df_ind["close"].iloc[idx - 20]
+                if close_20d_ago > 0:
+                    is_momentum_up = (close_now - close_20d_ago) / close_20d_ago > 0
+
+            votes = sum([is_adx_trend, is_ma_trend, is_momentum_up])
+            return "trending" if votes >= 2 else "sideways"
+
+        except Exception:
+            return "trending"  # 실패 시 추세로 간주 (진입 허용)
 
     def _empty_result(self, params: dict) -> BacktestResult:
         """빈 결과 반환 헬퍼."""
