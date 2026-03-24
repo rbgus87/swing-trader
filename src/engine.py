@@ -254,9 +254,10 @@ class TradingEngine:
                     self._screener.run_daily_screening, today, regime
                 )
                 # polling 루프가 후보+보유 종목 가격을 자동으로 조회함
+                regime_label = self._market_regime.regime_type
                 logger.info(
                     f"스크리닝 완료: {len(self._candidates)}종목 후보 선정"
-                    f" (국면: {regime or 'bearish'})"
+                    f" (글로벌: {regime_label}, 종목별 국면은 개별 적용)"
                 )
 
             self._telegram.send(
