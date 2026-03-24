@@ -31,7 +31,7 @@ class TestHaltFlow:
     def _setup_engine(self, engine):
         """엔진 공통 설정: 시장 국면 bullish 강제 + 진입 강제."""
         engine._market_regime._is_bullish = True
-        engine._market_regime._regime_type = "allow"
+        engine._market_regime._regime_type = "trending"
         engine._market_regime._last_check_date = datetime.now().strftime("%Y%m%d")
 
     async def _force_buy(self, engine, tick):

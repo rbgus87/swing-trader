@@ -249,16 +249,16 @@ class TradingEngine:
                 )
             else:
                 # 모드 B: pre-screening + screening 2단계 선별
-                # 글로벌 국면은 약세 게이트만 담당, 종목별 국면은 screener 내부에서 판단
-                regime = None  # pre-screening은 두 조건식 합집합 사용
+                regime = self._market_regime.regime_type  # trending/sideways/bearish
+                if regime == "bearish":
+                    regime = None  # bearish면 스크리닝 스킵 가능하지만 방어적으로 진행
                 self._candidates = await asyncio.to_thread(
                     self._screener.run_daily_screening, today, regime
                 )
                 # polling 루프가 후보+보유 종목 가격을 자동으로 조회함
-                regime_label = self._market_regime.regime_type
                 logger.info(
                     f"스크리닝 완료: {len(self._candidates)}종목 후보 선정"
-                    f" (글로벌: {regime_label}, 종목별 국면은 개별 적용)"
+                    f" (국면: {self._market_regime.regime_type})"
                 )
 
             self._telegram.send(

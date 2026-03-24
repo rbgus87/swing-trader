@@ -388,34 +388,32 @@ class Screener:
                     f"[2/3] Pre-Screen 완료 ({elapsed:.0f}초) — {len(codes)}종목 통과"
                 )
 
-        # adaptive 모드: 종목별 국면 판단 → 국면별 전략 적용
-        # (글로벌 regime 파라미터는 pre-screening에만 사용, 전략 전환은 종목별)
-        regime_map = self.strategy_config.get("regime_strategy", {})
-
-        # 전략 풀 준비 (adaptive 모드에서 국면별 전략을 빠르게 조회)
-        if self._is_adaptive:
-            _strategy_pool: dict[str, list] = {}
-            for regime_key in ("trending", "sideways"):
-                names = regime_map.get(regime_key)
-                if names:
-                    if isinstance(names, str):
-                        names = [names]
-                    _strategy_pool[regime_key] = [
-                        get_strategy(n, self.strategy_config) for n in names
+        # adaptive 모드: 국면에 맞는 전략 리스트로 전환
+        if self._is_adaptive and regime:
+            regime_map = self.strategy_config.get("regime_strategy", {})
+            target_names = regime_map.get(regime)
+            if target_names:
+                if isinstance(target_names, str):
+                    target_names = [target_names]
+                current_names = sorted(s.name for s in self._strategies)
+                if current_names != sorted(target_names):
+                    self._strategies = [
+                        get_strategy(n, self.strategy_config)
+                        for n in target_names
                     ]
-                else:
-                    _strategy_pool[regime_key] = list(self._strategies)
+                    self._strategy = self._strategies[0]
+                    names_str = ", ".join(target_names)
+                    logger.info(f"  전략 전환: [{names_str}] (국면: {regime})")
 
-        # 2차: 종목별 국면 판단 + 전략 기반 매수 신호 + 점수
+        # 2차: 전략 기반 매수 신호 + 점수 (멀티전략 OR 로직)
         step_start = _time.monotonic()
-        logger.info(f"[3/3] 종목별 국면 판단 + 전략 스크리닝: {len(codes)}종목")
+        strategy_names = ", ".join(s.name for s in self._strategies)
+        logger.info(f"[3/3] 전략 스크리닝: {len(codes)}종목 ([{strategy_names}])")
         candidates: list[tuple[str, float]] = []
         drop_data = 0      # OHLCV 부족
         drop_liquidity = 0  # 유동성 탈락
         drop_indicator = 0  # 지표 계산 실패
         drop_signal = 0     # 전략 신호 없음
-        drop_bearish = 0    # 종목 하락 국면
-        regime_stats: dict[str, int] = {"trending": 0, "sideways": 0, "bearish": 0}
 
         for code in codes:
             try:
@@ -458,27 +456,10 @@ class Screener:
                     drop_indicator += 1
                     continue
 
-                # 종목별 국면 판단 (투표 기반)
-                stock_regime = self._judge_stock_regime(df_with_ind)
-                regime_stats[stock_regime] = regime_stats.get(stock_regime, 0) + 1
-
-                # 하락 국면 종목 → 진입 차단
-                if stock_regime == "bearish":
-                    drop_bearish += 1
-                    continue
-
-                # adaptive 모드: 종목 국면에 맞는 전략 선택
-                if self._is_adaptive:
-                    stock_strategies = _strategy_pool.get(
-                        stock_regime, _strategy_pool.get("trending", self._strategies)
-                    )
-                else:
-                    stock_strategies = self._strategies
-
                 # 매수 신호 체크 — 멀티전략 OR (하나라도 신호 시 통과)
                 has_signal = any(
                     s.check_screening_entry(df_with_ind)
-                    for s in stock_strategies
+                    for s in self._strategies
                 )
 
                 if has_signal:
@@ -494,19 +475,13 @@ class Screener:
         elapsed = _time.monotonic() - step_start
 
         # 탈락 통계 로깅
-        total_dropped = drop_data + drop_liquidity + drop_indicator + drop_signal + drop_bearish
+        total_dropped = drop_data + drop_liquidity + drop_indicator + drop_signal
         if total_dropped > 0:
             logger.info(
                 f"[3/3] 탈락 상세: 데이터부족 {drop_data}, "
                 f"유동성 {drop_liquidity}, 지표실패 {drop_indicator}, "
-                f"하락국면 {drop_bearish}, 신호없음 {drop_signal}"
+                f"신호없음 {drop_signal}"
             )
-        logger.info(
-            f"[3/3] 종목 국면 분포: "
-            f"추세 {regime_stats.get('trending', 0)}, "
-            f"횡보 {regime_stats.get('sideways', 0)}, "
-            f"하락 {regime_stats.get('bearish', 0)}"
-        )
 
         # 점수 내림차순 정렬, 상위 N종목
         candidates.sort(key=lambda x: x[1], reverse=True)
@@ -777,70 +752,6 @@ class Screener:
                 logger.warning(f"OHLCV 캐시 저장 실패 ({code}): {e}")
 
         return df
-
-    @staticmethod
-    def _judge_stock_regime(df: pd.DataFrame) -> str:
-        """종목별 국면 판단 (투표 기반).
-
-        3개 지표 중 2개 이상 충족 시 '추세(trending)', 아니면 '횡보(sideways)'.
-        ADX > 25 AND -DI > +DI 이면 '하락(bearish)' (진입 차단).
-
-        Args:
-            df: 지표 계산 완료된 DataFrame (adx, plus_di, minus_di, sma20, sma60, close 필요).
-
-        Returns:
-            "trending" / "sideways" / "bearish"
-        """
-        try:
-            latest = df.iloc[-1]
-
-            adx = latest.get("adx", 0)
-            plus_di = latest.get("plus_di", 0)
-            minus_di = latest.get("minus_di", 0)
-
-            # NaN 방어
-            if pd.isna(adx):
-                adx = 0
-            if pd.isna(plus_di):
-                plus_di = 0
-            if pd.isna(minus_di):
-                minus_di = 0
-
-            # 하락 추세 필터: 강한 하락 추세 (ADX > 25 AND -DI > +DI)
-            if adx > 25 and minus_di > plus_di:
-                return "bearish"
-
-            # Vote 1: ADX + DI 방향 (강한 상승 추세)
-            is_adx_trend = (adx > 25) and (plus_di > minus_di)
-
-            # Vote 2: 이동평균 정배열 (SMA20 > SMA60, 종가 > SMA20)
-            sma20 = latest.get("sma20", 0)
-            sma60 = latest.get("sma60", 0)
-            close = latest.get("close", 0)
-            if pd.isna(sma20):
-                sma20 = 0
-            if pd.isna(sma60):
-                sma60 = 0
-            is_ma_trend = (sma20 > sma60) and (close > sma20)
-
-            # Vote 3: 20일 가격 모멘텀 (양수)
-            if len(df) >= 20:
-                close_now = df["close"].iloc[-1]
-                close_20d_ago = df["close"].iloc[-20]
-                if close_20d_ago > 0:
-                    ret_20d = (close_now - close_20d_ago) / close_20d_ago
-                    is_momentum_up = ret_20d > 0
-                else:
-                    is_momentum_up = False
-            else:
-                is_momentum_up = False
-
-            votes = sum([is_adx_trend, is_ma_trend, is_momentum_up])
-            return "trending" if votes >= 2 else "sideways"
-
-        except Exception:
-            # 판단 실패 시 추세로 간주 (보수적: 진입 허용)
-            return "trending"
 
     def _apply_liquidity_filter(self, code: str, df: pd.DataFrame) -> bool:
         """유동성 필터 적용.
