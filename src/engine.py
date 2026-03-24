@@ -1070,6 +1070,9 @@ class TradingEngine:
 
         try:
             await self._kiwoom.connect(use_websocket=True)
+            # 새 연결 시 close 카운터 리셋
+            if self._kiwoom._ws:
+                self._kiwoom._ws._close_1000_count = 0
         except Exception as e:
             logger.error(f"WebSocket 연결 실패: {e}")
             self._telegram.send_system_error(str(e), "ws_connect")

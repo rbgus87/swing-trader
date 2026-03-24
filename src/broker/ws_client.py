@@ -22,6 +22,7 @@ class KiwoomWebSocketClient:
         self._running = False
         self._listen_task: asyncio.Task | None = None
         self._subscribed: dict[str, list[str]] = {}  # {real_type: [codes]}
+        self._close_1000_count = 0  # close 1000 연속 발생 횟수 (무한루프 방지)
         self.on_tick_callback = None       # async Tick 수신 콜백
         self.on_order_callback = None      # async 체결 수신 콜백
 
@@ -106,6 +107,7 @@ class KiwoomWebSocketClient:
                         self._ws.recv(), timeout=60.0
                     )
                     data = json.loads(message)
+                    self._close_1000_count = 0  # 정상 수신 시 close 카운터 리셋
                     await self._dispatch(data)
                 except asyncio.TimeoutError:
                     if not is_ws_active_hours():
@@ -116,18 +118,29 @@ class KiwoomWebSocketClient:
                 except Exception as e:
                     err_str = str(e)
                     if "1000" in err_str:
-                        # close code 1000: 장 시간대이면 항상 재연결 시도
-                        # (구독 직후 서버가 close를 보내는 타이밍 이슈 대응)
-                        if is_ws_active_hours():
+                        self._close_1000_count += 1
+                        sub_count = len(self._subscribed.get("0B", []))
+                        if is_ws_active_hours() and self._close_1000_count <= 3:
+                            # 장중 close 1000: 최대 3회까지 재연결 (무한루프 방지)
+                            wait = 10 * self._close_1000_count  # 10, 20, 30초 대기
                             logger.warning(
-                                f"WebSocket close 1000 (장중) — 재연결 시도 "
-                                f"(구독={len(self._subscribed.get('0B', []))}종목)"
+                                f"WebSocket close 1000 (장중, {self._close_1000_count}/3) — "
+                                f"{wait}초 후 재연결 (구독={sub_count}종목)"
                             )
+                            await asyncio.sleep(wait)
                             await self._reconnect()
+                        elif self._close_1000_count > 3:
+                            logger.error(
+                                f"WebSocket close 1000 연속 {self._close_1000_count}회 — "
+                                f"재연결 중단 (서버 구독 등록 실패 의심, 구독={sub_count}종목)"
+                            )
+                            self._running = False
                         else:
                             logger.info("WebSocket 서버 정상 종료 (장 시간 외)")
                             self._running = False
                         break
+                    # close 1000 외 에러는 카운터 리셋
+                    self._close_1000_count = 0
                     if self._running:
                         logger.warning(f"WebSocket 수신 에러: {e}")
                         await self._reconnect()
