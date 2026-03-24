@@ -291,6 +291,10 @@ class TradingEngine:
         if not is_market_open():
             return
 
+        # 첫 틱 수신 로깅 (종목별 1회)
+        if tick.code not in self._latest_prices:
+            logger.debug(f"첫 틱 수신: {tick.code} = {tick.price:,}원")
+
         # 최신 가격 캐시 갱신
         self._latest_prices[tick.code] = tick.price
 
@@ -1081,6 +1085,18 @@ class TradingEngine:
         if subscribe_codes:
             await self._realtime.subscribe_list(list(subscribe_codes))
             logger.info(f"WebSocket 연결 + 구독 완료: {len(subscribe_codes)}종목")
+
+            # 구독 후 연결 안정성 확인 (서버 close 타이밍 이슈 대응)
+            await asyncio.sleep(3)
+            if self._kiwoom._ws and not self._kiwoom._ws.connected:
+                logger.warning("WebSocket 구독 직후 연결 끊김 — 즉시 재연결")
+                try:
+                    await self._kiwoom.connect(use_websocket=True)
+                    await self._realtime.subscribe_list(list(subscribe_codes))
+                    logger.info("WebSocket 재연결 + 재구독 성공")
+                except Exception as e:
+                    logger.error(f"WebSocket 재연결 실패: {e}")
+                    self._telegram.send_system_error(str(e), "ws_reconnect")
 
     async def _ws_disconnect(self):
         """WebSocket 명시적 종료 (18:10 스케줄)."""

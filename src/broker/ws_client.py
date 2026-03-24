@@ -116,15 +116,16 @@ class KiwoomWebSocketClient:
                 except Exception as e:
                     err_str = str(e)
                     if "1000" in err_str:
-                        # close code 1000: 구독 종목이 있고 장중이면 재연결
-                        if self._subscribed and is_ws_active_hours():
-                            logger.warning("WebSocket close 1000 (장중) — 재연결 시도")
+                        # close code 1000: 장 시간대이면 항상 재연결 시도
+                        # (구독 직후 서버가 close를 보내는 타이밍 이슈 대응)
+                        if is_ws_active_hours():
+                            logger.warning(
+                                f"WebSocket close 1000 (장중) — 재연결 시도 "
+                                f"(구독={len(self._subscribed.get('0B', []))}종목)"
+                            )
                             await self._reconnect()
-                        elif not self._subscribed:
-                            logger.info("WebSocket close 1000 — 구독 종목 없음, 대기")
-                            self._running = False
                         else:
-                            logger.info("WebSocket 서버 정상 종료 (장 마감)")
+                            logger.info("WebSocket 서버 정상 종료 (장 시간 외)")
                             self._running = False
                         break
                     if self._running:
