@@ -1120,8 +1120,11 @@ class TradingEngine:
                         break
                     try:
                         data = await self._kiwoom.get_current_price(code)
-                        price = int(data.get("cur_pr", 0) or data.get("stk_pr", 0) or 0)
-                        volume = int(data.get("tr_vol", 0) or data.get("acc_vol", 0) or 0)
+                        # 키움 REST 응답: cur_prc (부호 포함 문자열, 예: "+4685", "-61200")
+                        raw_price = data.get("cur_prc") or data.get("cur_pr") or data.get("stk_pr") or "0"
+                        price = abs(int(str(raw_price).replace(",", "").replace("+", "")))
+                        raw_vol = data.get("trde_qty") or data.get("tr_vol") or data.get("acc_vol") or "0"
+                        volume = abs(int(str(raw_vol).replace(",", "")))
                         if price > 0:
                             tick = Tick(
                                 code=code,
