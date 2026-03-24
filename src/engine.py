@@ -417,11 +417,13 @@ class TradingEngine:
             start = (datetime.now() - timedelta(days=130)).strftime("%Y-%m-%d")
             ohlcv = self._ds.get_cached_ohlcv(tick.code, start, end)
             if not ohlcv or len(ohlcv) < 30:
+                logger.debug(f"진입체크 탈락 ({tick.code}): OHLCV 캐시 부족 ({len(ohlcv) if ohlcv else 0}행)")
                 return
 
             df_daily = pd.DataFrame(ohlcv)
             df_daily = calculate_indicators(df_daily)
             if df_daily.empty:
+                logger.debug(f"진입체크 탈락 ({tick.code}): 지표 계산 실패")
                 return
 
             # 기관/외국인 수급 데이터 (graceful: 실패 시 0)
@@ -437,6 +439,7 @@ class TradingEngine:
             df_60m = self._minute_ohlcv_cache.get(tick.code)
 
             # 멀티전략 순회: 카테고리별 게이트 분기
+            reject_reasons = []
             for strategy in self._strategies:
                 is_mr = strategy.category == "mean_reversion"
 
@@ -444,23 +447,33 @@ class TradingEngine:
                 if not is_mr:
                     min_score = config.get("strategy.min_signal_score", 1.5)
                     if score < min_score:
+                        reject_reasons.append(f"{strategy.name}: score {score:.1f} < {min_score}")
                         continue
                 else:
                     # 평균회귀: 완화된 최소 점수 (0.5)
                     min_score_mr = config.get("strategy.min_signal_score_mr", 0.5)
                     if score < min_score_mr:
+                        reject_reasons.append(f"{strategy.name}: score {score:.1f} < {min_score_mr}")
                         continue
 
                 # 주봉 SMA20 필터: trend 전략만 적용
                 if not is_mr and not self._check_weekly_trend(df_daily):
+                    reject_reasons.append(f"{strategy.name}: 주봉 추세 미확인")
                     continue
 
                 # 전략별 실시간 진입 판단
                 if strategy.check_realtime_entry(df_daily, df_60m):
                     matched_strategy = strategy
                     break
+                else:
+                    reject_reasons.append(f"{strategy.name}: realtime_entry 미충족")
 
             if not matched_strategy:
+                name = self._poll_stock_names.get(tick.code, tick.code)
+                logger.debug(
+                    f"진입체크 불발 ({name}): score={score:.1f}, "
+                    f"사유=[{', '.join(reject_reasons[:3])}]"
+                )
                 return
             logger.info(
                 f"진입 신호: {tick.code} by {matched_strategy.name} "
