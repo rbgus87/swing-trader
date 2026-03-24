@@ -1143,7 +1143,11 @@ class TradingEngine:
                     # rate limit 준수: 5 TR/sec → 0.3초 간격
                     await asyncio.sleep(0.3)
 
-                logger.info(
+                # 5분(10주기)마다 INFO, 나머지는 debug
+                poll_cycle = getattr(self, "_poll_cycle_count", 0) + 1
+                self._poll_cycle_count = poll_cycle
+                log_fn = logger.info if poll_cycle % 10 == 1 or fail_count > 0 else logger.debug
+                log_fn(
                     f"polling 주기 완료: {success_count}/{len(poll_codes)}종목 "
                     f"가격 수신 (실패: {fail_count})"
                 )
