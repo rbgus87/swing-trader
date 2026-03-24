@@ -1,6 +1,6 @@
 /* ══════════════════════════════════════════════════════════════
-   Catppuccin Mocha — Swing Trader v3
-   좌측 사이드바 + 우측 콘텐츠 레이아웃
+   Catppuccin Mocha — Swing Trader v4
+   디자인 리프레시: 카드 레이아웃, 개선된 타이포그래피, 간격 최적화
    ══════════════════════════════════════════════════════════════ */
 
 * {
@@ -20,11 +20,11 @@ QFrame#sidebar {
 }
 
 QLabel#appTitle {
-    font-size: 20px;
+    font-size: 22px;
     font-weight: bold;
-    color: #cdd6f4;
-    padding: 0 0 8px 0;
-    letter-spacing: 1px;
+    color: #89b4fa;
+    padding: 4px 0 12px 0;
+    letter-spacing: 2px;
 }
 
 QLabel#engineStatus {
@@ -35,14 +35,47 @@ QLabel#engineStatus {
 QLabel#modeBadge {
     font-size: 11px;
     font-weight: bold;
-    padding: 4px 0;
-    border-radius: 4px;
+    padding: 5px 0;
+    border-radius: 6px;
 }
 
 /* ── 요약 통계 바 ── */
 QFrame#summaryBar {
     background-color: #181825;
     border-bottom: 1px solid #313244;
+}
+
+/* ── 스탯 카드 ── */
+QFrame#statCard {
+    background-color: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 8px 12px;
+}
+
+QFrame#statCard:hover {
+    border-color: #45475a;
+}
+
+QLabel#statValue {
+    font-size: 16px;
+    font-weight: bold;
+    color: #cdd6f4;
+}
+
+QLabel#statLabel {
+    font-size: 10px;
+    color: #6c7086;
+    letter-spacing: 1px;
+}
+
+/* ── 섹션 헤더 ── */
+QLabel#sectionHeader {
+    font-size: 12px;
+    font-weight: bold;
+    color: #6c7086;
+    padding: 6px 0 4px 0;
+    letter-spacing: 1px;
 }
 
 /* ── 탭 ── */
@@ -57,6 +90,7 @@ QTabBar::tab {
     padding: 10px 28px;
     border-bottom: 2px solid transparent;
     font-weight: bold;
+    font-size: 13px;
 }
 
 QTabBar::tab:selected {
@@ -74,8 +108,8 @@ QPushButton {
     background-color: #313244;
     color: #cdd6f4;
     border: 1px solid #45475a;
-    border-radius: 4px;
-    padding: 6px 12px;
+    border-radius: 6px;
+    padding: 6px 14px;
     min-height: 28px;
     font-weight: bold;
     font-size: 12px;
@@ -100,6 +134,7 @@ QPushButton#startBtn {
     background-color: #40a02b;
     color: #fff;
     border-color: #4cb036;
+    border-radius: 6px;
 }
 QPushButton#startBtn:hover {
     background-color: #4cb036;
@@ -114,6 +149,7 @@ QPushButton#stopBtn {
     background-color: transparent;
     color: #f38ba8;
     border: 1px solid #f38ba8;
+    border-radius: 6px;
 }
 QPushButton#stopBtn:hover {
     background-color: #f38ba8;
@@ -129,6 +165,7 @@ QPushButton#haltBtn {
     background-color: transparent;
     color: #f9e2af;
     border: 1px solid #f9e2af;
+    border-radius: 6px;
 }
 QPushButton#haltBtn:hover {
     background-color: #f9e2af;
@@ -143,14 +180,16 @@ QPushButton#haltBtn:disabled {
 QPushButton#manualBtn {
     background-color: transparent;
     color: #89b4fa;
-    border: 1px solid #89b4fa;
+    border: 1px solid #45475a;
+    border-radius: 6px;
     font-size: 11px;
     padding: 4px 8px;
-    min-height: 24px;
+    min-height: 26px;
 }
 QPushButton#manualBtn:hover {
     background-color: #89b4fa;
     color: #11111b;
+    border-color: #89b4fa;
 }
 QPushButton#manualBtn:disabled {
     background-color: #181825;
@@ -166,24 +205,25 @@ QTableWidget {
     selection-background-color: #313244;
     selection-color: #cdd6f4;
     border: 1px solid #313244;
-    border-radius: 4px;
+    border-radius: 6px;
     font-size: 12px;
     outline: none;
 }
 
 QTableWidget::item {
-    padding: 4px 8px;
+    padding: 5px 8px;
     border-bottom: 1px solid #1e1e2e;
 }
 
 QHeaderView::section {
     background-color: #181825;
     color: #585b70;
-    padding: 6px 8px;
+    padding: 7px 8px;
     border: none;
-    border-bottom: 1px solid #313244;
+    border-bottom: 2px solid #313244;
     font-weight: bold;
     font-size: 11px;
+    text-transform: uppercase;
 }
 
 /* ── 폼 요소 ── */
@@ -191,7 +231,7 @@ QComboBox {
     background-color: #313244;
     color: #cdd6f4;
     border: 1px solid #45475a;
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 4px 10px;
     min-height: 26px;
     font-size: 12px;
@@ -211,13 +251,14 @@ QComboBox QAbstractItemView {
     color: #cdd6f4;
     selection-background-color: #45475a;
     border: 1px solid #45475a;
+    border-radius: 4px;
 }
 
 QSpinBox {
     background-color: #313244;
     color: #cdd6f4;
     border: 1px solid #45475a;
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 4px 8px;
     min-height: 26px;
 }
@@ -236,7 +277,7 @@ QLineEdit {
     background-color: #313244;
     color: #cdd6f4;
     border: 1px solid #45475a;
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 4px 10px;
     min-height: 26px;
 }
@@ -270,10 +311,10 @@ QTextEdit#logView {
     background-color: #11111b;
     color: #a6adc8;
     border: 1px solid #313244;
-    border-radius: 4px;
+    border-radius: 6px;
     font-family: "Cascadia Code", "Consolas", "D2Coding", monospace;
     font-size: 11px;
-    padding: 6px;
+    padding: 8px;
     selection-background-color: #313244;
 }
 
@@ -281,6 +322,7 @@ QTextEdit#logView {
 QScrollBar:vertical {
     background-color: transparent;
     width: 6px;
+    margin: 2px;
 }
 QScrollBar::handle:vertical {
     background-color: #313244;
@@ -303,7 +345,7 @@ QStatusBar {
     color: #585b70;
     border-top: 1px solid #313244;
     font-size: 11px;
-    min-height: 22px;
+    min-height: 24px;
 }
 
 QStatusBar QLabel {
@@ -315,12 +357,13 @@ QStatusBar QLabel {
 /* ── 스플리터 ── */
 QSplitter::handle {
     background-color: #313244;
+    height: 1px;
 }
 
 /* ── 설정 서브탭 ── */
 QTabWidget QTabWidget::pane {
     border: 1px solid #313244;
-    border-radius: 4px;
+    border-radius: 6px;
     background-color: #181825;
 }
 
@@ -332,4 +375,64 @@ QTabWidget QTabBar::tab {
 QScrollArea {
     border: none;
     background-color: transparent;
+}
+
+/* ── 프로그레스 바 ── */
+QProgressBar {
+    background-color: #313244;
+    border: none;
+    border-radius: 4px;
+    text-align: center;
+    color: #cdd6f4;
+    font-size: 10px;
+}
+
+QProgressBar::chunk {
+    background-color: #89b4fa;
+    border-radius: 4px;
+}
+
+/* ── 설정 폼 그룹 카드 ── */
+QFrame#formGroupCard {
+    background-color: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+QLabel#formGroupTitle {
+    font-size: 13px;
+    font-weight: bold;
+    color: #89b4fa;
+    padding: 0 0 4px 0;
+}
+
+/* ── 차트 배경 ── */
+QFrame#chartContainer {
+    background-color: #11111b;
+    border: 1px solid #313244;
+    border-radius: 6px;
+}
+
+/* ── 툴팁 ── */
+QToolTip {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+}
+
+/* ── 메시지 박스 ── */
+QMessageBox {
+    background-color: #1e1e2e;
+}
+
+QMessageBox QLabel {
+    color: #cdd6f4;
+}
+
+QMessageBox QPushButton {
+    min-width: 80px;
 }

@@ -265,15 +265,15 @@ class SettingsTab(QWidget):
             elif child.layout():
                 self._clear_layout(child.layout())
 
-        # 서브탭
+        # 서브탭 (아이콘 텍스트로 직관적 구분)
         self.sub_tabs = QTabWidget()
-        self.sub_tabs.addTab(self._build_watchlist_tab(), "종목관리")
-        self.sub_tabs.addTab(self._build_trading_tab(), "매매")
-        self.sub_tabs.addTab(self._build_screening_tab(), "스크리닝")
-        self.sub_tabs.addTab(self._build_strategy_tab(), "전략")
-        self.sub_tabs.addTab(self._build_risk_tab(), "리스크")
-        self.sub_tabs.addTab(self._build_schedule_tab(), "스케줄")
-        self.sub_tabs.addTab(self._build_api_tab(), "API 설정")
+        self.sub_tabs.addTab(self._build_watchlist_tab(), "\U0001F50D 종목관리")
+        self.sub_tabs.addTab(self._build_trading_tab(), "\U0001F4B0 매매")
+        self.sub_tabs.addTab(self._build_screening_tab(), "\U0001F4CA 스크리닝")
+        self.sub_tabs.addTab(self._build_strategy_tab(), "\U0001F3AF 전략")
+        self.sub_tabs.addTab(self._build_risk_tab(), "\U0001F6E1 리스크")
+        self.sub_tabs.addTab(self._build_schedule_tab(), "\U000023F0 스케줄")
+        self.sub_tabs.addTab(self._build_api_tab(), "\U0001F511 API")
         self._layout.addWidget(self.sub_tabs)
 
         # 하단 버튼
@@ -1032,10 +1032,10 @@ class SettingsTab(QWidget):
     # ── 유틸 ──
 
     def _make_separator(self, text: str) -> QLabel:
-        label = QLabel(text)
+        label = QLabel(f"\u2500\u2500  {text}")
         label.setStyleSheet(
             "color: #89b4fa; font-weight: bold; font-size: 12px; "
-            "border-bottom: 1px solid #313244; padding-bottom: 4px; margin-top: 8px;"
+            "padding: 8px 0 4px 0; margin-top: 4px;"
         )
         return label
 

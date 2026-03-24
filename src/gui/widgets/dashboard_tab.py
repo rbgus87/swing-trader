@@ -1,14 +1,13 @@
-"""대시보드 탭 — 보유 포지션 + 요약 + 후보/체결 + 로그.
+"""대시보드 탭 — 스탯 카드 + 보유 포지션 + 후보/체결 + 차트 + 로그.
 
-KoreanQuant 스타일: 요약 한 줄 → 테이블 → 하단 분할 → 로그
+v4 리디자인: 카드형 요약 통계, 차트 영역, 개선된 레이아웃
 """
 
 import html
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -33,10 +32,13 @@ _PEACH = "#fab387"
 _TEXT = "#cdd6f4"
 _SUBTEXT = "#6c7086"
 _SURFACE = "#313244"
+_BASE = "#1e1e2e"
+_MANTLE = "#181825"
+_CRUST = "#11111b"
 
 
 class DashboardTab(QWidget):
-    """대시보드 탭 — 포트폴리오 + 후보/체결 + 로그."""
+    """대시보드 탭 — 스탯 카드 + 포트폴리오 + 차트 + 로그."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,38 +50,31 @@ class DashboardTab(QWidget):
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # ── 요약 통계 바 ──
-        summary_bar = QFrame()
-        summary_bar.setObjectName("summaryBar")
-        summary_bar.setFixedHeight(36)
-        summary_layout = QHBoxLayout(summary_bar)
-        summary_layout.setContentsMargins(16, 0, 16, 0)
-        summary_layout.setSpacing(24)
+        # ── 스탯 카드 영역 ──
+        stat_area = QWidget()
+        stat_area.setStyleSheet(f"background-color: {_MANTLE};")
+        stat_layout = QHBoxLayout(stat_area)
+        stat_layout.setContentsMargins(12, 10, 12, 10)
+        stat_layout.setSpacing(8)
 
-        self._lbl_summary = QLabel("투자금: 0원 | 가용자금: 0원 | 포지션: 0/3 | 후보: 0종목")
-        self._lbl_summary.setStyleSheet(
-            f"color: {_SUBTEXT}; font-size: 12px;"
-        )
-        summary_layout.addWidget(self._lbl_summary)
+        self._stat_eval = self._make_stat_card("총 평가", "0원", _TEXT)
+        self._stat_avail = self._make_stat_card("가용자금", "0원", _TEXT)
+        self._stat_pos = self._make_stat_card("포지션", "0/3", _BLUE)
+        self._stat_cand = self._make_stat_card("후보", "0종목", _SUBTEXT)
+        self._stat_pnl = self._make_stat_card("일일 손익", "+0.00%", _GREEN)
+        self._stat_mdd = self._make_stat_card("MDD", "0.0%", _SUBTEXT)
 
-        summary_layout.addStretch()
+        for card, _, _ in [
+            self._stat_eval, self._stat_avail, self._stat_pos,
+            self._stat_cand, self._stat_pnl, self._stat_mdd,
+        ]:
+            stat_layout.addWidget(card)
 
-        self._lbl_pnl = QLabel("일일 손익: +0.00%")
-        self._lbl_pnl.setStyleSheet(
-            f"color: {_GREEN}; font-size: 12px; font-weight: bold;"
-        )
-        summary_layout.addWidget(self._lbl_pnl)
-
-        self._lbl_mdd = QLabel("MDD: 0.0%")
-        self._lbl_mdd.setStyleSheet(f"color: {_SUBTEXT}; font-size: 12px;")
-        summary_layout.addWidget(self._lbl_mdd)
-
-        layout.addWidget(summary_bar)
+        layout.addWidget(stat_area)
 
         # ── 메인 영역 (수직 스플리터) ──
         splitter = QSplitter(Qt.Vertical)
         splitter.setHandleWidth(1)
-        splitter.setStyleSheet("QSplitter::handle { background-color: #313244; }")
 
         # --- 상단: 보유 포지션 ---
         pos_widget = QWidget()
@@ -90,6 +85,9 @@ class DashboardTab(QWidget):
         pos_header = QHBoxLayout()
         pos_header.addWidget(self._section_label("보유 종목"))
         pos_header.addStretch()
+        self._lbl_pos_count = QLabel("0종목")
+        self._lbl_pos_count.setStyleSheet(f"color: {_SUBTEXT}; font-size: 11px;")
+        pos_header.addWidget(self._lbl_pos_count)
         pos_layout.addLayout(pos_header)
 
         self.positions_table = self._make_table(
@@ -98,64 +96,129 @@ class DashboardTab(QWidget):
         pos_layout.addWidget(self.positions_table)
         splitter.addWidget(pos_widget)
 
-        # --- 중단: 후보 / 체결 ---
-        bottom_widget = QWidget()
-        bottom_layout = QHBoxLayout(bottom_widget)
-        bottom_layout.setContentsMargins(12, 4, 12, 4)
-        bottom_layout.setSpacing(8)
+        # --- 중단: 후보 / 체결 (좌우 분할) ---
+        mid_widget = QWidget()
+        mid_layout = QHBoxLayout(mid_widget)
+        mid_layout.setContentsMargins(12, 4, 12, 4)
+        mid_layout.setSpacing(8)
 
         # 매수 후보
         cand_widget = QVBoxLayout()
         cand_widget.setSpacing(4)
-        cand_widget.addWidget(self._section_label("매수 후보"))
+        cand_header = QHBoxLayout()
+        cand_header.addWidget(self._section_label("매수 후보"))
+        cand_header.addStretch()
+        self._lbl_cand_count = QLabel("0건")
+        self._lbl_cand_count.setStyleSheet(f"color: {_SUBTEXT}; font-size: 11px;")
+        cand_header.addWidget(self._lbl_cand_count)
+        cand_widget.addLayout(cand_header)
         self.candidates_table = self._make_table(["종목코드", "종목명"])
         cand_widget.addWidget(self.candidates_table)
-        bottom_layout.addLayout(cand_widget)
+        mid_layout.addLayout(cand_widget)
 
         # 당일 체결
         trade_widget = QVBoxLayout()
         trade_widget.setSpacing(4)
-        trade_widget.addWidget(self._section_label("당일 체결"))
+        trade_header = QHBoxLayout()
+        trade_header.addWidget(self._section_label("당일 체결"))
+        trade_header.addStretch()
+        self._lbl_trade_count = QLabel("0건")
+        self._lbl_trade_count.setStyleSheet(f"color: {_SUBTEXT}; font-size: 11px;")
+        trade_header.addWidget(self._lbl_trade_count)
+        trade_widget.addLayout(trade_header)
         self.trades_table = self._make_table(["시간", "종목코드", "구분", "가격", "손익", "사유"])
         trade_widget.addWidget(self.trades_table)
-        bottom_layout.addLayout(trade_widget)
+        mid_layout.addLayout(trade_widget)
 
-        splitter.addWidget(bottom_widget)
+        splitter.addWidget(mid_widget)
 
-        # --- 하단: 로그 ---
-        log_widget = QWidget()
-        log_layout = QVBoxLayout(log_widget)
-        log_layout.setContentsMargins(12, 4, 12, 8)
-        log_layout.setSpacing(4)
+        # --- 하단: 차트 + 로그 (좌우 분할) ---
+        bottom_widget = QWidget()
+        bottom_layout = QHBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(12, 4, 12, 8)
+        bottom_layout.setSpacing(8)
+
+        # 차트 영역 (pyqtgraph가 없으면 플레이스홀더)
+        chart_area = QVBoxLayout()
+        chart_area.setSpacing(4)
+        chart_area.addWidget(self._section_label("수익 곡선"))
+
+        self._chart_container = QFrame()
+        self._chart_container.setObjectName("chartContainer")
+        self._chart_container.setMinimumHeight(120)
+        chart_inner = QVBoxLayout(self._chart_container)
+        chart_inner.setContentsMargins(4, 4, 4, 4)
+
+        try:
+            import pyqtgraph as pg
+            pg.setConfigOptions(antialias=True)
+
+            self._chart_widget = pg.PlotWidget()
+            self._chart_widget.setBackground(_CRUST)
+            self._chart_widget.showGrid(x=False, y=True, alpha=0.1)
+            self._chart_widget.getAxis("left").setPen(pg.mkPen(_SUBTEXT))
+            self._chart_widget.getAxis("bottom").setPen(pg.mkPen(_SUBTEXT))
+            self._chart_widget.getAxis("left").setTextPen(pg.mkPen(_SUBTEXT))
+            self._chart_widget.getAxis("bottom").setTextPen(pg.mkPen(_SUBTEXT))
+            self._chart_widget.setLabel("left", "수익률 (%)")
+            self._chart_widget.hideAxis("bottom")
+
+            # 빈 곡선
+            self._equity_curve = self._chart_widget.plot(
+                [], [], pen=pg.mkPen(color=_BLUE, width=2)
+            )
+            self._zero_line = self._chart_widget.addLine(
+                y=0, pen=pg.mkPen(color=_SUBTEXT, width=1, style=Qt.DashLine)
+            )
+
+            chart_inner.addWidget(self._chart_widget)
+            self._has_chart = True
+        except ImportError:
+            placeholder = QLabel("pyqtgraph 미설치\npip install pyqtgraph")
+            placeholder.setAlignment(Qt.AlignCenter)
+            placeholder.setStyleSheet(f"color: {_SUBTEXT}; font-size: 11px;")
+            chart_inner.addWidget(placeholder)
+            self._has_chart = False
+
+        chart_area.addWidget(self._chart_container)
+        bottom_layout.addLayout(chart_area, stretch=1)
+
+        # 로그 영역
+        log_area = QVBoxLayout()
+        log_area.setSpacing(4)
 
         log_header = QHBoxLayout()
         log_header.addWidget(self._section_label("로그"))
         log_header.addStretch()
 
         self._btn_log_clear = QPushButton("지우기")
-        self._btn_log_clear.setFixedSize(60, 24)
+        self._btn_log_clear.setFixedSize(56, 22)
+        self._btn_log_clear.setStyleSheet("font-size: 10px; padding: 2px 6px;")
         self._btn_log_clear.clicked.connect(self._on_log_clear)
         log_header.addWidget(self._btn_log_clear)
 
-        self._btn_autoscroll = QPushButton("자동 스크롤: ON")
-        self._btn_autoscroll.setFixedSize(110, 24)
+        self._btn_autoscroll = QPushButton("자동스크롤")
+        self._btn_autoscroll.setFixedSize(76, 22)
+        self._btn_autoscroll.setStyleSheet(
+            f"font-size: 10px; padding: 2px 6px; color: {_GREEN};"
+        )
         self._btn_autoscroll.clicked.connect(self._toggle_autoscroll)
         log_header.addWidget(self._btn_autoscroll)
 
-        log_layout.addLayout(log_header)
+        log_area.addLayout(log_header)
 
         self.log_view = QTextEdit()
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
-        self.log_view.setMaximumHeight(180)
-        log_layout.addWidget(self.log_view)
+        log_area.addWidget(self.log_view)
 
-        splitter.addWidget(log_widget)
+        bottom_layout.addLayout(log_area, stretch=1)
+        splitter.addWidget(bottom_widget)
 
-        # 스플리터 비율 (포지션:후보체결:로그 = 4:3:2)
+        # 스플리터 비율 (포지션:후보체결:차트로그 = 4:3:3)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 3)
-        splitter.setStretchFactor(2, 2)
+        splitter.setStretchFactor(2, 3)
 
         layout.addWidget(splitter)
 
@@ -163,14 +226,37 @@ class DashboardTab(QWidget):
         self._autoscroll = True
         self._log_lines: list[str] = []
 
+        # 차트 데이터
+        self._equity_data: list[float] = []
+
+    # ── 스탯 카드 ──
+
+    def _make_stat_card(self, label: str, value: str, color: str):
+        """스탯 카드 위젯 생성. (card, value_label, label_label) 반환."""
+        card = QFrame()
+        card.setObjectName("statCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(10, 6, 10, 6)
+        card_layout.setSpacing(2)
+
+        lbl_value = QLabel(value)
+        lbl_value.setObjectName("statValue")
+        lbl_value.setStyleSheet(f"color: {color}; font-size: 15px; font-weight: bold;")
+        lbl_value.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        card_layout.addWidget(lbl_value)
+
+        lbl_label = QLabel(label.upper())
+        lbl_label.setObjectName("statLabel")
+        lbl_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        card_layout.addWidget(lbl_label)
+
+        return card, lbl_value, lbl_label
+
     # ── 헬퍼 ──
 
     def _section_label(self, text: str) -> QLabel:
         label = QLabel(text)
-        label.setStyleSheet(
-            f"color: {_SUBTEXT}; font-size: 12px; font-weight: bold; "
-            "padding: 2px 0px;"
-        )
+        label.setObjectName("sectionHeader")
         return label
 
     def _make_table(self, headers: list[str]) -> QTableWidget:
@@ -194,6 +280,7 @@ class DashboardTab(QWidget):
             "ERROR": _RED,
             "WARNING": _YELLOW,
             "DEBUG": _SUBTEXT,
+            "TRADE": _GREEN,
         }.get(level, "#a6adc8")
 
         safe_msg = html.escape(message)
@@ -208,9 +295,14 @@ class DashboardTab(QWidget):
 
     def _toggle_autoscroll(self):
         self._autoscroll = not self._autoscroll
-        self._btn_autoscroll.setText(
-            "자동 스크롤: ON" if self._autoscroll else "자동 스크롤: OFF"
-        )
+        if self._autoscroll:
+            self._btn_autoscroll.setStyleSheet(
+                f"font-size: 10px; padding: 2px 6px; color: {_GREEN};"
+            )
+        else:
+            self._btn_autoscroll.setStyleSheet(
+                f"font-size: 10px; padding: 2px 6px; color: {_SUBTEXT};"
+            )
 
     # ── 데이터 업데이트 ──
 
@@ -220,21 +312,59 @@ class DashboardTab(QWidget):
         candidates = status.get("candidates", 0)
         self._max_positions = status.get("max_positions", self._max_positions)
 
+        # 가용자금 카드
+        _, avail_val, _ = self._stat_avail
+        avail_val.setText(f"{capital:,}원")
+
+        # 후보 카드
+        _, cand_val, _ = self._stat_cand
+        cand_val.setText(f"{candidates}종목")
+
+        # 포지션 카드 (positions_update에서도 갱신)
+        # 일일 손익 카드
         pnl = status.get("daily_pnl_pct", 0.0)
         pnl_color = _GREEN if pnl >= 0 else _RED
-        self._lbl_pnl.setText(f"일일 손익: {pnl:+.2f}%")
-        self._lbl_pnl.setStyleSheet(
-            f"color: {pnl_color}; font-size: 12px; font-weight: bold;"
+        _, pnl_val, _ = self._stat_pnl
+        pnl_val.setText(f"{pnl:+.2f}%")
+        pnl_val.setStyleSheet(
+            f"color: {pnl_color}; font-size: 15px; font-weight: bold;"
         )
 
+        # MDD 카드
         mdd = status.get("mdd", 0.0)
         mdd_color = _RED if mdd < -5 else _SUBTEXT
-        self._lbl_mdd.setText(f"MDD: {mdd:.1f}%")
-        self._lbl_mdd.setStyleSheet(f"color: {mdd_color}; font-size: 12px;")
+        _, mdd_val, _ = self._stat_mdd
+        mdd_val.setText(f"{mdd:.1f}%")
+        mdd_val.setStyleSheet(
+            f"color: {mdd_color}; font-size: 15px; font-weight: bold;"
+        )
 
-        # 요약 라인은 positions 업데이트에서 갱신
+        # 내부 저장
         self._capital = capital
         self._candidates_count = candidates
+
+        # 차트 데이터 업데이트
+        if self._has_chart and pnl != 0.0:
+            self._equity_data.append(pnl)
+            self._update_chart()
+
+    def _update_chart(self):
+        """수익 곡선 차트 업데이트."""
+        if not self._has_chart or not self._equity_data:
+            return
+        import pyqtgraph as pg
+
+        # 누적 수익률
+        cumulative = []
+        total = 0.0
+        for d in self._equity_data:
+            total += d
+            cumulative.append(total)
+
+        self._equity_curve.setData(
+            list(range(len(cumulative))), cumulative,
+            pen=pg.mkPen(color=_BLUE, width=2)
+        )
 
     def update_positions(self, positions: list):
         """포지션 테이블 + 요약 통계 업데이트."""
@@ -272,15 +402,19 @@ class DashboardTab(QWidget):
                     item.setForeground(QColor(color))
                 self.positions_table.setItem(row, col, item)
 
-        # 요약 통계 갱신
-        capital = getattr(self, "_capital", 0)
-        cand = getattr(self, "_candidates_count", 0)
-        self._lbl_summary.setText(
-            f"총 평가: {total_eval:,}원 | "
-            f"가용자금: {capital:,}원 | "
-            f"포지션: {len(positions)}/{self._max_positions} | "
-            f"후보: {cand}종목"
+        # 스탯 카드 갱신
+        _, eval_val, _ = self._stat_eval
+        eval_val.setText(f"{total_eval:,}원")
+
+        _, pos_val, _ = self._stat_pos
+        pos_val.setText(f"{len(positions)}/{self._max_positions}")
+        pos_color = _BLUE if len(positions) < self._max_positions else _YELLOW
+        pos_val.setStyleSheet(
+            f"color: {pos_color}; font-size: 15px; font-weight: bold;"
         )
+
+        # 카운트 라벨
+        self._lbl_pos_count.setText(f"{len(positions)}종목")
 
     # 청산사유 한글 매핑
     _EXIT_REASON_KR = {
@@ -318,8 +452,10 @@ class DashboardTab(QWidget):
                 if col == 4 and pnl != 0:
                     item.setForeground(QColor(_GREEN if pnl > 0 else _RED))
                 if col == 5 and reason_raw == "partial_target":
-                    item.setForeground(QColor("#fab387"))  # 부분매도: 오렌지
+                    item.setForeground(QColor(_PEACH))
                 self.trades_table.setItem(row, col, item)
+
+        self._lbl_trade_count.setText(f"{len(trades)}건")
 
     def update_candidates(self, candidates: list):
         """매수 후보 테이블 업데이트."""
@@ -331,3 +467,5 @@ class DashboardTab(QWidget):
             name_item.setTextAlignment(Qt.AlignCenter)
             self.candidates_table.setItem(row, 0, code_item)
             self.candidates_table.setItem(row, 1, name_item)
+
+        self._lbl_cand_count.setText(f"{len(candidates)}건")

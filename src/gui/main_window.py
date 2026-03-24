@@ -81,6 +81,13 @@ class MainWindow(QMainWindow):
         title.setObjectName("appTitle")
         sidebar_layout.addWidget(title)
 
+        # 버전 표시
+        ver_label = QLabel("v0.1.0")
+        ver_label.setStyleSheet(
+            "color: #45475a; font-size: 10px; margin-top: -8px; padding: 0;"
+        )
+        sidebar_layout.addWidget(ver_label)
+
         # ── 모드 선택 ──
         sidebar_layout.addWidget(self._sidebar_section("모드"))
 
@@ -231,9 +238,9 @@ class MainWindow(QMainWindow):
         self.log_tab = LogTab()
         self.settings_tab = SettingsTab()
 
-        self.tabs.addTab(self.dashboard_tab, "대시보드")
-        self.tabs.addTab(self.log_tab, "로그")
-        self.tabs.addTab(self.settings_tab, "설정")
+        self.tabs.addTab(self.dashboard_tab, "\U0001F4C8 대시보드")
+        self.tabs.addTab(self.log_tab, "\U0001F4DD 로그")
+        self.tabs.addTab(self.settings_tab, "\u2699 설정")
 
         right.addWidget(self.tabs)
 
@@ -260,11 +267,11 @@ class MainWindow(QMainWindow):
     # ── 사이드바 헬퍼 ──
 
     def _sidebar_section(self, text: str) -> QLabel:
-        label = QLabel(text)
+        label = QLabel(text.upper())
         label.setStyleSheet(
-            "color: #6c7086; font-size: 10px; font-weight: bold; "
-            "letter-spacing: 2px; padding: 4px 0 0 0; "
-            "border-bottom: 1px solid #313244; margin-bottom: 2px;"
+            "color: #585b70; font-size: 10px; font-weight: bold; "
+            "letter-spacing: 3px; padding: 6px 0 2px 0; "
+            "border: none;"
         )
         return label
 

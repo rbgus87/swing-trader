@@ -52,7 +52,9 @@ class LogTab(QWidget):
         toolbar.setSpacing(8)
 
         # 레벨 필터
-        toolbar.addWidget(QLabel("Level:"))
+        lbl_level = QLabel("레벨")
+        lbl_level.setStyleSheet("color: #6c7086; font-size: 11px; font-weight: bold;")
+        toolbar.addWidget(lbl_level)
         self.combo_level = QComboBox()
         self.combo_level.addItems(["ALL", "DEBUG", "INFO", "TRADE", "WARNING", "ERROR"])
         self.combo_level.setCurrentText("ALL")
@@ -60,16 +62,20 @@ class LogTab(QWidget):
         self.combo_level.currentTextChanged.connect(self._on_level_changed)
         toolbar.addWidget(self.combo_level)
 
+        toolbar.addSpacing(12)
+
         # 검색
-        toolbar.addWidget(QLabel("Search:"))
+        lbl_search = QLabel("검색")
+        lbl_search.setStyleSheet("color: #6c7086; font-size: 11px; font-weight: bold;")
+        toolbar.addWidget(lbl_search)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Filter logs... (Ctrl+F)")
+        self.search_input.setPlaceholderText("로그 필터링...")
         self.search_input.textChanged.connect(self._on_search_changed)
         toolbar.addWidget(self.search_input)
 
         toolbar.addStretch()
 
-        btn_clear = QPushButton("Clear")
+        btn_clear = QPushButton("지우기")
         btn_clear.clicked.connect(self._on_clear)
         toolbar.addWidget(btn_clear)
 

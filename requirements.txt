@@ -13,6 +13,7 @@ ruamel.yaml>=0.18
 holidays>=0.45
 pytz>=2023.3
 matplotlib>=3.7
+pyqtgraph>=0.13
 streamlit>=1.30
 
 # pandas-ta: numba 의존성 문제로 별도 설치 필요
