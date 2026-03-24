@@ -287,7 +287,7 @@ class TradingEngine:
 
         # 첫 틱 수신 로깅 (종목별 1회)
         if tick.code not in self._latest_prices:
-            logger.debug(f"첫 틱 수신: {tick.code} = {tick.price:,}원")
+            logger.info(f"첫 틱 수신: {tick.code} = {tick.price:,}원")
 
         # 최신 가격 캐시 갱신
         self._latest_prices[tick.code] = tick.price
@@ -1113,6 +1113,8 @@ class TradingEngine:
                     continue
 
                 # 종목별 현재가 REST 조회 (rate limit: 0.3초 간격)
+                success_count = 0
+                fail_count = 0
                 for code in poll_codes:
                     if not self._running:
                         break
@@ -1128,10 +1130,20 @@ class TradingEngine:
                                 timestamp=datetime.now(),
                             )
                             await self.on_price_update(tick)
+                            success_count += 1
+                        else:
+                            fail_count += 1
+                            logger.debug(f"가격 0원 ({code}): data={data}")
                     except Exception as e:
+                        fail_count += 1
                         logger.warning(f"현재가 조회 실패 ({code}): {e}")
                     # rate limit 준수: 5 TR/sec → 0.3초 간격
                     await asyncio.sleep(0.3)
+
+                logger.info(
+                    f"polling 주기 완료: {success_count}/{len(poll_codes)}종목 "
+                    f"가격 수신 (실패: {fail_count})"
+                )
 
                 # 주기 맞춤 대기 (polling_interval - 소요시간)
                 elapsed = asyncio.get_event_loop().time() - cycle_start
