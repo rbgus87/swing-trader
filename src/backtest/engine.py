@@ -1053,9 +1053,49 @@ class BacktestEngine:
                         if recent_amount < min_daily_amount:
                             continue
 
+                    # 종목별 국면 판단 (stock_regime_mode 파라미터로 제어)
+                    # off: KOSPI 기반 (기본), on: 전 종목 투표, hybrid: 시총별 분기
+                    stock_regime_mode = p.get("stock_regime_mode", "off")
+                    use_stock_regime = False
+                    if stock_regime_mode == "on" and is_adaptive:
+                        use_stock_regime = True
+                    elif stock_regime_mode == "hybrid" and is_adaptive:
+                        # 하이브리드: 시총 기반 분기 (5일 평균 거래대금으로 시총 추정)
+                        sr_mcap_threshold = p.get("sr_mcap_threshold", 5_000_000_000_000)  # 5조원
+                        if idx >= 5:
+                            avg_amount = (df_ind["close"].iloc[idx-4:idx+1] * df_ind["volume"].iloc[idx-4:idx+1]).mean()
+                            # 거래대금/회전율 기반 시총 추정 (회전율 ~0.5% 가정)
+                            est_mcap = avg_amount * 200  # 거래대금 × 200 ≈ 시총
+                            use_stock_regime = est_mcap < sr_mcap_threshold
+                        # 대형주(시총 5조+)는 KOSPI 기반 유지
+
+                    if use_stock_regime:
+                        sr_adx_thresh = p.get("sr_adx_threshold", 25)
+                        sr_min_votes = p.get("sr_min_votes", 2)
+                        sr_bear_adx = p.get("sr_bearish_adx", 25)
+                        row = df_ind.iloc[idx]
+                        _adx = float(row.get("adx", 0))
+                        _pdi = float(row.get("plus_di", 0)) if "plus_di" in row.index else 0
+                        _mdi = float(row.get("minus_di", 0)) if "minus_di" in row.index else 0
+                        # bearish 필터
+                        if _adx > sr_bear_adx and _mdi > _pdi:
+                            continue  # 이 종목 스킵
+                        # 투표
+                        v_adx = (_adx > sr_adx_thresh) and (_pdi > _mdi)
+                        v_ma = (float(row.get("sma20", 0)) > float(row.get("sma60", 0))) and (price > float(row.get("sma20", 0)))
+                        v_mom = False
+                        if idx >= 20:
+                            v_mom = float(df_ind["close"].iloc[idx]) > float(df_ind["close"].iloc[idx-20])
+                        stock_regime = "trending" if sum([v_adx, v_ma, v_mom]) >= sr_min_votes else "sideways"
+                        stock_strategies = regime_map.get(stock_regime, active_strategies)
+                        if isinstance(stock_strategies, str):
+                            stock_strategies = [stock_strategies]
+                    else:
+                        stock_strategies = active_strategies
+
                     # 전략 매수 신호 체크 — 멀티전략 OR
                     has_entry = False
-                    for ast in active_strategies:
+                    for ast in stock_strategies:
                         sig_key = (code, ast)
                         if sig_key in signals_cache:
                             entries, _ = signals_cache[sig_key]
