@@ -111,6 +111,7 @@ class TradingEngine:
         self._minute_ohlcv_cache: dict[str, "pd.DataFrame"] = {}  # 종목별 60분봉 캐시
         # partial_sold는 DB positions.partial_sold 컬럼으로 관리
         self._daily_trades_cache: list[dict] | None = None  # 당일 매매 기록 캐시
+        self._entry_logged: dict[str, str] = {}  # 종목별 마지막 로그 사유 (반복 방지)
 
         # MDD 초기 자본 설정
         self._risk_mgr.set_initial_capital(float(self._initial_capital))
@@ -304,13 +305,25 @@ class TradingEngine:
         # 3. 후보 종목 진입 조건 체크
         # 시장 국면 게이트: 방어 모드이면 매수 차단
         if not self._market_regime.is_bullish:
+            if not getattr(self, "_regime_block_logged", False):
+                logger.info(
+                    f"진입 게이트: 시장 방어 모드 — 매수 전체 차단 "
+                    f"(국면={self._market_regime.regime_type}, "
+                    f"사유={self._market_regime.block_reason})"
+                )
+                self._regime_block_logged = True
             return
+        self._regime_block_logged = False
         # 시간대 진입 제한: 장 초반 변동성/장 마감 갭 리스크 회피
         now_hm = datetime.now().strftime("%H:%M")
         entry_start = config.get("trading.entry_start_time", "09:30")
         entry_end = config.get("trading.entry_end_time", "14:30")
         if not (entry_start <= now_hm <= entry_end):
+            if not getattr(self, "_time_block_logged", False):
+                logger.info(f"진입 게이트: 시간대 밖 ({now_hm}, 허용={entry_start}~{entry_end})")
+                self._time_block_logged = True
             return
+        self._time_block_logged = False
         # 쓰로틀링: 같은 종목은 30초 간격으로만 진입 판단 (지표 계산 부하 방지)
         if tick.code in self._candidates:
             now = time.monotonic()
@@ -409,21 +422,22 @@ class TradingEngine:
 
         score = 0.0
         matched_strategy = None
+        name = self._poll_stock_names.get(tick.code, tick.code)
         try:
             from datetime import timedelta
 
-            # 일봉 데이터 준비
+            # 일봉 데이터 준비 (SMA120 계산에 최소 170거래일 필요 → 250일)
             end = datetime.now().strftime("%Y-%m-%d")
-            start = (datetime.now() - timedelta(days=130)).strftime("%Y-%m-%d")
+            start = (datetime.now() - timedelta(days=250)).strftime("%Y-%m-%d")
             ohlcv = self._ds.get_cached_ohlcv(tick.code, start, end)
             if not ohlcv or len(ohlcv) < 30:
-                logger.debug(f"진입체크 탈락 ({tick.code}): OHLCV 캐시 부족 ({len(ohlcv) if ohlcv else 0}행)")
+                logger.info(f"진입체크 탈락 ({name}): OHLCV 캐시 부족 ({len(ohlcv) if ohlcv else 0}행, 최소 30 필요)")
                 return
 
             df_daily = pd.DataFrame(ohlcv)
             df_daily = calculate_indicators(df_daily)
             if df_daily.empty:
-                logger.debug(f"진입체크 탈락 ({tick.code}): 지표 계산 실패")
+                logger.info(f"진입체크 탈락 ({name}): 지표 계산 실패")
                 return
 
             # 기관/외국인 수급 데이터 (graceful: 실패 시 0)
@@ -437,6 +451,19 @@ class TradingEngine:
             )
 
             df_60m = self._minute_ohlcv_cache.get(tick.code)
+
+            # 주요 지표 로깅 (종목당 첫 진입체크 시 1회)
+            if tick.code not in self._last_entry_check or self._last_entry_check[tick.code] == 0:
+                latest = df_daily.iloc[-1]
+                logger.info(
+                    f"진입체크 지표 ({name}): "
+                    f"score={score:.1f}, "
+                    f"RSI={latest.get('rsi', 0):.1f}, "
+                    f"ADX={latest.get('adx', 0):.1f}, "
+                    f"SMA5/20={latest.get('sma5', 0):,.0f}/{latest.get('sma20', 0):,.0f}, "
+                    f"vol_ratio={latest.get('volume', 0) / max(1, latest.get('volume_sma20', 1)):.2f}x, "
+                    f"60m={'있음' if df_60m is not None else '없음'}"
+                )
 
             # 멀티전략 순회: 카테고리별 게이트 분기
             reject_reasons = []
@@ -469,16 +496,19 @@ class TradingEngine:
                     reject_reasons.append(f"{strategy.name}: realtime_entry 미충족")
 
             if not matched_strategy:
-                name = self._poll_stock_names.get(tick.code, tick.code)
-                logger.debug(
-                    f"진입체크 불발 ({name}): score={score:.1f}, "
-                    f"사유=[{', '.join(reject_reasons[:3])}]"
-                )
+                reason_key = f"불발:{','.join(reject_reasons)}"
+                if self._entry_logged.get(tick.code) != reason_key:
+                    logger.info(
+                        f"진입체크 불발 ({name}): score={score:.1f}, "
+                        f"사유=[{', '.join(reject_reasons)}]"
+                    )
+                    self._entry_logged[tick.code] = reason_key
                 return
             logger.info(
                 f"진입 신호: {tick.code} by {matched_strategy.name} "
                 f"(score={score:.1f})"
             )
+            self._entry_logged.pop(tick.code, None)
         except Exception as e:
             logger.warning(f"진입 조건 체크 실패 ({tick.code}): {e}")
             return
@@ -506,6 +536,10 @@ class TradingEngine:
         )
         risk_result = self._risk_mgr.pre_check(signal, trend_intact=trend_intact)
         if not risk_result.approved:
+            reason_key = f"리스크:{risk_result.reason}"
+            if self._entry_logged.get(tick.code) != reason_key:
+                logger.info(f"진입 차단 ({name}): 리스크 체크 거부 — {risk_result.reason}")
+                self._entry_logged[tick.code] = reason_key
             return
 
         # 5. 포지션 사이징
@@ -514,10 +548,12 @@ class TradingEngine:
             capital=capital, win_rate=0.5, avg_win=0.08, avg_loss=0.04
         )
         if invest_amount <= 0:
+            logger.info(f"진입 차단 ({name}): 가용자본 부족 (capital={capital:,}, invest=0)")
             return
 
         qty = invest_amount // tick.price
         if qty <= 0:
+            logger.info(f"진입 차단 ({name}): 최소수량 미달 (invest={invest_amount:,}, price={tick.price:,})")
             return
 
         # 6. 주문 실행  # RISK_CHECK_REQUIRED
@@ -1008,6 +1044,7 @@ class TradingEngine:
         self._minute_ohlcv_cache.clear()  # 60분봉 캐시 초기화
         # partial_sold 초기화 불필요 (DB 기반)
         self._daily_trades_cache = None  # 당일 trades 캐시 초기화
+        self._entry_logged.clear()  # 진입 로그 반복 방지 캐시 초기화
 
         # OHLCV 캐시 정리 (400일 이상 된 데이터 삭제)
         try:
@@ -1109,26 +1146,28 @@ class TradingEngine:
             logger.debug("polling 이미 중지 상태")
 
     async def _polling_loop(self):
-        """REST polling 메인 루프 — 30초 간격으로 후보+보유 종목 현재가 조회."""
+        """REST polling 메인 루프 — 보유 종목 우선, 만석 시 후보 제외."""
         logger.info("polling 루프 진입")
         try:
             while self._running:
                 cycle_start = asyncio.get_event_loop().time()
 
-                # polling 대상: 후보 종목 + 보유 포지션
-                poll_codes: set[str] = set()
-                if self._candidates:
-                    poll_codes.update(self._candidates)
+                # polling 대상 결정: 보유 종목 + (여유 있을 때만) 후보 종목
                 open_positions = self._get_cached_positions()
-                if open_positions:
-                    poll_codes.update(p["code"] for p in open_positions)
+                held_codes = {p["code"] for p in open_positions} if open_positions else set()
+                max_pos = config.get("trading.max_positions", 8)
+                positions_full = len(held_codes) >= max_pos
+
+                poll_codes: set[str] = set(held_codes)
+                if not positions_full and self._candidates:
+                    poll_codes.update(self._candidates)
 
                 if not poll_codes:
                     logger.debug("polling 대상 없음 — 다음 주기 대기")
                     await asyncio.sleep(self._polling_interval)
                     continue
 
-                # 종목별 현재가 REST 조회 (rate limit: 0.3초 간격)
+                # 종목별 현재가 REST 조회 (rate limit: 5 TR/sec → 0.2초 간격)
                 success_count = 0
                 fail_count = 0
                 for code in poll_codes:
@@ -1160,17 +1199,16 @@ class TradingEngine:
                     except Exception as e:
                         fail_count += 1
                         logger.warning(f"현재가 조회 실패 ({code}): {e}")
-                    # rate limit 준수: 5 TR/sec → 0.3초 간격
-                    await asyncio.sleep(0.3)
+                    # rate limit 준수: 5 TR/sec → 0.2초 간격
+                    await asyncio.sleep(0.2)
 
-                # 5분(10주기)마다 INFO, 나머지는 debug
-                poll_cycle = getattr(self, "_poll_cycle_count", 0) + 1
-                self._poll_cycle_count = poll_cycle
-                log_fn = logger.info if poll_cycle % 10 == 1 or fail_count > 0 else logger.debug
-                log_fn(
-                    f"polling 주기 완료: {success_count}/{len(poll_codes)}종목 "
-                    f"가격 수신 (실패: {fail_count})"
-                )
+                # 실패 시에만 로깅
+                if fail_count > 0:
+                    mode_label = f"보유{len(held_codes)}종목" if positions_full else f"보유{len(held_codes)}+후보{len(poll_codes)-len(held_codes)}"
+                    logger.info(
+                        f"polling 주기: {success_count}/{len(poll_codes)}종목 "
+                        f"가격 수신 ({mode_label}, 실패: {fail_count})"
+                    )
 
                 # 주기 맞춤 대기 (polling_interval - 소요시간)
                 elapsed = asyncio.get_event_loop().time() - cycle_start

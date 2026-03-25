@@ -176,11 +176,19 @@ class EngineWorker(QThread):
         })
 
     def _emit_positions(self):
-        """포지션 목록을 시그널로 전송."""
+        """포지션 목록을 시그널로 전송 (현재가 주입)."""
         if not self._engine:
             return
         try:
             positions = self._engine._ds.get_open_positions()
+            # 엔진의 최신 가격 캐시에서 current_price 주입
+            for pos in positions:
+                code = pos.get("code", "")
+                latest = self._engine._latest_prices.get(code)
+                if latest:
+                    pos["current_price"] = latest
+                else:
+                    pos["current_price"] = pos.get("entry_price", 0)
             self.signals.positions_updated.emit(positions)
         except Exception:
             pass

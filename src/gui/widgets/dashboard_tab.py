@@ -42,7 +42,8 @@ class DashboardTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._max_positions = 3
+        from src.utils.config import config
+        self._max_positions = config.get("trading.max_positions", 8)
         self._init_ui()
 
     def _init_ui(self):
@@ -59,7 +60,7 @@ class DashboardTab(QWidget):
 
         self._stat_eval = self._make_stat_card("총 평가", "0원", _TEXT)
         self._stat_avail = self._make_stat_card("가용자금", "0원", _TEXT)
-        self._stat_pos = self._make_stat_card("포지션", "0/3", _BLUE)
+        self._stat_pos = self._make_stat_card("포지션", f"0/{self._max_positions}", _BLUE)
         self._stat_cand = self._make_stat_card("후보", "0종목", _SUBTEXT)
         self._stat_pnl = self._make_stat_card("일일 손익", "+0.00%", _GREEN)
         self._stat_mdd = self._make_stat_card("MDD", "0.0%", _SUBTEXT)
