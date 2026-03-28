@@ -121,6 +121,11 @@ risk:
   min_position_ratio: 0.03          # 종목당 최소 투자 비율 (총 자본의 3%)
   sizing_method: half_kelly         # 포지션 크기 결정 방식 (half_kelly | fixed)
 
+  # 포지션 사이징 기본 파라미터
+  default_win_rate: 0.5              # 기본 승률 (실거래 이력 충분히 쌓이면 동적 계산 전환 가능)
+  default_avg_win: 0.08              # 기본 평균 수익 (8%)
+  default_avg_loss: 0.04             # 기본 평균 손실 (4%)
+
   # 손절 (Stop Loss)
   stop_atr_multiplier: 1.5          # 초기 손절가 = 진입가 - ATR × 이 값 (최적화: 2.5→1.5, 빠른 손절)
   max_stop_pct: 0.07                # 최대 손절 비율 (0.07 = -7%) — 최적화: 0.10→0.07

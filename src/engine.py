@@ -544,8 +544,11 @@ class TradingEngine:
 
         # 5. 포지션 사이징
         capital = self._get_available_capital()
+        win_rate = config.get("risk.default_win_rate", 0.5)
+        avg_win = config.get("risk.default_avg_win", 0.08)
+        avg_loss = config.get("risk.default_avg_loss", 0.04)
         invest_amount = self._sizer.calculate(
-            capital=capital, win_rate=0.5, avg_win=0.08, avg_loss=0.04
+            capital=capital, win_rate=win_rate, avg_win=avg_win, avg_loss=avg_loss
         )
         if invest_amount <= 0:
             logger.info(f"진입 차단 ({name}): 가용자본 부족 (capital={capital:,}, invest=0)")
