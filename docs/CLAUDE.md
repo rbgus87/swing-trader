@@ -136,4 +136,7 @@ pytest tests/ -v
 - pykrx `get_market_ohlcv_by_ticker()` 반환 컬럼: `['시가','고가','저가','종가','거래량','거래대금','등락률']`
 - 키움 API 연결은 장 시작 전(08:30~08:50) 사이에 초기화 권장
 - REST API 인증 토큰은 23시간 후 자동 갱신 (만료 5분 전 선제 갱신)
-- 거래세 0.15% (2025년 기준) + 수수료 0.015% 백테스트에 반드시 반영
+- 거래세 0.15% (2025년) + 수수료 0.015% — config.yaml backtest 섹션에서 관리
+- 백테스트 비용 모델은 config.yaml의 backtest 섹션에서 관리 (BacktestEngine이 자동 로드)
+- 슬리피지는 체결가 조정 방식 (proceeds = int(price * (1-slippage)) * (1-commission-tax))
+- Walk-Forward는 --codes 인자로 커스텀 종목 지정 가능 (미지정 시 DEFAULT_CODES 20종목)
