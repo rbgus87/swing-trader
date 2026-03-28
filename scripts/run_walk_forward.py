@@ -11,6 +11,9 @@ Usage:
     python scripts/run_walk_forward.py --strategy bb_bounce
     python scripts/run_walk_forward.py --strategy adaptive
 
+    # 커스텀 종목으로 실행
+    python scripts/run_walk_forward.py --strategy golden_cross --codes 005930,000660,005380
+
     # 3개 전략 순차 실행 (golden_cross → bb_bounce → adaptive)
     python scripts/run_walk_forward.py --all
 """
@@ -34,8 +37,8 @@ from src.backtest.engine import BacktestEngine, BacktestResult
 from src.backtest.optimizer import ParameterOptimizer
 from src.backtest.report import BacktestReporter
 
-# watchlist 20종목
-CODES = [
+# watchlist 20종목 (기본값)
+DEFAULT_CODES = [
     "005930", "000660", "005380", "000270", "068270",
     "035420", "035720", "105560", "055550", "066570",
     "006400", "003670", "012330", "028260", "096770",
@@ -490,19 +493,18 @@ def main():
     parser.add_argument("--test", type=int, default=3, help="Test 개월 수 (기본: 3)")
     parser.add_argument("--step", type=int, default=6, help="Step 개월 수 (기본: 6)")
     parser.add_argument("--capital", type=int, default=3_000_000, help="자본금 (기본: 3,000,000)")
-    parser.add_argument("--codes", type=str, nargs="+", default=None,
-                        help="종목 코드 (미지정 시 대형주 10종목)")
+    parser.add_argument("--codes", type=str, default=None,
+                        help="종목코드 쉼표 구분 (예: 005930,000660,005380)")
     parser.add_argument("--max-positions", type=int, default=3,
                         help="포트폴리오 최대 보유 종목 수 (기본: 3)")
     parser.add_argument("--independent", action="store_true",
                         help="독립 종목별 백테스트 (기본: 포트폴리오)")
     args = parser.parse_args()
 
-    # 종목 지정 없으면 대형주 10종목 (적절한 신호 빈도 확보)
-    codes = args.codes or [
-        "005930", "000660", "005380", "000270", "068270",
-        "035420", "066570", "105560", "055550", "003670",
-    ]
+    if args.codes:
+        codes = [c.strip() for c in args.codes.split(",")]
+    else:
+        codes = DEFAULT_CODES
 
     t0_total = time.time()
 

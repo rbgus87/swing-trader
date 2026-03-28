@@ -86,7 +86,7 @@ hold_days = [t.get("hold_days", 0) for t in trades]
 # 비용 계산
 total_amount = sum(t.get("entry_price", 0) * t.get("shares", 0) for t in trades)
 total_commission = total_amount * 0.00015 * 2
-total_tax = total_amount * 0.002
+total_tax = total_amount * 0.0015
 total_slippage = total_amount * 0.001 * 2
 total_cost = total_commission + total_tax + total_slippage
 

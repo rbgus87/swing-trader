@@ -11,9 +11,9 @@ import pandas as pd
 import pytest
 
 from src.backtest.engine import (
-    COMMISSION_RATE,
-    SLIPPAGE_RATE,
-    TAX_RATE,
+    _DEFAULT_COMMISSION,
+    _DEFAULT_SLIPPAGE,
+    _DEFAULT_TAX,
     BacktestEngine,
     BacktestResult,
     _parse_period,
@@ -177,10 +177,10 @@ class TestBacktestEngine:
         assert not exits.iloc[0]
 
     def test_cost_model_constants(self):
-        """비용 모델 상수 확인."""
-        assert COMMISSION_RATE == 0.00015
-        assert TAX_RATE == 0.002
-        assert SLIPPAGE_RATE == 0.001
+        """비용 모델 기본값 확인."""
+        assert _DEFAULT_COMMISSION == 0.00015
+        assert _DEFAULT_TAX == 0.0015
+        assert _DEFAULT_SLIPPAGE == 0.001
 
 
 # ── 포트폴리오 시뮬레이션 테스트 ──────────────────────────────────

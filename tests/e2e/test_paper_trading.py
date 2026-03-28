@@ -255,6 +255,6 @@ class TestPaperTrading:
         last_trade = populated_db.get_last_trade("005930")
         assert last_trade["side"] == "sell"
 
-        # tax = price * quantity * 0.002
-        expected_tax = 55000 * 20 * 0.002
+        # tax = price * quantity * 0.0015
+        expected_tax = 55000 * 20 * 0.0015
         assert last_trade["tax"] == pytest.approx(expected_tax, rel=1e-6)

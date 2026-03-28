@@ -636,7 +636,7 @@ class TradingEngine:
         pnl = (price - position.entry_price) * sell_qty
         pnl_pct = (price - position.entry_price) / position.entry_price
         fee = price * sell_qty * 0.00015
-        tax = price * sell_qty * 0.002  # 매도세
+        tax = price * sell_qty * 0.0015  # 거래세 0.15% (2025년)
 
         trade = TradeRecord(
             code=position.code,

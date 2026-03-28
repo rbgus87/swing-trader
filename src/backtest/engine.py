@@ -16,10 +16,10 @@ from data.provider import get_provider
 from src.strategy import get_strategy
 from src.strategy.signals import calculate_indicators
 
-# 비용 모델
-COMMISSION_RATE = 0.00015  # 수수료 0.015% (편도)
-TAX_RATE = 0.002  # 거래세 0.2% (매도만)
-SLIPPAGE_RATE = 0.001  # 슬리피지 0.1%
+# 비용 모델 기본값 (fallback)
+_DEFAULT_COMMISSION = 0.00015  # 수수료 0.015% (편도)
+_DEFAULT_TAX = 0.0015  # 거래세 0.15% (2025년, 매도만)
+_DEFAULT_SLIPPAGE = 0.001  # 슬리피지 0.1%
 
 
 @dataclass
@@ -42,9 +42,21 @@ class BacktestResult:
 class BacktestEngine:
     """pandas 기반 백테스트 실행 엔진."""
 
-    def __init__(self, initial_capital: int = 10_000_000):
+    def __init__(self, initial_capital: int = 10_000_000, cost_config: dict | None = None):
         self.initial_capital = initial_capital
         self._price_cache: dict[str, pd.DataFrame] = {}
+
+        # 비용 모델: cost_config > config.yaml > 기본값
+        cc = cost_config or {}
+        try:
+            from src.utils.config import config as app_config
+            bt = app_config.data.get("backtest", {})
+        except Exception:
+            bt = {}
+
+        self.commission = cc.get("commission", bt.get("commission", _DEFAULT_COMMISSION))
+        self.tax = cc.get("tax", bt.get("tax", _DEFAULT_TAX))
+        self.slippage = cc.get("slippage", bt.get("slippage", _DEFAULT_SLIPPAGE))
 
     def clear_cache(self) -> None:
         """가격 데이터 캐시 초기화."""
@@ -235,9 +247,8 @@ class BacktestEngine:
                         remaining = position - sell_qty
                         if remaining > 0:
                             # 부분 매도 기록
-                            proceeds = partial_trigger * (
-                                1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE
-                            )
+                            actual_exit = int(partial_trigger * (1 - self.slippage))
+                            proceeds = actual_exit * (1 - self.commission - self.tax)
                             cash += sell_qty * proceeds
                             pnl_pct = (partial_trigger - entry_price) / entry_price
                             entry_date = self._format_date(close.index[entry_idx])
@@ -288,9 +299,8 @@ class BacktestEngine:
                     exit_price = price
 
                 if should_exit:
-                    proceeds = exit_price * (
-                        1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE
-                    )
+                    actual_exit = int(exit_price * (1 - self.slippage))
+                    proceeds = actual_exit * (1 - self.commission - self.tax)
                     cash += position * proceeds
                     pnl_pct = (exit_price - entry_price) / entry_price
                     entry_date = self._format_date(close.index[entry_idx])
@@ -321,7 +331,8 @@ class BacktestEngine:
                         continue
 
                 # 매수
-                cost_per_share = price * (1 + COMMISSION_RATE + SLIPPAGE_RATE)
+                actual_entry = int(price * (1 + self.slippage))
+                cost_per_share = actual_entry * (1 + self.commission)
                 shares = int(cash // cost_per_share)
                 if shares > 0:
                     position = shares
@@ -930,7 +941,8 @@ class BacktestEngine:
                         sell_qty = max(1, int(pos["shares"] * partial_sell_ratio))
                         remaining = pos["shares"] - sell_qty
                         if remaining > 0:
-                            proceeds = sell_qty * partial_trigger * (1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE)
+                            actual_exit = int(partial_trigger * (1 - self.slippage))
+                            proceeds = sell_qty * actual_exit * (1 - self.commission - self.tax)
                             cash += proceeds
                             pnl_pct = (partial_trigger - pos["entry_price"]) / pos["entry_price"]
                             trades.append({
@@ -977,7 +989,8 @@ class BacktestEngine:
                             should_exit = True
 
                 if should_exit:
-                    proceeds = pos["shares"] * exit_price * (1 - COMMISSION_RATE - SLIPPAGE_RATE - TAX_RATE)
+                    actual_exit = int(exit_price * (1 - self.slippage))
+                    proceeds = pos["shares"] * actual_exit * (1 - self.commission - self.tax)
                     cash += proceeds
                     pnl_pct = (exit_price - pos["entry_price"]) / pos["entry_price"]
                     trades.append({
@@ -1155,7 +1168,8 @@ class BacktestEngine:
                     cur_atr = float(df_ind["atr"].iloc[idx]) if not pd.isna(df_ind["atr"].iloc[idx]) else price * 0.02
 
                     # 포지션 사이징 (가용 자본 / 남은 포지션)
-                    cost_per_share = price * (1 + COMMISSION_RATE + SLIPPAGE_RATE)
+                    actual_entry = int(price * (1 + self.slippage))
+                    cost_per_share = actual_entry * (1 + self.commission)
                     position_budget = cash / max(1, current_max_pos - len(positions))
                     shares = int(position_budget // cost_per_share)
                     if shares <= 0:

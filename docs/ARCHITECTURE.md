@@ -259,7 +259,7 @@ risk:
 
 backtest:
   commission: 0.00015            # 0.015%
-  tax: 0.002                     # 0.2%
+  tax: 0.0015                    # 0.15%
   slippage: 0.001                # 0.1%
   initial_capital: 10_000_000
 

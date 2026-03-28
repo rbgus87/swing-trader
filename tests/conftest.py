@@ -3,7 +3,7 @@
 import os
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -60,7 +60,7 @@ def sample_config():
         },
         "backtest": {
             "commission": 0.00015,
-            "tax": 0.002,
+            "tax": 0.0015,
             "slippage": 0.001,
             "initial_capital": 10_000_000,
         },
@@ -123,12 +123,17 @@ def populated_db(tmp_db):
 
     포지션 2개(open), 매매기록 2개(buy)를 미리 삽입한다.
     """
+    # 상대 날짜 사용: max_hold_days(15) 초과 방지
+    today = datetime.now()
+    recent_date = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+    recent_date2 = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
     # 포지션 1: 삼성전자
     pos1 = Position(
         id=0,
         code="005930",
         name="삼성전자",
-        entry_date="2026-03-10",
+        entry_date=recent_date,
         entry_price=50000,
         quantity=20,
         stop_price=47000,
@@ -143,7 +148,7 @@ def populated_db(tmp_db):
         id=0,
         code="000660",
         name="SK하이닉스",
-        entry_date="2026-03-12",
+        entry_date=recent_date2,
         entry_price=120000,
         quantity=5,
         stop_price=111600,
@@ -166,7 +171,7 @@ def populated_db(tmp_db):
         pnl=0.0,
         pnl_pct=0.0,
         reason="signal",
-        executed_at="2026-03-10 09:30:00",
+        executed_at=f"{recent_date} 09:30:00",
     )
     tmp_db.record_trade(trade1)
 
@@ -182,7 +187,7 @@ def populated_db(tmp_db):
         pnl=0.0,
         pnl_pct=0.0,
         reason="signal",
-        executed_at="2026-03-12 10:00:00",
+        executed_at=f"{recent_date2} 10:00:00",
     )
     tmp_db.record_trade(trade2)
 

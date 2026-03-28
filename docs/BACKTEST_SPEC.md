@@ -21,7 +21,7 @@ python -m src.backtest.engine --strategy macd_rsi --walk-forward
 ```python
 # src/backtest/engine.py
 COMMISSION_RATE = 0.00015   # 수수료 0.015% (편도)
-TAX_RATE        = 0.002     # 거래세 0.2% (매도 시만)
+TAX_RATE        = 0.0015    # 거래세 0.15% (매도 시만, 2025년 기준)
 SLIPPAGE_RATE   = 0.001     # 슬리피지 0.1%
 
 # vectorbt에서 비용 적용
