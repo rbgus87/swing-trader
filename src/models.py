@@ -48,6 +48,7 @@ class Position:
     high_since_entry: int = 0
     hold_days: int = 0
     partial_sold: bool = False
+    entry_strategy: str = ""  # 진입 전략명 (adaptive 국면 전환 시 올바른 exit 적용)
     updated_at: str = ""
 
 

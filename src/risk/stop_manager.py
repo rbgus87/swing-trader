@@ -15,7 +15,7 @@ class StopManager:
         stop_atr_mult: float = 1.5,
         max_stop_pct: float = 0.07,
         trailing_atr_mult: float = 2.0,
-        trailing_activate_pct: float = 0.03,
+        trailing_activate_pct: float = 0.10,
     ):
         self.stop_atr_mult = stop_atr_mult
         self.max_stop_pct = max_stop_pct

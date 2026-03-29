@@ -6,7 +6,7 @@ TradingEngine의 조율 로직을 검증한다.
 asyncio 기반 engine에 맞추어 모든 테스트가 async로 동작한다.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.broker.tr_codes import ORDER_BUY, ORDER_SELL, PRICE_LIMIT, PRICE_MARKET
@@ -165,11 +165,12 @@ def _make_position_dict(
     status="open",
 ):
     """테스트용 Position dict 생성 헬퍼."""
+    recent_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     return {
         "id": id,
         "code": code,
         "name": "삼성전자",
-        "entry_date": "2026-03-15",
+        "entry_date": recent_date,
         "entry_price": entry_price,
         "quantity": quantity,
         "stop_price": stop_price,

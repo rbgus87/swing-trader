@@ -76,6 +76,7 @@ class DataStore:
                     high_since_entry INTEGER DEFAULT 0,
                     hold_days INTEGER DEFAULT 0,
                     partial_sold INTEGER DEFAULT 0,
+                    entry_strategy TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL DEFAULT ''
                 );
 
@@ -165,10 +166,16 @@ class DataStore:
                 pass  # 이미 존재
             self._set_schema_version(1)
 
-        # 향후 마이그레이션은 여기에 추가:
-        # if current < 2:
-        #     ...
-        #     self._set_schema_version(2)
+        if current < 2:
+            # v2: entry_strategy 컬럼 추가 (진입 전략 추적)
+            try:
+                self.conn.execute(
+                    "ALTER TABLE positions ADD COLUMN entry_strategy TEXT NOT NULL DEFAULT ''"
+                )
+                logger.info("마이그레이션 v2: positions.entry_strategy 컬럼 추가")
+            except sqlite3.OperationalError:
+                pass  # 이미 존재
+            self._set_schema_version(2)
 
     def _get_schema_version(self) -> int:
         """현재 스키마 버전 조회."""
@@ -208,8 +215,8 @@ class DataStore:
                 INSERT INTO positions
                     (code, name, entry_date, entry_price, quantity,
                      stop_price, target_price, status, high_since_entry,
-                     partial_sold, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     partial_sold, entry_strategy, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pos.code,
@@ -222,6 +229,7 @@ class DataStore:
                     pos.status,
                     pos.high_since_entry,
                     0,
+                    pos.entry_strategy,
                     pos.updated_at,
                 ),
             )

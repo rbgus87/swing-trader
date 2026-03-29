@@ -363,7 +363,7 @@ class TradingEngine:
         from src.strategy.signals import calculate_indicators
         import pandas as pd
 
-        max_hold = config.get("trading.max_hold_days", 15)
+        max_hold = config.get("strategy.max_hold_days", 10)
 
         # 1. 손절가 이탈
         if self._stop_mgr.is_stopped(pos, current_price):
@@ -568,9 +568,9 @@ class TradingEngine:
                 tick.code, qty, order_price, ORDER_BUY, hoga
             )
             if result.success:
-                await self._record_buy(tick, qty)
+                await self._record_buy(tick, qty, matched_strategy.name)
         elif self.mode == "paper":
-            await self._record_buy(tick, qty)
+            await self._record_buy(tick, qty, matched_strategy.name)
 
     async def _execute_sell(self, position: Position, price: int, reason: ExitReason):
         """매도 실행. 부분 매도(PARTIAL_TARGET) 시 절반만 매도하고 포지션 유지."""
@@ -770,7 +770,7 @@ class TradingEngine:
         except Exception:
             return code
 
-    async def _record_buy(self, tick: Tick, qty: int):
+    async def _record_buy(self, tick: Tick, qty: int, strategy_name: str = ""):
         """매수 기록."""
         atr = self._get_atr(tick.code, tick.price)
         stop_price = self._stop_mgr.get_initial_stop(tick.price, atr)
@@ -788,6 +788,7 @@ class TradingEngine:
             stop_price=stop_price,
             target_price=target_price,
             high_since_entry=tick.price,
+            entry_strategy=strategy_name,
         )
         self._ds.insert_position(pos)
         self._invalidate_positions_cache()
@@ -938,6 +939,7 @@ class TradingEngine:
             high_since_entry=d.get("high_since_entry", d["entry_price"]),
             hold_days=hold_days,
             partial_sold=bool(d.get("partial_sold", 0)),
+            entry_strategy=d.get("entry_strategy", ""),
             updated_at=d.get("updated_at", ""),
         )
 

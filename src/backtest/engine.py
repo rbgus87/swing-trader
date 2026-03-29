@@ -166,6 +166,7 @@ class BacktestEngine:
         exits: pd.Series,
         params: dict | None = None,
         weekly_sma20: pd.Series | None = None,
+        macd_hist: pd.Series | None = None,
     ) -> tuple[list[dict], pd.Series]:
         """포트폴리오 시뮬레이션 (손절/트레일링/목표가/부분매도/최대보유 포함).
 
@@ -184,11 +185,11 @@ class BacktestEngine:
         """
         p = params or {}
         target_return = p.get("target_return", 0.10)
-        stop_atr_mult = p.get("stop_atr_mult", 2.0)
+        stop_atr_mult = p.get("stop_atr_mult", 1.5)
         trailing_atr_mult = p.get("trailing_atr_mult", 2.5)
-        trailing_activate_pct = p.get("trailing_activate_pct", 0.05)
-        max_hold_days = p.get("max_hold_days", 20)
-        max_stop_pct = p.get("max_stop_pct", 0.10)
+        trailing_activate_pct = p.get("trailing_activate_pct", 0.10)
+        max_hold_days = p.get("max_hold_days", 10)
+        max_stop_pct = p.get("max_stop_pct", 0.07)
 
         # 부분 매도 파라미터
         partial_enabled = p.get("partial_sell_enabled", True)
@@ -288,12 +289,23 @@ class BacktestEngine:
                             should_exit = True
                             exit_price = stop_price
 
-                # 4. Max hold days
+                # 4. MACD 데드크로스 (수익 +2% 이상, macd_hist 음전환)
+                if not should_exit and macd_hist is not None and i >= 1:
+                    pnl_pct_unrealized = (price - entry_price) / entry_price
+                    if pnl_pct_unrealized >= 0.02:
+                        prev_hist = macd_hist.iloc[i - 1]
+                        curr_hist = macd_hist.iloc[i]
+                        if not np.isnan(prev_hist) and not np.isnan(curr_hist):
+                            if prev_hist > 0 and curr_hist < 0:
+                                should_exit = True
+                                exit_price = price
+
+                # 5. Max hold days
                 if not should_exit and (i - entry_idx) >= max_hold_days:
                     should_exit = True
                     exit_price = price
 
-                # 5. Signal-based exit (from generate_signals)
+                # 6. Signal-based exit (from generate_signals)
                 if not should_exit and exits.iloc[i]:
                     should_exit = True
                     exit_price = price
@@ -529,9 +541,11 @@ class BacktestEngine:
                         pass
 
                 # pandas 기반 시뮬레이션
+                macd_hist_series = df_ind.get("macd_hist")
                 trades, equity = self._simulate_portfolio(
                     close, high, low, atr_series, entries, exits, params,
                     weekly_sma20=weekly_sma20,
+                    macd_hist=macd_hist_series,
                 )
                 result = self._calculate_metrics(
                     trades, equity, params or {}
@@ -728,9 +742,9 @@ class BacktestEngine:
 
         p = params or {}
         target_return = p.get("target_return", 0.06)
-        stop_atr_mult = p.get("stop_atr_mult", 2.5)
+        stop_atr_mult = p.get("stop_atr_mult", 1.5)
         trailing_atr_mult = p.get("trailing_atr_mult", 2.0)
-        trailing_activate_pct = p.get("trailing_activate_pct", 0.07)
+        trailing_activate_pct = p.get("trailing_activate_pct", 0.10)
         max_hold_days = p.get("max_hold_days", 10)
         max_stop_pct = p.get("max_stop_pct", 0.07)
         partial_enabled = p.get("partial_sell_enabled", True)
@@ -974,6 +988,19 @@ class BacktestEngine:
                         if bar_low <= pos["stop_price"]:
                             should_exit = True
                             exit_price = pos["stop_price"]
+                # MACD 데드크로스 (수익 +2% 이상, macd_hist 음전환)
+                if not should_exit and code in indicator_cache:
+                    pnl_unrealized = (price - pos["entry_price"]) / pos["entry_price"]
+                    if pnl_unrealized >= 0.02:
+                        df_c = indicator_cache[code]
+                        if "macd_hist" in df_c.columns and idx >= 1:
+                            prev_h = df_c["macd_hist"].iloc[idx - 1]
+                            curr_h = df_c["macd_hist"].iloc[idx]
+                            if not np.isnan(prev_h) and not np.isnan(curr_h):
+                                if prev_h > 0 and curr_h < 0:
+                                    should_exit = True
+                                    exit_price = price
+
                 # 최대보유
                 if not should_exit and hold_days >= max_hold_days:
                     should_exit = True
