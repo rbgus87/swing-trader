@@ -840,7 +840,7 @@ class BacktestEngine:
         is_adaptive = strategy_name == "adaptive"
         regime_map = p.get("regime_strategy", {
             "trending": "disparity_reversion",
-            "sideways": "bb_bounce",
+            "sideways": "disparity_reversion",
         })
 
         # 신호 생성 (파라미터 의존적이므로 항상 재계산)
@@ -913,10 +913,10 @@ class BacktestEngine:
             bearish_max_positions = max(1, max_positions // 3)  # 약세장 포지션 제한
             if is_adaptive:
                 if current_regime == "bearish":
-                    # 약세장: bb_bounce 허용 (포지션 축소)
-                    active_strategies = ["bb_bounce"]
+                    # 약세장: disparity_reversion 허용 (포지션 축소)
+                    active_strategies = ["disparity_reversion"]
                 else:
-                    mapped = regime_map.get(current_regime, "bb_bounce")
+                    mapped = regime_map.get(current_regime, "disparity_reversion")
                     if isinstance(mapped, list):
                         active_strategies = mapped
                     else:
@@ -1050,11 +1050,11 @@ class BacktestEngine:
                 consecutive_losses = 0
 
             # 2. 새 진입 (시장 필터 + 포지션 제한 + 쿨다운 + 주봉 SMA20)
-            # adaptive 모드: bearish에서도 bb_bounce 허용 (포지션 축소)
+            # adaptive 모드: bearish에서도 disparity_reversion 허용 (포지션 축소)
             # 비-adaptive: 기존 로직 유지 (market_ok 필수)
             allow_entry = market_ok and current_regime != "bearish"
             if is_adaptive and current_regime == "bearish":
-                allow_entry = True  # bb_bounce로 진입 허용
+                allow_entry = True  # disparity_reversion로 진입 허용
 
             # 쿨다운 중이면 진입 차단
             if cooldown_until is not None:

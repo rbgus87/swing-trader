@@ -76,13 +76,13 @@ class TradingEngine:
 
         # 전략 인스턴스 (멀티전략 지원)
         self._strategy_config = config.data.get("strategy", {})
-        self._strategy_type = self._strategy_config.get("type", "disparity_reversion")
+        self._strategy_type = self._strategy_config.get("type", "adaptive")
         self._is_adaptive = self._strategy_type == "adaptive"
 
         if self._is_adaptive:
             # adaptive 모드: 기본 전략 리스트로 초기화, 장전 스크리닝에서 전환
             regime_map = self._strategy_config.get("regime_strategy", {})
-            default_names = regime_map.get("sideways", "bb_bounce")
+            default_names = regime_map.get("sideways", "disparity_reversion")
             if isinstance(default_names, str):
                 default_names = [default_names]
             self._strategies = [
@@ -162,6 +162,13 @@ class TradingEngine:
 
         # 일일 리셋 (09:00)
         self._scheduler.add_job(self._daily_reset, "cron", hour=9, minute=0)
+
+        # 분기 watchlist 자동 갱신 (3/6/9/12월 1일 08:00)
+        if config.get("watchlist_refresh.enabled", False):
+            self._scheduler.add_job(
+                self._quarterly_watchlist_refresh, "cron",
+                month="3,6,9,12", day=1, hour=8, minute=0,
+            )
 
         # 60분봉 갱신 (장중 매시 정각: 10, 11, 12, 13, 14, 15시)
         self._scheduler.add_job(
@@ -402,6 +409,28 @@ class TradingEngine:
         entry_strategy에 따라 분기. 미등록 전략은 MACD 데드크로스 폴백.
         """
         strategy = pos.entry_strategy
+
+        # golden_cross: 데드크로스 + RSI 과열
+        if strategy == "golden_cross":
+            try:
+                from src.strategy.signals import calculate_indicators
+                import pandas as pd
+                from datetime import timedelta
+                end = datetime.now().strftime("%Y-%m-%d")
+                start = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
+                ohlcv = self._ds.get_cached_ohlcv(pos.code, start, end)
+                if ohlcv and len(ohlcv) >= 2:
+                    df = pd.DataFrame(ohlcv)
+                    df = calculate_indicators(df)
+                    if len(df) >= 2:
+                        prev = df.iloc[-2]
+                        curr = df.iloc[-1]
+                        if curr["sma5"] < curr["sma20"] and prev["sma5"] >= prev["sma20"]:
+                            return ExitReason.MACD_DEAD
+                        if curr.get("rsi", 50) > 70:
+                            return ExitReason.TARGET_REACHED
+            except Exception:
+                pass
 
         # disparity_reversion: 이격도 기반 청산
         if strategy == "disparity_reversion":
@@ -1006,6 +1035,62 @@ class TradingEngine:
         )
 
     # ── 장마감 ──
+
+    async def _quarterly_watchlist_refresh(self):
+        """분기 watchlist 자동 갱신."""
+        try:
+            from data.provider import get_provider
+            provider = get_provider()
+
+            wl_config = config.data.get("watchlist_refresh", {})
+            new_list = await asyncio.to_thread(
+                provider.generate_watchlist,
+                top_n=wl_config.get("top_n", 20),
+                min_market_cap=wl_config.get("min_market_cap", 5_000_000_000_000),
+                min_daily_amount=wl_config.get("min_daily_amount", 10_000_000_000),
+                min_atr_pct=wl_config.get("min_atr_pct", 0.02),
+                max_atr_pct=wl_config.get("max_atr_pct", 0.05),
+            )
+
+            if not new_list or len(new_list) < 10:
+                logger.warning("watchlist 갱신 실패: 조건 충족 종목 부족")
+                return
+
+            new_codes = [item["code"] for item in new_list]
+            old_codes = config.get("watchlist", [])
+            if isinstance(old_codes, list):
+                added = set(new_codes) - set(old_codes)
+                removed = set(old_codes) - set(new_codes)
+            else:
+                added, removed = set(new_codes), set()
+
+            if not added and not removed:
+                logger.info("watchlist 변경 없음")
+                return
+
+            self._update_watchlist_config(new_codes)
+            config.reload()
+
+            msg = f"분기 watchlist 갱신: {len(new_codes)}종목 (추가 {len(added)}, 제거 {len(removed)})"
+            logger.info(msg)
+            await self._telegram.send(msg)
+        except Exception as e:
+            logger.error(f"watchlist 갱신 실패: {e}")
+
+    def _update_watchlist_config(self, codes: list[str]):
+        """config.yaml watchlist 업데이트."""
+        try:
+            from ruamel.yaml import YAML
+            yaml = YAML()
+            yaml.preserve_quotes = True
+            with open("config.yaml", "r", encoding="utf-8") as f:
+                data = yaml.load(f)
+            data["watchlist"] = codes
+            with open("config.yaml", "w", encoding="utf-8") as f:
+                yaml.dump(data, f)
+            logger.info(f"config.yaml watchlist 업데이트: {len(codes)}종목")
+        except Exception as e:
+            logger.error(f"config.yaml 업데이트 실패: {e}")
 
     async def _post_market_cleanup(self):
         """장 마감 후 미체결 주문 정리 (15:35 스케줄).

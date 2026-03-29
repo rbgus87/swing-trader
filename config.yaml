@@ -7,12 +7,36 @@
 # --- 종목 리스트 ---
 # watchlist가 비어있으면 pre_screening + screening 2단계 동적 선별 모드로 동작
 # watchlist에 종목이 있으면 해당 종목만 감시 (기존 고정 모드)
-watchlist: []
-# watchlist:
-#   - "005930"   # 삼성전자
-#   - "000660"   # SK하이닉스
-#   - "005380"   # 현대차
-#   (... 필요시 고정 종목 추가)
+watchlist:
+  - "005930"   # 삼성전자
+  - "000660"   # SK하이닉스
+  - "005380"   # 현대차
+  - "000270"   # 기아
+  - "068270"   # 셀트리온
+  - "035420"   # NAVER
+  - "035720"   # 카카오
+  - "105560"   # KB금융
+  - "055550"   # 신한지주
+  - "066570"   # LG전자
+  - "006400"   # 삼성SDI
+  - "003670"   # 포스코퓨처엠
+  - "012330"   # 현대모비스
+  - "028260"   # 삼성물산
+  - "096770"   # SK이노베이션
+  - "003550"   # LG
+  - "034730"   # SK
+  - "032830"   # 삼성생명
+  - "030200"   # KT
+  - "017670"   # SK텔레콤
+
+# watchlist 자동 갱신 (분기 1회: 3/6/9/12월)
+watchlist_refresh:
+  enabled: true
+  min_market_cap: 5_000_000_000_000   # 시가총액 5조원 이상
+  min_daily_amount: 10_000_000_000    # 20일 평균 거래대금 100억 이상
+  min_atr_pct: 0.02                   # ATR% 하한 2%
+  max_atr_pct: 0.05                   # ATR% 상한 5%
+  top_n: 20
 
 # --- 1차 Pre-Screening (장전 후보군 축소 필터) ---
 # 시장 국면(regime)에 따라 조건식을 자동 선택
@@ -46,7 +70,7 @@ pre_screening:
 # 모드 제어는 .env의 IS_PAPER_TRADING으로 관리 (True=모의, False=실거래)
 trading:
   universe: kospi_kosdaq            # 매매 대상 시장 (kospi | kosdaq | kospi_kosdaq)
-  max_positions: 8                  # 동시에 보유할 수 있는 최대 종목 수 (백테스트 최적: 30종목/8포지션)
+  max_positions: 4                  # 동시에 보유할 수 있는 최대 종목 수 (자본금 300만원 기준 4종목, 종목당 ~75만원)
   reentry_cooldown_days: 3          # 같은 종목을 매도 후 다시 매수하기까지 대기 영업일
   reentry_cooldown_trend_days: 1    # 추세 유지 시 (SMA5>SMA20, ADX>임계값) 단축 쿨다운
   initial_capital: 3_000_000        # 실거래/페이퍼 초기 자본금 (원)
@@ -63,27 +87,24 @@ screening:
   top_n: 30                         # 스크리닝 결과 상위 N종목까지만 매수 후보로 선정 (백테스트 최적: 30종목/8포지션)
 
 # --- 매매 전략 파라미터 ---
-# 확정 전략: disparity_reversion (이격도 평균회귀)
+# 확정 전략: golden_cross(trending) + disparity_reversion(sideways)
 strategy:
-  type: disparity_reversion            # 단일 전략 (adaptive 비활성)
+  type: adaptive                       # 2전략 adaptive (국면별 자동 전환)
 
-  # 국면별 전략 매핑 (adaptive 모드용 — 현재 미사용)
-  # regime_strategy:
-  #   trending: (미정)
-  #   sideways: disparity_reversion
-  #   bearish: 매수 차단
+  regime_strategy:
+    trending: golden_cross             # 추세장: SMA5/20 골든크로스
+    sideways: disparity_reversion      # 횡보장: 이격도 평균회귀
+    # bearish: 매수 차단 (MarketRegime 게이트)
 
-  # 수급 필터 (비활성 — 단일 전략에서 불필요)
-  flow_filter_enabled: false
+  flow_filter_enabled: false           # 수급 가산점 비활성
 
-  # 국면별 포지션 사이즈 스케일링 (단일 전략이지만 국면별 리스크 조절 유지)
   regime_position_scale:
-    trending: 0.7                      # 추세장: 평균회귀 기회 적으므로 70%
-    sideways: 1.0                      # 횡보장: 핵심 영역, 100%
+    trending: 1.0                      # 추세장: 100%
+    sideways: 0.7                      # 횡보장: 70% (리스크 축소)
     bearish: 0.0                       # 약세장: 매수 차단
   timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
   timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)
-  adx_threshold: 15                 # ADX 추세 강도 기준 (튜닝: 20→15, 약한 추세에서도 진입 허용)
+  adx_threshold: 20                 # ADX 추세 강도 기준 (golden_cross Sharpe 0.84 검증 값)
 
   # 이동평균선 (Moving Average)
   macd_fast: 12                     # MACD 빠른선 기간 (기본 12일)
@@ -144,8 +165,8 @@ risk:
   default_avg_loss: 0.04             # 기본 평균 손실 (4%)
 
   # 손절 (Stop Loss)
-  stop_atr_multiplier: 1.5          # 초기 손절가 = 진입가 - ATR × 이 값 (최적화: 2.5→1.5, 빠른 손절)
-  max_stop_pct: 0.07                # 최대 손절 비율 (0.07 = -7%) — 최적화: 0.10→0.07
+  stop_atr_multiplier: 2.0          # 초기 손절가 = 진입가 - ATR × 2.0 (golden_cross Sharpe 0.84 검증 값)
+  max_stop_pct: 0.10                # 최대 손절 비율 10% (stop_atr_mult 2.0 기준)
 
   # 트레일링 스톱 (수익 보호)
   trailing_atr_multiplier: 2.0      # 트레일링 = 고점 - ATR × 이 값

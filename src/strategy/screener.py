@@ -40,13 +40,13 @@ class Screener:
         self.universe = config.get("trading", {}).get("universe", "kospi_kosdaq")
         self.strategy_config = config.get("strategy", {})
         self.watchlist = config.get("watchlist", [])
-        self.strategy_type = self.strategy_config.get("type", "golden_cross")
+        self.strategy_type = self.strategy_config.get("type", "adaptive")
         self._is_adaptive = self.strategy_type == "adaptive"
 
         # adaptive 모드: 기본 전략 리스트로 초기화 (국면별 전환은 run_daily_screening에서)
         if self._is_adaptive:
             regime_map = self.strategy_config.get("regime_strategy", {})
-            default_names = regime_map.get("sideways", "bb_bounce")
+            default_names = regime_map.get("sideways", "disparity_reversion")
             if isinstance(default_names, str):
                 default_names = [default_names]
             self._strategies = [

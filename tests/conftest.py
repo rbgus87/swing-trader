@@ -46,7 +46,11 @@ def sample_config():
             "top_n": 30,
         },
         "strategy": {
-            "type": "disparity_reversion",
+            "type": "adaptive",
+            "regime_strategy": {
+                "trending": "golden_cross",
+                "sideways": "disparity_reversion",
+            },
             "macd_fast": 12,
             "macd_slow": 26,
             "macd_signal": 9,

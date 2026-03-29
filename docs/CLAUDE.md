@@ -140,5 +140,9 @@ pytest tests/ -v
 - 백테스트 비용 모델은 config.yaml의 backtest 섹션에서 관리 (BacktestEngine이 자동 로드)
 - 슬리피지는 체결가 조정 방식 (proceeds = int(price * (1-slippage)) * (1-commission-tax))
 - Walk-Forward는 --codes 인자로 커스텀 종목 지정 가능 (미지정 시 DEFAULT_CODES 20종목)
-- 기존 전략 7개는 src/strategy/에 파일 존재하지만 __init__.py에서 비활성. 재활성화하려면 import 주석 해제 + config.yaml regime_strategy 수정.
-- institutional_flow 전략의 수급 exit(외국인 순매도)은 pykrx API 호출. API 장애 시 graceful하게 스킵 (MACD 데드크로스 폴백).
+- 활성 전략: golden_cross + disparity_reversion (adaptive)
+- golden_cross 검증 파라미터: adx=20, stop_atr=2.0 (config에 반영됨)
+- watchlist: 대형주 20종목, 분기 자동 갱신 (scripts/refresh_watchlist.py --apply)
+- max_positions: 4 (자본금 300만원 기준)
+- 중형주 확대 금지 (유니버스 분석: Sharpe 0.84→-0.33)
+- 비활성 전략(v1 7개 + v2 2개)은 src/strategy/에 파일 보존, __init__.py에서 주석.

@@ -400,6 +400,73 @@ class DataProvider:
         logger.info(f"동적 유니버스: {len(result)}종목 (시총 {min_market_cap/1e8:.0f}억 이상)")
         return result
 
+    def generate_watchlist(
+        self, top_n: int = 20,
+        min_market_cap: int = 5_000_000_000_000,
+        min_daily_amount: int = 10_000_000_000,
+        min_atr_pct: float = 0.02,
+        max_atr_pct: float = 0.05,
+    ) -> list[dict]:
+        """스윙 매매에 적합한 대형주 watchlist 자동 생성.
+
+        선정 기준:
+        1. 시가총액 5조원 이상
+        2. 20일 평균 거래대금 100억 이상
+        3. 우선주 제외 (코드 끝자리 0이 아닌 것)
+        4. 20일 ATR% 2~5%
+        5. 거래대금 내림차순 → 상위 N종목
+        """
+        from datetime import timedelta
+
+        # 시가총액 상위 종목 조회
+        candidates = self.get_top_stocks_by_market_cap(
+            top_n=top_n * 5, min_market_cap=min_market_cap,
+        )
+        if not candidates:
+            return []
+
+        # 우선주 제외
+        candidates = [c for c in candidates if c.endswith("0")]
+
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=35)).strftime("%Y-%m-%d")
+
+        result = []
+        for code in candidates:
+            try:
+                df = self.get_ohlcv_by_date_range(code, start, end)
+                if df is None or len(df) < 20:
+                    continue
+
+                recent = df.iloc[-20:]
+                avg_amount = float(recent.get("amount", recent["close"] * recent["volume"]).mean())
+                if avg_amount < min_daily_amount:
+                    continue
+
+                atr_pct = float(((recent["high"] - recent["low"]).mean()) / recent["close"].iloc[-1])
+                if atr_pct < min_atr_pct or atr_pct > max_atr_pct:
+                    continue
+
+                name = self.get_stock_name(code)
+                cap_codes = self.get_top_stocks_by_market_cap(top_n=500, min_market_cap=0)
+                # 시가총액은 이미 필터됨, 여기서는 거래대금으로 정렬
+                result.append({
+                    "code": code,
+                    "name": name,
+                    "market_cap": min_market_cap,  # 대략값
+                    "avg_amount": avg_amount,
+                    "atr_pct": atr_pct,
+                })
+            except Exception:
+                continue
+
+            if len(result) >= top_n:
+                break
+
+        # 거래대금 내림차순 정렬
+        result.sort(key=lambda x: x["avg_amount"], reverse=True)
+        return result[:top_n]
+
 
 # 싱글턴 인스턴스
 _provider: DataProvider | None = None
