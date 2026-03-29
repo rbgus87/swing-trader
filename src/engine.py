@@ -76,7 +76,7 @@ class TradingEngine:
 
         # 전략 인스턴스 (멀티전략 지원)
         self._strategy_config = config.data.get("strategy", {})
-        self._strategy_type = self._strategy_config.get("type", "golden_cross")
+        self._strategy_type = self._strategy_config.get("type", "momentum_pullback")
         self._is_adaptive = self._strategy_type == "adaptive"
 
         if self._is_adaptive:

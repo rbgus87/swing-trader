@@ -896,3 +896,91 @@ class TestInstitutionalNetBuying:
         """잘못된 종목코드에도 (0, 0) 반환."""
         result = get_institutional_net_buying("INVALID")
         assert result == (0, 0)
+
+
+# ── MomentumPullback 전략 테스트 ──────────────────────────────
+
+
+class TestMomentumPullbackStrategy:
+    """momentum_pullback 전략 테스트."""
+
+    @pytest.fixture
+    def momentum_df(self) -> pd.DataFrame:
+        """모멘텀 + 눌림목 시나리오 데이터 (200행).
+
+        상승 추세 → 3일 눌림 → 당일 반등.
+        SMA120 워밍업 고려하여 200행 필요.
+        """
+        np.random.seed(123)
+        n = 200
+
+        # 기본 상승 추세
+        base = 50000 + np.cumsum(np.random.normal(80, 150, n))
+        base = np.maximum(base, 30000)
+
+        close = np.round(base).astype(int)
+        high = np.round(close * 1.015).astype(int)
+        low = np.round(close * 0.985).astype(int)
+
+        # open 생성: 대부분 양봉
+        open_ = np.round(close * 0.995).astype(int)
+
+        # 마지막 3일: 눌림 (음봉)
+        for i in range(-4, -1):
+            close[i] = int(close[i] * 0.99)
+            open_[i] = int(close[i] * 1.01)  # 음봉: open > close
+
+        # 마지막 날: 반등 양봉
+        close[-1] = int(close[-2] * 1.02)
+        open_[-1] = int(close[-1] * 0.99)
+        high[-1] = int(close[-1] * 1.01)
+
+        volume = np.random.randint(500000, 2000000, n)
+        volume[-1] = 3000000  # 반등일 거래량 증가
+
+        df = pd.DataFrame({
+            "open": open_, "high": high, "low": low,
+            "close": close, "volume": volume,
+        })
+        return df
+
+    def test_screening_entry_momentum_pullback(self, momentum_df):
+        """모멘텀 양수 + 눌림 + 양봉 → True."""
+        from src.strategy.momentum_pullback_strategy import MomentumPullbackStrategy
+
+        df = calculate_indicators(momentum_df)
+        strategy = MomentumPullbackStrategy({"momentum_period": 60, "pullback_days": 3})
+        result = strategy.check_screening_entry(df)
+        assert result is True
+
+    def test_screening_entry_no_momentum(self, momentum_df):
+        """모멘텀 음수 → False."""
+        from src.strategy.momentum_pullback_strategy import MomentumPullbackStrategy
+
+        # 가격을 하락 추세로 변환
+        df = momentum_df.copy()
+        df["close"] = df["close"].iloc[::-1].values  # 역순 → 하락 추세
+        df = calculate_indicators(df)
+        strategy = MomentumPullbackStrategy({"momentum_period": 60})
+        result = strategy.check_screening_entry(df)
+        assert result is False
+
+    def test_backtest_signals_no_lookahead(self, momentum_df):
+        """백테스트 시그널: boolean Series + shift 적용 (look-ahead bias 없음)."""
+        from src.strategy.momentum_pullback_strategy import MomentumPullbackStrategy
+
+        strategy = MomentumPullbackStrategy({"momentum_period": 60, "pullback_days": 3})
+        entries, exits = strategy.generate_backtest_signals(momentum_df)
+
+        assert isinstance(entries, pd.Series)
+        assert isinstance(exits, pd.Series)
+        assert entries.dtype == bool
+        assert exits.dtype == bool
+        # shift(1) 적용 확인: 첫 행은 항상 False
+        assert not entries.iloc[0]
+        assert not exits.iloc[0]
+
+    def test_strategy_registered(self):
+        """전략이 레지스트리에 등록됨."""
+        from src.strategy.base_strategy import available_strategies
+        assert "momentum_pullback" in available_strategies()

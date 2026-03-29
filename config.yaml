@@ -63,17 +63,15 @@ screening:
   top_n: 30                         # 스크리닝 결과 상위 N종목까지만 매수 후보로 선정 (백테스트 최적: 30종목/8포지션)
 
 # --- 매매 전략 파라미터 ---
-# 현재 전략: 골든크로스 변형 (SMA5/20 크로스 + RSI + ADX + 거래량)
+# v2 전략: 모멘텀/수급/이격도 기반 (기존 전략은 비활성화됨)
 strategy:
-  type: adaptive                    # adaptive: 시장 국면별 자동 전환 | bb_bounce | golden_cross | macd_rsi | breakout
+  type: momentum_pullback             # momentum_pullback | institutional_flow | disparity_reversion | adaptive
   # 국면별 전략 매핑 (type=adaptive 일 때만 사용)
-  # 리스트 형식도 지원: 복수 전략 동시 활성화 (OR 로직)
+  # Phase B 완료 시 adaptive로 전환 예정
   regime_strategy:
-    trending:                          # 추세장 (ADX >= 25, KOSPI > 200일선)
-      - golden_cross                   #   추세 시작 포착 (SMA5/20 크로스)
-      - macd_pullback                  #   추세 중 눌림목 재진입 (MACD>Signal + RSI 반등)
-      - volume_breakout                #   거래량 선행 돌파 (매집→가격 돌파 초기 포착)
-    sideways: bb_bounce                # 횡보장 (ADX < 25, KOSPI > 200일선) — WF 검증 완료
+    trending:                          # 추세장
+      - momentum_pullback              #   모멘텀 + 눌림목 반등
+    sideways: momentum_pullback        # 횡보장 (disparity_reversion 구현 후 교체 예정)
     # bearish: 매수 차단 (MarketRegime 게이트)
   timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
   timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)
@@ -104,6 +102,11 @@ strategy:
   # 거래량 돌파 전략 (volume_breakout) 파라미터
   vol_breakout_multiplier: 1.5      # N일 최대 거래량 대비 배수 (튜닝: 0.8→1.5, 강한 돌파만 허용)
   vol_lookback: 20                  # 거래량 돌파 기준 기간 (일)
+
+  # 모멘텀 + 눌림목 전략 (momentum_pullback)
+  momentum_period: 60             # 모멘텀 측정 기간 (거래일)
+  pullback_days: 3                # 눌림목 확인 기간 (거래일)
+  rsi_pullback_threshold: 30      # 눌림목 RSI 기준
 
   # 청산 조건
   max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도

@@ -498,35 +498,41 @@ class TestEngineRun:
 
     def test_relaxed_params_generate_more_signals(self, engine):
         """완화된 파라미터가 기존보다 같거나 많은 entry 신호를 생성."""
-        # 완만한 상승 + 진동으로 SMA20 위에서 MACD 크로스오버 유도
+        # 상승 추세 + 주기적 눌림목으로 momentum_pullback 신호 유도
         np.random.seed(77)
         n = 500
         t = np.arange(n)
-        base = 50000 + t * 5
-        osc = np.sin(t / 8) * 400 + np.sin(t / 20) * 800
-        noise = np.random.normal(0, 100, n)
+        base = 50000 + t * 8  # 강한 상승
+        osc = np.sin(t / 10) * 600  # 주기적 진동 (눌림목 유도)
+        noise = np.random.normal(0, 80, n)
         close = np.round(base + osc + noise).astype(int)
         close = np.maximum(close, 10000)
         high = np.round(close * 1.012).astype(int)
         low = np.round(close * 0.988).astype(int)
-        open_ = close.copy()
-        volume = np.random.randint(500_000, 1_200_000, n)
+        # open < close → 양봉 비율 높이기
+        open_ = np.round(close * 0.997).astype(int)
+        volume = np.random.randint(800_000, 2_000_000, n)
 
         df = pd.DataFrame({
             "open": open_, "high": high, "low": low,
             "close": close, "volume": volume,
         })
 
-        # 기존 엄격한 파라미터
+        # 엄격: 짧은 pullback_days + 높은 volume_multiplier
         strict_params = {
-            "rsi_min": 40,
-            "rsi_max": 65,
+            "momentum_period": 60,
+            "pullback_days": 3,
             "volume_multiplier": 1.5,
         }
         strict_entries, _ = engine.generate_signals(df, strict_params)
 
-        # 완화된 파라미터 (새 기본값)
-        relaxed_entries, _ = engine.generate_signals(df)
+        # 완화: 기본값 (volume_multiplier=1.0)
+        relaxed_params = {
+            "momentum_period": 60,
+            "pullback_days": 3,
+            "volume_multiplier": 1.0,
+        }
+        relaxed_entries, _ = engine.generate_signals(df, relaxed_params)
 
         # 완화된 조건이 같거나 더 많은 신호를 생성해야 함
         assert relaxed_entries.sum() >= strict_entries.sum()

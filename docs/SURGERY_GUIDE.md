@@ -331,28 +331,78 @@ invest_amount = self._sizer.calculate(
 사전 작업 (완료):
   FIX-5: CLAUDE.md 루트 레벨 생성 ✅
 
-Phase 1 (필수 — 검증 인프라 교정):
-  FIX-1 → FIX-2 → FIX-3 → FIX-4 → STRAT-1 → pytest → 커밋
+Phase 1 (완료 — 검증 인프라 교정):
+  FIX-1 → FIX-2 → FIX-3 → FIX-4 → STRAT-1 ✅
 
-Phase 2 (안전성):
-  FIX-6 → FIX-7 → pytest → 커밋
+Phase 2 (완료 — 안전성):
+  FIX-6 → FIX-7 ✅
 
-Phase 3 (전략 정합성):
-  STRAT-2: 백테스트 ↔ 실전 청산 로직 일치
-  STRAT-3: entry_strategy 추적 추가
+Phase 3 (완료 — 전략 정합성):
+  STRAT-2 → STRAT-3 ✅ (단, INFRA-2 미완성 — Phase A에서 보완)
 
-Phase 4 (전략 재설계 — 수술 완료 후):
-  신규 전략 3개 구현 + 백테스트 + WF 검증
+Phase A (인프라 잔여 — Phase B 전 선행):
+  INFRA-1: StopManager fallback 통일
+  INFRA-2: _evaluate_exit → _check_strategy_exit 분리 (전략별 exit 골격)
+  INFRA-3: Paper 모드 OrderManager 이중 안전장치
+  INFRA-5: DataStore.get_trade_statistics() 구현
 
-Phase 5 (검증):
-  Paper trading 1~2개월 — 기존 vs. 신규 병렬 비교
-  데이터 기반 최종 전략 확정
+Phase B (전략 재설계):
+  B-1: 기존 전략 비활성화 + momentum_pullback 구현
+  B-2: institutional_flow 구현
+  B-3: disparity_reversion 구현
+  B-4: config.yaml 전략 매핑 교체 + regime_position_scale
+  B-5: 전체 검증 + 커밋
 
-Phase 6 (실전):
+Phase C (검증):
+  Paper trading 1~2개월 → 데이터 기반 판단
+
+Phase D (실전):
   확정된 전략 셋으로 live 전환
 ```
 
+프롬프트: `docs/SURGERY_PROMPTS_V2.md` 참조.
+
 각 Phase 끝에 `pytest tests/ -v` 전체 통과 확인 후 커밋.
+
+---
+
+## Phase A: 인프라 잔여 수정
+
+### INFRA-1: StopManager 초기화 fallback 기본값 불일치
+
+**문제**: `src/engine.py:67-72`의 StopManager 초기화 fallback이 config.yaml과 불일치.
+config 정상 로드 시 문제없지만, 파일 누락 시 STRAT-1에서 통일한 값과 다른 기본값 적용.
+
+| 파라미터 | engine.py fallback | config.yaml | 수정 |
+|---------|-------------------|-------------|------|
+| stop_atr_mult | **2.5** | 1.5 | 1.5 |
+| max_stop_pct | **0.10** | 0.07 | 0.07 |
+| trailing_atr_mult | **2.5** | 2.0 | 2.0 |
+| trailing_activate_pct | **0.07** | 0.10 | 0.10 |
+
+### INFRA-2: _evaluate_exit 전략별 분기 미구현
+
+**문제**: STRAT-2 커밋에서 entry_strategy 기록 인프라만 추가됨.
+`_evaluate_exit()`는 여전히 모든 포지션에 MACD 데드크로스 일괄 적용.
+전략별 exit 분기가 없음.
+
+**수정**: `_evaluate_exit()`에서 전략별 고유 청산을 `_check_strategy_exit()` 메서드로 분리.
+Phase B에서 새 전략 추가 시 이 메서드에 분기만 추가하면 됨.
+
+### INFRA-3: Paper 모드 안전장치 부족
+
+**문제**: Paper 모드의 주문 차단이 engine.py의 mode 분기에만 의존.
+OrderManager 레벨에 이중 안전장치 없음.
+
+**수정**: OrderManager에 `is_paper` 플래그 추가.
+execute_order() 최상단에서 paper 모드면 즉시 시뮬레이션 결과 반환.
+
+### INFRA-5: get_trade_statistics() 미구현
+
+**문제**: FIX-6에서 config에 `use_historical_stats` 옵션 추가했지만,
+DataStore.get_trade_statistics() 메서드가 존재하지 않아 런타임 에러.
+
+**수정**: 최근 N건 매도 거래의 승률/평균손익 통계를 반환하는 메서드 구현.
 
 ---
 

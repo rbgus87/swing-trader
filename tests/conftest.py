@@ -46,6 +46,7 @@ def sample_config():
             "top_n": 30,
         },
         "strategy": {
+            "type": "momentum_pullback",
             "macd_fast": 12,
             "macd_slow": 26,
             "macd_signal": 9,
