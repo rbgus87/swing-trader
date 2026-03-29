@@ -115,9 +115,9 @@ strategy:
   rsi_pullback_threshold: 30      # 눌림목 RSI 기준
 
   # 이격도 평균회귀 전략 (disparity_reversion)
-  disparity_entry: 93             # 진입 이격도 (93% = 20일선 대비 -7%)
+  disparity_entry: 96             # 진입 이격도 (96% = 20일선 대비 -4%)
   disparity_exit: 100             # 청산 이격도 (100% = 20일선 터치)
-  disparity_stop: 88              # 손절 이격도 (88% = 추가 -5% 하락)
+  disparity_stop: 88              # 손절 이격도 (88% = 추가 하락)
   disparity_max_hold: 7           # 이격도 전략 최대 보유일 (평균회귀는 짧게)
 
   # 청산 조건

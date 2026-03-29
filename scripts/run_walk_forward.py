@@ -111,11 +111,11 @@ WF_GRID_INSTITUTIONAL_FLOW = {
 # disparity_reversion: 이격도 평균회귀 (72조합)
 WF_GRID_DISPARITY_REVERSION = {
     # 진입 파라미터
-    "disparity_entry": [91, 93, 95],
-    "rsi_oversold": [20, 25, 30],
+    "disparity_entry": [94, 96, 98],
+    "rsi_oversold": [30, 35, 40],
     # 청산 파라미터
     "stop_atr_mult": [1.5, 2.0],
-    "target_return": [0.05, 0.08],
+    "target_return": [0.04, 0.06],
     "max_hold_days": [5, 7],
 }
 
