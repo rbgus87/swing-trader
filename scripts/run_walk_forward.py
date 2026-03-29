@@ -526,8 +526,8 @@ def run_single_strategy(args, strategy_name: str, codes: list[str]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Walk-Forward 검증")
-    parser.add_argument("--strategy", default="momentum_pullback",
-                        help="전략 (momentum_pullback | institutional_flow | disparity_reversion)")
+    parser.add_argument("--strategy", default="disparity_reversion",
+                        help="전략 (disparity_reversion | momentum_pullback | institutional_flow)")
     parser.add_argument("--all", action="store_true",
                         help="3개 전략 순차 실행 (momentum_pullback → institutional_flow → disparity_reversion)")
     parser.add_argument("--start", default="20190101", help="시작일 (YYYYMMDD)")

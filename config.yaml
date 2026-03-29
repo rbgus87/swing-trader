@@ -63,23 +63,23 @@ screening:
   top_n: 30                         # 스크리닝 결과 상위 N종목까지만 매수 후보로 선정 (백테스트 최적: 30종목/8포지션)
 
 # --- 매매 전략 파라미터 ---
-# v2 전략: 모멘텀/수급/이격도 기반 (기존 전략은 비활성화됨)
+# 확정 전략: disparity_reversion (이격도 평균회귀)
 strategy:
-  type: adaptive                       # adaptive: 국면별 자동 전환 | momentum_pullback | institutional_flow | disparity_reversion
-  # 국면별 전략 매핑 (type=adaptive 일 때만 사용)
-  regime_strategy:
-    trending: momentum_pullback        # 수급 필터는 스크리닝에서 가산점으로 적용
-    sideways: disparity_reversion      # 횡보장 — 이격도 평균회귀
-    # bearish: 매수 차단 (MarketRegime 게이트)
+  type: disparity_reversion            # 단일 전략 (adaptive 비활성)
 
-  # 수급 필터 (trending 국면 스크리닝 시 가산점)
-  flow_filter_enabled: true            # 수급 가산점 활성화
-  # 외국인 5일 순매수: +1.5점, 기관 5일 순매수: +1.0점
+  # 국면별 전략 매핑 (adaptive 모드용 — 현재 미사용)
+  # regime_strategy:
+  #   trending: (미정)
+  #   sideways: disparity_reversion
+  #   bearish: 매수 차단
 
-  # 국면별 포지션 사이즈 스케일링
+  # 수급 필터 (비활성 — 단일 전략에서 불필요)
+  flow_filter_enabled: false
+
+  # 국면별 포지션 사이즈 스케일링 (단일 전략이지만 국면별 리스크 조절 유지)
   regime_position_scale:
-    trending: 1.0                      # 추세장: 100% 사이즈
-    sideways: 0.5                      # 횡보장: 50% 사이즈 (리스크 축소)
+    trending: 0.7                      # 추세장: 평균회귀 기회 적으므로 70%
+    sideways: 1.0                      # 횡보장: 핵심 영역, 100%
     bearish: 0.0                       # 약세장: 매수 차단
   timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
   timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)

@@ -141,7 +141,7 @@ class BacktestEngine:
 
     def generate_signals(
         self, df: pd.DataFrame, params: dict | None = None,
-        strategy_name: str = "momentum_pullback",
+        strategy_name: str = "disparity_reversion",
     ) -> tuple[pd.Series, pd.Series]:
         """전략 인터페이스를 통한 entry/exit 시그널 생성.
 
@@ -462,7 +462,7 @@ class BacktestEngine:
         start_date: str,
         end_date: str,
         params: dict | None = None,
-        strategy_name: str = "momentum_pullback",
+        strategy_name: str = "disparity_reversion",
     ) -> BacktestResult:
         """백테스트 실행.
 
@@ -614,7 +614,7 @@ class BacktestEngine:
         codes: list[str],
         start_date: str,
         end_date: str,
-        strategy_name: str = "momentum_pullback",
+        strategy_name: str = "disparity_reversion",
         use_market_filter: bool = True,
     ) -> dict | None:
         """포트폴리오 백테스트용 데이터/지표를 미리 계산.
@@ -714,7 +714,7 @@ class BacktestEngine:
         start_date: str,
         end_date: str,
         params: dict | None = None,
-        strategy_name: str = "momentum_pullback",
+        strategy_name: str = "disparity_reversion",
         max_positions: int = 3,
         use_market_filter: bool = True,
         _context: dict | None = None,
@@ -839,7 +839,7 @@ class BacktestEngine:
         # adaptive 모드
         is_adaptive = strategy_name == "adaptive"
         regime_map = p.get("regime_strategy", {
-            "trending": "momentum_pullback",
+            "trending": "disparity_reversion",
             "sideways": "bb_bounce",
         })
 
@@ -1298,8 +1298,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--strategy",
         type=str,
-        default="momentum_pullback",
-        help="전략 이름 (기본: momentum_pullback)",
+        default="disparity_reversion",
+        help="전략 이름 (기본: disparity_reversion)",
     )
     parser.add_argument(
         "--period", type=str, default="2y", help="백테스트 기간 (예: 1y, 2y, 6m)"
