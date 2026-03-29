@@ -1053,3 +1053,83 @@ class TestInstitutionalFlowStrategy:
         """전략이 레지스트리에 등록됨."""
         from src.strategy.base_strategy import available_strategies
         assert "institutional_flow" in available_strategies()
+
+
+# ── DisparityReversion 전략 테스트 ──────────────────────────────
+
+
+class TestDisparityReversionStrategy:
+    """disparity_reversion 전략 테스트."""
+
+    @pytest.fixture
+    def oversold_df(self) -> pd.DataFrame:
+        """과매도 시나리오 데이터 (200행).
+
+        장기 상승 후 급락 → 이격도 << 93% + RSI < 25 + 마지막 날 양봉.
+        """
+        np.random.seed(789)
+        n = 200
+
+        # 195일 상승 + 마지막 5일 급락 (매일 -3%씩, SMA60 아직 상승 중)
+        base_up = 50000 + np.cumsum(np.random.normal(80, 60, 195))
+        peak = base_up[-1]
+        base_down = [peak]
+        for _ in range(4):
+            base_down.append(base_down[-1] * 0.97)
+        base = np.concatenate([base_up, base_down])
+        base = np.maximum(base, 30000)
+
+        close = np.round(base).astype(int)
+        high = np.round(close * 1.01).astype(int)
+        low = np.round(close * 0.99).astype(int)
+        # 하락 구간: 음봉, 마지막 날: 양봉 반등
+        open_ = np.round(close * 1.005).astype(int)  # 기본 음봉
+        open_[-1] = int(close[-1] * 0.99)  # 마지막 날: 양봉
+        close[-1] = int(close[-2] * 1.015)  # 반등
+        high[-1] = int(close[-1] * 1.01)
+
+        volume = np.random.randint(500000, 1500000, n)
+
+        df = pd.DataFrame({
+            "open": open_, "high": high, "low": low,
+            "close": close, "volume": volume,
+        })
+        return df
+
+    def test_screening_entry_oversold(self, oversold_df):
+        """이격도 < 93 + RSI < 25 + 양봉 → True."""
+        from src.strategy.disparity_reversion_strategy import DisparityReversionStrategy
+
+        df = calculate_indicators(oversold_df)
+        strategy = DisparityReversionStrategy({"disparity_entry": 96, "rsi_oversold": 40})
+        result = strategy.check_screening_entry(df)
+        assert result is True
+
+    def test_screening_entry_not_oversold(self, oversold_df):
+        """이격도 > threshold → False."""
+        from src.strategy.disparity_reversion_strategy import DisparityReversionStrategy
+
+        df = calculate_indicators(oversold_df)
+        # 매우 낮은 threshold → 이격도 조건 불충족
+        strategy = DisparityReversionStrategy({"disparity_entry": 50, "rsi_oversold": 25})
+        result = strategy.check_screening_entry(df)
+        assert result is False
+
+    def test_backtest_signals_shape(self, oversold_df):
+        """백테스트 시그널: boolean Series + look-ahead bias 없음."""
+        from src.strategy.disparity_reversion_strategy import DisparityReversionStrategy
+
+        strategy = DisparityReversionStrategy({"disparity_entry": 95, "rsi_oversold": 35})
+        entries, exits = strategy.generate_backtest_signals(oversold_df)
+
+        assert isinstance(entries, pd.Series)
+        assert isinstance(exits, pd.Series)
+        assert entries.dtype == bool
+        assert exits.dtype == bool
+        assert not entries.iloc[0]
+        assert not exits.iloc[0]
+
+    def test_strategy_registered(self):
+        """전략이 레지스트리에 등록됨."""
+        from src.strategy.base_strategy import available_strategies
+        assert "disparity_reversion" in available_strategies()

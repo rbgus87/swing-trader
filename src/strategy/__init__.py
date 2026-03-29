@@ -12,5 +12,6 @@
 # v2 전략
 from src.strategy.momentum_pullback_strategy import MomentumPullbackStrategy  # noqa: F401
 from src.strategy.institutional_flow_strategy import InstitutionalFlowStrategy  # noqa: F401
+from src.strategy.disparity_reversion_strategy import DisparityReversionStrategy  # noqa: F401
 
 from src.strategy.base_strategy import get_strategy, available_strategies  # noqa: F401

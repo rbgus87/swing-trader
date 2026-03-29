@@ -403,6 +403,31 @@ class TradingEngine:
         """
         strategy = pos.entry_strategy
 
+        # disparity_reversion: 이격도 기반 청산
+        if strategy == "disparity_reversion":
+            try:
+                from src.strategy.signals import calculate_indicators
+                import pandas as pd
+                from datetime import timedelta
+                end = datetime.now().strftime("%Y-%m-%d")
+                start = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
+                ohlcv = self._ds.get_cached_ohlcv(pos.code, start, end)
+                if ohlcv and len(ohlcv) >= 20:
+                    df = pd.DataFrame(ohlcv)
+                    df = calculate_indicators(df)
+                    if not df.empty:
+                        latest = df.iloc[-1]
+                        sma20 = latest.get("sma20", 0)
+                        if sma20 > 0:
+                            disparity = latest["close"] / sma20 * 100
+                            if disparity >= config.get("strategy.disparity_exit", 100):
+                                return ExitReason.DISPARITY_EXIT
+                            if disparity <= config.get("strategy.disparity_stop", 88):
+                                return ExitReason.STOP_LOSS
+            except Exception:
+                pass
+            return None  # disparity 전략은 MACD 폴백 불필요
+
         # institutional_flow: 외국인 2일 연속 순매도 시 청산
         if strategy == "institutional_flow":
             try:

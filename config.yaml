@@ -108,6 +108,11 @@ strategy:
   pullback_days: 3                # 눌림목 확인 기간 (거래일)
   rsi_pullback_threshold: 30      # 눌림목 RSI 기준
 
+  # 이격도 평균회귀 전략 (disparity_reversion)
+  disparity_entry: 93             # 진입 이격도 (93% = 20일선 대비 -7%)
+  disparity_exit: 100             # 청산 이격도 (100% = 20일선 터치)
+  disparity_stop: 88              # 손절 이격도 (88% = 추가 -5% 하락)
+
   # 청산 조건
   max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도
   target_return: 0.10               # 목표 수익률 (0.10 = +10%) — 도달 시 자동 매도 (최적화: 0.12→0.10, 빠른 익절+승률 향상)

@@ -136,7 +136,7 @@ class TestExitReason:
         assert ExitReason.MAX_HOLD.value == "max_hold"
 
     def test_enum_count(self):
-        assert len(ExitReason) == 7
+        assert len(ExitReason) == 8
 
 
 class TestTradeRecord:
