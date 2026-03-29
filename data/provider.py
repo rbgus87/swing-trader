@@ -274,8 +274,19 @@ class DataProvider:
             from pykrx import stock
             df = stock.get_market_cap_by_ticker(date, market=market.upper())
             if not df.empty:
-                cap_col = "시가총액" if "시가총액" in df.columns else "market_cap"
-                if cap_col in df.columns:
+                # 한글 컬럼명 매칭 (Python 3.14 인코딩 깨짐 대비)
+                cap_col = None
+                for col in df.columns:
+                    if col in ("시가총액", "market_cap"):
+                        cap_col = col
+                        break
+                # 인코딩 깨진 경우: 숫자 컬럼 중 최대값이 가장 큰 컬럼 = 시가총액
+                if cap_col is None:
+                    numeric_cols = df.select_dtypes(include="number").columns
+                    if len(numeric_cols) > 0:
+                        cap_col = df[numeric_cols].max().idxmax()
+                        logger.debug(f"pykrx 시총 컬럼 추정: {cap_col!r}")
+                if cap_col is not None:
                     return df[cap_col].to_dict()
         except Exception as e:
             logger.error(f"pykrx 시총 실패: {e}")
