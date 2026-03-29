@@ -1364,7 +1364,7 @@ if __name__ == "__main__":
             "momentum_pullback": {
                 "momentum_period": [40, 60],
                 "pullback_days": [3, 5],
-                "rsi_pullback_threshold": [25, 30, 35],
+                "rsi_pullback_threshold": [35, 40, 45],
                 "stop_atr_mult": [1.5, 2.0],
                 "target_return": [0.08, 0.10],
                 "max_hold_days": [7, 10, 15],

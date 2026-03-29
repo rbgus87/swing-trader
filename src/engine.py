@@ -432,7 +432,7 @@ class TradingEngine:
                 return ExitReason.MAX_HOLD
             return None  # disparity 전략은 MACD 폴백 불필요
 
-        # institutional_flow: 외국인 2일 연속 순매도 시 청산
+        # institutional_flow: 비활성 (수급은 스크리닝 필터로 흡수). 분기 보존 (재활성화 대비).
         if strategy == "institutional_flow":
             try:
                 from src.strategy.signals import get_institutional_net_buying

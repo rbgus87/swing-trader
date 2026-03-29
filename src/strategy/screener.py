@@ -483,6 +483,26 @@ class Screener:
                 f"신호없음 {drop_signal}"
             )
 
+        # 수급 가산점 (trending 국면에서만)
+        if regime == "trending" and candidates:
+            flow_bonus_enabled = self.strategy_config.get("flow_filter_enabled", True)
+            if flow_bonus_enabled:
+                from src.strategy.signals import get_institutional_net_buying
+                scored = []
+                for code, score in candidates:
+                    try:
+                        inst_net, foreign_net = get_institutional_net_buying(code, days=5)
+                        flow_bonus = 0.0
+                        if foreign_net > 0:
+                            flow_bonus += 1.5
+                        if inst_net > 0:
+                            flow_bonus += 1.0
+                        scored.append((code, score + flow_bonus))
+                    except Exception:
+                        scored.append((code, score))
+                candidates = scored
+                logger.info(f"  수급 가산점 적용: {sum(1 for _, s in candidates if s > 0)}종목")
+
         # 점수 내림차순 정렬, 상위 N종목
         candidates.sort(key=lambda x: x[1], reverse=True)
         result = [code for code, _ in candidates[: self.top_n]]

@@ -68,11 +68,13 @@ strategy:
   type: adaptive                       # adaptive: 국면별 자동 전환 | momentum_pullback | institutional_flow | disparity_reversion
   # 국면별 전략 매핑 (type=adaptive 일 때만 사용)
   regime_strategy:
-    trending:                          # 추세장
-      - momentum_pullback              #   모멘텀 눌림목 반등
-      - institutional_flow             #   수급 기반 진입
+    trending: momentum_pullback        # 수급 필터는 스크리닝에서 가산점으로 적용
     sideways: disparity_reversion      # 횡보장 — 이격도 평균회귀
     # bearish: 매수 차단 (MarketRegime 게이트)
+
+  # 수급 필터 (trending 국면 스크리닝 시 가산점)
+  flow_filter_enabled: true            # 수급 가산점 활성화
+  # 외국인 5일 순매수: +1.5점, 기관 5일 순매수: +1.0점
 
   # 국면별 포지션 사이즈 스케일링
   regime_position_scale:
@@ -112,7 +114,7 @@ strategy:
   # 모멘텀 + 눌림목 전략 (momentum_pullback)
   momentum_period: 60             # 모멘텀 측정 기간 (거래일)
   pullback_days: 3                # 눌림목 확인 기간 (거래일)
-  rsi_pullback_threshold: 30      # 눌림목 RSI 기준
+  rsi_pullback_threshold: 40      # 눌림목 RSI 기준 (완화: 30→40)
 
   # 이격도 평균회귀 전략 (disparity_reversion)
   disparity_entry: 96             # 진입 이격도 (96% = 20일선 대비 -4%)

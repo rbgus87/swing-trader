@@ -90,7 +90,7 @@ WF_GRID_MOMENTUM_PULLBACK = {
     # 진입 파라미터
     "momentum_period": [40, 60],
     "pullback_days": [3, 5],
-    "rsi_pullback_threshold": [25, 30],
+    "rsi_pullback_threshold": [35, 40, 45],
     # 청산 파라미터
     "stop_atr_mult": [1.5, 2.0],
     "target_return": [0.08, 0.10],
@@ -552,8 +552,8 @@ def main():
     t0_total = time.time()
 
     if args.all:
-        # 신규 3개 전략 순차 실행
-        strategies = ["momentum_pullback", "institutional_flow", "disparity_reversion"]
+        # 활성 2개 전략 순차 실행
+        strategies = ["momentum_pullback", "disparity_reversion"]
         all_results = {}
         for strategy in strategies:
             results = run_single_strategy(args, strategy, codes)

@@ -27,7 +27,7 @@ class MomentumPullbackStrategy(BaseStrategy):
         """장전 스크리닝: 60일 모멘텀 양수 + 최근 눌림목 + 반등 시작."""
         momentum_period = self.params.get("momentum_period", 60)
         pullback_days = self.params.get("pullback_days", 3)
-        rsi_pullback_threshold = self.params.get("rsi_pullback_threshold", 30)
+        rsi_pullback_threshold = self.params.get("rsi_pullback_threshold", 40)
 
         if len(df) < momentum_period + 5:
             return False
@@ -45,7 +45,7 @@ class MomentumPullbackStrategy(BaseStrategy):
         # 3. 최근 N일 중 하락일이 과반 (눌림목 확인)
         recent = df.iloc[-pullback_days:]
         down_days = sum(1 for i in range(len(recent)) if recent.iloc[i]["close"] < recent.iloc[i]["open"])
-        if down_days < pullback_days // 2 + 1:
+        if down_days < 1:
             # 대안: RSI가 pullback 수준이면 통과
             if latest.get("rsi", 50) > rsi_pullback_threshold:
                 return False
@@ -87,8 +87,8 @@ class MomentumPullbackStrategy(BaseStrategy):
             pullback_start = df_daily.iloc[-(pullback_days + 1)]
             pullback_end = df_daily.iloc[-2]
             pullback_pct = (pullback_end["close"] - pullback_start["close"]) / pullback_start["close"]
-            if pullback_pct > -0.02:
-                return False  # 최소 2% 이상 눌림 필요
+            if pullback_pct > -0.01:
+                return False  # 최소 1% 이상 눌림 필요
 
         # 4. 당일 양봉 + 전일 대비 반등
         if latest["close"] <= df_daily.iloc[-2]["close"]:
@@ -108,7 +108,7 @@ class MomentumPullbackStrategy(BaseStrategy):
         p = self.params
         momentum_period = p.get("momentum_period", 60)
         pullback_days = p.get("pullback_days", 3)
-        rsi_pullback = p.get("rsi_pullback_threshold", 30)
+        rsi_pullback = p.get("rsi_pullback_threshold", 40)
         volume_multiplier = p.get("volume_multiplier", 1.0)
 
         df_ind = calculate_indicators(df)
@@ -125,7 +125,7 @@ class MomentumPullbackStrategy(BaseStrategy):
 
         # 3. 최근 N일 하락 (pullback)
         rolling_return = df_ind["close"].pct_change(pullback_days)
-        cond_pullback = rolling_return < -0.02  # 최소 2% 하락
+        cond_pullback = rolling_return < -0.01  # 최소 1% 하락
 
         # 4. 당일 양봉 (반등)
         cond_bullish = df_ind["close"] > df_ind["open"]
