@@ -1362,6 +1362,15 @@ if __name__ == "__main__":
         if dynamic_codes:
             args.codes = dynamic_codes
             logger.info(f"동적 유니버스: {len(dynamic_codes)}종목")
+        else:
+            # 폴백: 대형주 20종목
+            args.codes = [
+                "005930", "000660", "005380", "000270", "068270",
+                "035420", "035720", "105560", "055550", "066570",
+                "006400", "003670", "012330", "028260", "096770",
+                "003550", "034730", "032830", "030200", "017670",
+            ]
+            logger.warning(f"동적 유니버스 실패 — 대형주 {len(args.codes)}종목 폴백")
 
     if args.start and args.end:
         start_date, end_date = args.start, args.end

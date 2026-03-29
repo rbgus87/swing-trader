@@ -363,22 +363,24 @@ class DataProvider:
         Returns:
             종목코드 리스트. 실패 시 빈 리스트.
         """
-        from pykrx import stock
         from datetime import timedelta
 
-        end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-
-        try:
-            cap_df = stock.get_market_cap(end)
-            if cap_df.empty:
-                cap_df = stock.get_market_cap(start)
-            cap_df = cap_df[cap_df["시가총액"] >= min_market_cap]
-            cap_df = cap_df.sort_values("시가총액", ascending=False)
-            return cap_df.head(top_n).index.tolist()
-        except Exception as e:
-            logger.warning(f"시가총액 상위 종목 조회 실패: {e}")
+        # 최근 거래일 시도 (주말/공휴일 대비 7일 전까지)
+        for days_back in range(7):
+            date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+            caps = self.get_market_caps(date)
+            if caps:
+                break
+        else:
+            logger.warning("시가총액 조회 실패 (7일간 데이터 없음)")
             return []
+
+        # 시가총액 필터 + 정렬
+        filtered = {c: v for c, v in caps.items() if v >= min_market_cap}
+        sorted_caps = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
+        result = [code for code, _ in sorted_caps[:top_n]]
+        logger.info(f"동적 유니버스: {len(result)}종목 (시총 {min_market_cap/1e8:.0f}억 이상)")
+        return result
 
 
 # 싱글턴 인스턴스
