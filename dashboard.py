@@ -19,7 +19,7 @@ st.set_page_config(
     layout="wide",
 )
 
-DB_PATH = "trading.db"
+DB_PATH = "swing.db"
 CONFIG_PATH = "config.yaml"
 
 
@@ -100,7 +100,7 @@ st.title("📈 스윙 자동매매 대시보드")
 conn = get_db_connection()
 
 if conn is None:
-    st.warning("⚠️ trading.db 파일이 없습니다. 엔진을 먼저 실행하세요:")
+    st.warning("⚠️ swing.db 파일이 없습니다. 엔진을 먼저 실행하세요:")
     st.code("python main.py --mode paper")
     st.stop()
 

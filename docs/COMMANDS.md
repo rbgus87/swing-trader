@@ -195,10 +195,10 @@ ruff check src/ tests/ scripts/
 ```bash
 python -c "
 from src.datastore import DataStore
-ds = DataStore('trading.db')
+ds = DataStore('swing.db')
 ds.connect()
 ds.create_tables()
-print('DB 생성 완료: trading.db')
+print('DB 생성 완료: swing.db')
 ds.close()
 "
 ```
@@ -207,16 +207,16 @@ ds.close()
 
 ```bash
 # 테이블 목록
-sqlite3 trading.db ".tables"
+sqlite3 swing.db ".tables"
 
 # 보유 포지션 확인
-sqlite3 trading.db "SELECT * FROM positions WHERE status='open';"
+sqlite3 swing.db "SELECT * FROM positions WHERE status='open';"
 
 # 매매 이력 확인
-sqlite3 trading.db "SELECT * FROM trades ORDER BY executed_at DESC LIMIT 10;"
+sqlite3 swing.db "SELECT * FROM trades ORDER BY executed_at DESC LIMIT 10;"
 
 # 일일 성과 확인
-sqlite3 trading.db "SELECT * FROM daily_performance ORDER BY date DESC LIMIT 5;"
+sqlite3 swing.db "SELECT * FROM daily_performance ORDER BY date DESC LIMIT 5;"
 ```
 
 > SQLite CLI가 없으면 [DB Browser for SQLite](https://sqlitebrowser.org/)로 GUI에서 확인 가능
@@ -227,7 +227,7 @@ sqlite3 trading.db "SELECT * FROM daily_performance ORDER BY date DESC LIMIT 5;"
 
 | 파일/폴더 | 내용 |
 |-----------|------|
-| `trading.db` | SQLite 데이터베이스 (포지션, 매매기록, 성과) |
+| `swing.db` | SQLite 데이터베이스 (포지션, 매매기록, 성과) |
 | `logs/trading_YYYYMMDD.log` | 일반 로그 (시스템 동작) |
 | `logs/trades_YYYYMMDD.log` | 매매 전용 로그 (주문 실행 내역) |
 | `reports/*.html` | 백테스트 HTML 리포트 (차트 포함) |

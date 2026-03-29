@@ -1259,6 +1259,19 @@ class TradingEngine:
 
         logger.info(f"60분봉 갱신 완료: {success}/{len(codes)}종목")
 
+    async def _ensure_connection(self):
+        """REST API 연결 확인 및 재연결."""
+        if not self._kiwoom._connected:
+            try:
+                await self._kiwoom.connect(use_websocket=False)
+                logger.info("REST API 연결 성공")
+                self._telegram.send("REST API 연결 확인 완료")
+            except Exception as e:
+                logger.error(f"REST API 연결 실패: {e}")
+                self._telegram.send_system_error(str(e), "ensure_connection")
+        else:
+            logger.info("REST API 이미 연결됨")
+
     async def _start_polling(self):
         """REST polling 시작 (09:25 스케줄)."""
         from src.utils.market_calendar import is_trading_day, now_kst
