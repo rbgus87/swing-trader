@@ -542,10 +542,26 @@ def main():
                         help="포트폴리오 최대 보유 종목 수 (기본: 3)")
     parser.add_argument("--independent", action="store_true",
                         help="독립 종목별 백테스트 (기본: 포트폴리오)")
+    parser.add_argument("--dynamic", action="store_true",
+                        help="동적 유니버스 사용 (시가총액 상위 종목)")
+    parser.add_argument("--universe-size", type=int, default=150,
+                        help="동적 유니버스 종목 수 (기본: 150)")
+    parser.add_argument("--min-cap", type=int, default=300_000_000_000,
+                        help="최소 시가총액 (기본: 3000억)")
     args = parser.parse_args()
 
     if args.codes:
         codes = [c.strip() for c in args.codes.split(",")]
+    elif args.dynamic:
+        from data.provider import get_provider
+        codes = get_provider().get_top_stocks_by_market_cap(
+            top_n=args.universe_size, min_market_cap=args.min_cap,
+        )
+        if not codes:
+            print("  동적 유니버스 조회 실패 — DEFAULT_CODES 사용")
+            codes = DEFAULT_CODES
+        else:
+            print(f"  동적 유니버스: {len(codes)}종목")
     else:
         codes = DEFAULT_CODES
 

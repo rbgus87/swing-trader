@@ -1339,8 +1339,29 @@ if __name__ == "__main__":
         default=3,
         help="포트폴리오 모드: 최대 동시 보유 종목 수 (기본: 3)",
     )
+    parser.add_argument(
+        "--dynamic",
+        action="store_true",
+        help="동적 유니버스 사용 (시가총액 상위 종목)",
+    )
+    parser.add_argument(
+        "--universe-size",
+        type=int,
+        default=150,
+        help="동적 유니버스 종목 수 (기본: 150)",
+    )
 
     args = parser.parse_args()
+
+    # 동적 유니버스
+    if args.dynamic:
+        from data.provider import get_provider
+        dynamic_codes = get_provider().get_top_stocks_by_market_cap(
+            top_n=args.universe_size,
+        )
+        if dynamic_codes:
+            args.codes = dynamic_codes
+            logger.info(f"동적 유니버스: {len(dynamic_codes)}종목")
 
     if args.start and args.end:
         start_date, end_date = args.start, args.end
@@ -1350,7 +1371,7 @@ if __name__ == "__main__":
     logger.info(
         f"백테스트 시작: {args.strategy} | "
         f"기간: {start_date}~{end_date} | "
-        f"종목: {args.codes}"
+        f"종목: {len(args.codes)}개"
     )
 
     engine = BacktestEngine(initial_capital=args.capital)

@@ -24,7 +24,7 @@ class MomentumPullbackStrategy(BaseStrategy):
     category = "trend"
 
     def check_screening_entry(self, df: pd.DataFrame) -> bool:
-        """장전 스크리닝: 60일 모멘텀 양수 + 최근 눌림목 + 반등 시작."""
+        """장전 스크리닝: 모멘텀 양수 + 눌림목 + 양봉 (v3: 3개 AND)."""
         momentum_period = self.params.get("momentum_period", 60)
         pullback_days = self.params.get("pullback_days", 3)
         rsi_pullback_threshold = self.params.get("rsi_pullback_threshold", 40)
@@ -33,38 +33,29 @@ class MomentumPullbackStrategy(BaseStrategy):
             return False
         latest = df.iloc[-1]
 
-        # 1. 60일 모멘텀 양수 (상승 추세 종목)
+        # 1. 60일 모멘텀 양수 (엣지)
         momentum = (latest["close"] - df.iloc[-momentum_period]["close"]) / df.iloc[-momentum_period]["close"]
         if momentum <= 0:
             return False
 
-        # 2. 종가 > 20일선 (추세 유지)
-        if latest["close"] <= latest.get("sma20", 0):
-            return False
-
-        # 3. 최근 N일 중 하락일이 과반 (눌림목 확인)
+        # 2. 눌림목 확인 (타이밍)
         recent = df.iloc[-pullback_days:]
         down_days = sum(1 for i in range(len(recent)) if recent.iloc[i]["close"] < recent.iloc[i]["open"])
         if down_days < 1:
-            # 대안: RSI가 pullback 수준이면 통과
             if latest.get("rsi", 50) > rsi_pullback_threshold:
                 return False
 
-        # 4. 당일 양봉 (반등 시작)
+        # 3. 당일 양봉 (확인)
         if latest["close"] <= latest["open"]:
             return False
 
-        # 5. 거래량 확인
-        volume_multiplier = self.params.get("volume_multiplier", 1.0)
-        if latest["volume"] < latest.get("volume_sma20", 0) * volume_multiplier:
-            return False
-
+        # v3: SMA20, 거래량 조건 제거 — 리스크는 청산 로직(손절/트레일링)에 위임
         return True
 
     def check_realtime_entry(
         self, df_daily: pd.DataFrame, df_60m: pd.DataFrame | None = None
     ) -> bool:
-        """장중 진입: 눌림목 반등 확인 + 모멘텀 유지."""
+        """장중 진입: 모멘텀 + 눌림 반등 + 양봉 (v3: 3개 AND)."""
         momentum_period = self.params.get("momentum_period", 60)
         pullback_days = self.params.get("pullback_days", 3)
 
@@ -78,27 +69,19 @@ class MomentumPullbackStrategy(BaseStrategy):
         if momentum <= 0:
             return False
 
-        # 2. 종가 > 20일선
-        if latest["close"] <= latest.get("sma20", 0):
-            return False
-
-        # 3. 최근 N일 눌림 후 당일 반등
+        # 2. 최근 N일 눌림 후 반등 (1% 이상 하락)
         if len(df_daily) >= pullback_days + 1:
             pullback_start = df_daily.iloc[-(pullback_days + 1)]
             pullback_end = df_daily.iloc[-2]
             pullback_pct = (pullback_end["close"] - pullback_start["close"]) / pullback_start["close"]
             if pullback_pct > -0.01:
-                return False  # 최소 1% 이상 눌림 필요
+                return False
 
-        # 4. 당일 양봉 + 전일 대비 반등
+        # 3. 당일 반등 (전일 대비 상승)
         if latest["close"] <= df_daily.iloc[-2]["close"]:
             return False
 
-        # 5. 거래량 확인
-        volume_multiplier = self.params.get("volume_multiplier", 1.0)
-        if latest["volume"] < latest.get("volume_sma20", 0) * volume_multiplier:
-            return False
-
+        # v3: SMA20, 거래량 조건 제거
         return True
 
     def generate_backtest_signals(
@@ -144,7 +127,8 @@ class MomentumPullbackStrategy(BaseStrategy):
         # 눌림목 OR RSI 과매도
         cond_pullback_or_rsi = cond_pullback | cond_rsi_oversold
 
-        raw_entries = cond_momentum & cond_above_sma & cond_pullback_or_rsi & cond_bullish & cond_vol
+        # v3: SMA20, 거래량 조건 제거 — 리스크는 청산 로직(손절/트레일링)에 위임
+        raw_entries = cond_momentum & cond_pullback_or_rsi & cond_bullish
 
         # Exit 조건
         # 1. 모멘텀 이탈: 60일 모멘텀 음전환

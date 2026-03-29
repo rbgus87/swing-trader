@@ -351,6 +351,35 @@ class DataProvider:
 
         return None
 
+    def get_top_stocks_by_market_cap(
+        self, top_n: int = 150, min_market_cap: int = 300_000_000_000
+    ) -> list[str]:
+        """시가총액 상위 종목 코드 리스트.
+
+        Args:
+            top_n: 상위 N종목.
+            min_market_cap: 최소 시가총액 (원).
+
+        Returns:
+            종목코드 리스트. 실패 시 빈 리스트.
+        """
+        from pykrx import stock
+        from datetime import timedelta
+
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
+
+        try:
+            cap_df = stock.get_market_cap(end)
+            if cap_df.empty:
+                cap_df = stock.get_market_cap(start)
+            cap_df = cap_df[cap_df["시가총액"] >= min_market_cap]
+            cap_df = cap_df.sort_values("시가총액", ascending=False)
+            return cap_df.head(top_n).index.tolist()
+        except Exception as e:
+            logger.warning(f"시가총액 상위 종목 조회 실패: {e}")
+            return []
+
 
 # 싱글턴 인스턴스
 _provider: DataProvider | None = None

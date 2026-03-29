@@ -3,8 +3,8 @@
 엣지: 단기 과매도 반등 — 극단적 이탈은 평균으로 돌아온다.
 bb_bounce 대체. 이격도(종가/SMA20)가 BB보다 직관적이고 파라미터 적음.
 
-진입: 이격도 < 96% + RSI < 35 + 양봉 반등
-청산: 이격도 100% 복귀(20일선 터치) / 추가 하락 손절 / 최대보유 7일
+진입: 이격도 < 96% + 양봉 반등 (v3: 2개 AND)
+청산: 이격도 100% 복귀(20일선 터치) / 추가 하락 손절(88%) / 최대보유 7일
 """
 
 import numpy as np
@@ -22,11 +22,10 @@ class DisparityReversionStrategy(BaseStrategy):
     category = "mean_reversion"
 
     def check_screening_entry(self, df: pd.DataFrame) -> bool:
-        """장전 스크리닝: 이격도 과매도 + RSI 극단 + 양봉 반등."""
+        """장전 스크리닝: 이격도 과매도 + 양봉 (v3: 2개 AND)."""
         disparity_entry = self.params.get("disparity_entry", 96)
-        rsi_oversold = self.params.get("rsi_oversold", 35)
 
-        if len(df) < 60:
+        if len(df) < 20:
             return False
         latest = df.iloc[-1]
 
@@ -34,36 +33,25 @@ class DisparityReversionStrategy(BaseStrategy):
         if sma20 <= 0:
             return False
 
-        # 1. 이격도 < entry_threshold (20일선 대비 4% 이상 이탈)
+        # 1. 이격도 < 임계값 (엣지)
         disparity = latest["close"] / sma20 * 100
         if disparity >= disparity_entry:
             return False
 
-        # 2. RSI(14) < oversold
-        if latest.get("rsi", 50) >= rsi_oversold:
-            return False
-
-        # 3. 장기 추세 생존: 60일선 > 120일선 (장기 구조 유지)
-        sma60 = latest.get("sma60", 0)
-        sma120 = latest.get("sma120", 0)
-        if sma60 <= 0 or sma120 <= 0:
-            return False
-        if sma60 <= sma120:
-            return False
-
-        # 4. 당일 양봉 (바닥 확인)
+        # 2. 당일 양봉 (바닥 확인)
         if latest["close"] <= latest["open"]:
             return False
 
+        # v3: RSI, SMA60 조건 제거 — 추가 하락 리스크는 이격도 88% 손절로 관리
         return True
 
     def check_realtime_entry(
         self, df_daily: pd.DataFrame, df_60m: pd.DataFrame | None = None
     ) -> bool:
-        """장중 진입: 이격도 과매도 + 양봉 + 거래량 증가."""
+        """장중 진입: 이격도 과매도 + 양봉 반등 (v3: 2개 AND)."""
         disparity_entry = self.params.get("disparity_entry", 96)
 
-        if len(df_daily) < 30:
+        if len(df_daily) < 20:
             return False
         latest = df_daily.iloc[-1]
 
@@ -71,24 +59,16 @@ class DisparityReversionStrategy(BaseStrategy):
         if sma20 <= 0:
             return False
 
-        # 1. 이격도 < entry_threshold
+        # 1. 이격도 < 임계값
         disparity = latest["close"] / sma20 * 100
         if disparity >= disparity_entry:
             return False
 
-        # 2. RSI < 40
-        if latest.get("rsi", 50) >= 40:
-            return False
-
-        # 3. 당일 양봉
+        # 2. 당일 양봉 + 전일 대비 반등
         if latest["close"] <= latest["open"]:
             return False
-
-        # 4. 거래량 증가 (전일 대비)
-        if len(df_daily) >= 2:
-            prev_vol = df_daily.iloc[-2]["volume"]
-            if prev_vol > 0 and latest["volume"] <= prev_vol:
-                return False
+        if len(df_daily) >= 2 and latest["close"] <= df_daily.iloc[-2]["close"]:
+            return False
 
         return True
 
@@ -100,7 +80,6 @@ class DisparityReversionStrategy(BaseStrategy):
         disparity_entry = p.get("disparity_entry", 96)
         disparity_exit = p.get("disparity_exit", 100)
         disparity_stop = p.get("disparity_stop", 88)
-        rsi_oversold = p.get("rsi_oversold", 35)
 
         df_ind = calculate_indicators(df)
         if df_ind.empty:
@@ -113,16 +92,11 @@ class DisparityReversionStrategy(BaseStrategy):
         # 1. 이격도 < entry_threshold
         cond_disparity = disparity < disparity_entry
 
-        # 2. RSI < oversold
-        cond_rsi = df_ind["rsi"] < rsi_oversold
-
-        # 3. 당일 양봉
+        # 2. 당일 양봉
         cond_bullish = df_ind["close"] > df_ind["open"]
 
-        # 4. 장기 추세 생존: SMA60 > SMA120
-        cond_sma60_up = df_ind["sma60"] > df_ind["sma120"]
-
-        raw_entries = cond_disparity & cond_rsi & cond_bullish & cond_sma60_up
+        # v3: RSI, SMA60 조건 제거 — 추가 하락 리스크는 이격도 88% 손절로 관리
+        raw_entries = cond_disparity & cond_bullish
 
         # Exit 조건
         # 1. 이격도 100% 복귀 (20일선 터치)
