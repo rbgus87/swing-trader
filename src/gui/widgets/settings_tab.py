@@ -707,7 +707,7 @@ class SettingsTab(QWidget):
         strategy = self._config.get("strategy", {})
 
         self.w_strategy_type = SettingField.combo(
-            ["adaptive", "golden_cross", "macd_rsi", "bb_bounce", "breakout"],
+            ["adaptive", "golden_cross", "disparity_reversion"],
             strategy.get("type", "adaptive"),
         )
         form.addRow("전략 유형", self.w_strategy_type)
@@ -742,6 +742,38 @@ class SettingsTab(QWidget):
 
         self.w_adx_threshold = SettingField.spin(strategy.get("adx_threshold", 20), 10, 50)
         form.addRow("ADX 기준", self.w_adx_threshold)
+
+        # 이격도 (Disparity Reversion)
+        form.addRow(self._make_separator("이격도 평균회귀"))
+
+        self.w_disparity_entry = SettingField.spin(
+            strategy.get("disparity_entry", 96), 85, 99, "%"
+        )
+        form.addRow("진입 이격도", self.w_disparity_entry)
+
+        self.w_disparity_stop = SettingField.spin(
+            strategy.get("disparity_stop", 88), 80, 95, "%"
+        )
+        form.addRow("손절 이격도", self.w_disparity_stop)
+
+        self.w_disparity_max_hold = SettingField.spin(
+            strategy.get("disparity_max_hold", 7), 3, 15, "일"
+        )
+        form.addRow("최대 보유 (이격도)", self.w_disparity_max_hold)
+
+        # 국면별 포지션 스케일링
+        form.addRow(self._make_separator("국면별 스케일링"))
+
+        regime_scale = strategy.get("regime_position_scale", {})
+        self.w_scale_trending = SettingField.pct_slider(
+            regime_scale.get("trending", 1.0), 0.0, 1.0
+        )
+        form.addRow("추세장 스케일", self.w_scale_trending)
+
+        self.w_scale_sideways = SettingField.pct_slider(
+            regime_scale.get("sideways", 0.7), 0.0, 1.0
+        )
+        form.addRow("횡보장 스케일", self.w_scale_sideways)
 
         # 부분 매도
         form.addRow(self._make_separator("부분 매도"))
@@ -1008,6 +1040,17 @@ class SettingsTab(QWidget):
         strategy["partial_sell_enabled"] = self.w_partial_sell_enabled.currentText() == "true"
         strategy["partial_target_pct"] = self.w_partial_target_pct._slider.value() / 1000
         strategy["partial_sell_ratio"] = self.w_partial_sell_ratio._slider.value() / 1000
+
+        # 이격도 파라미터
+        strategy["disparity_entry"] = self.w_disparity_entry.value()
+        strategy["disparity_stop"] = self.w_disparity_stop.value()
+        strategy["disparity_max_hold"] = self.w_disparity_max_hold.value()
+
+        # 국면별 스케일링
+        strategy.setdefault("regime_position_scale", {})
+        strategy["regime_position_scale"]["trending"] = self.w_scale_trending._slider.value() / 1000
+        strategy["regime_position_scale"]["sideways"] = self.w_scale_sideways._slider.value() / 1000
+        strategy["regime_position_scale"]["bearish"] = 0.0
 
         # Risk
         risk = self._config.setdefault("risk", {})

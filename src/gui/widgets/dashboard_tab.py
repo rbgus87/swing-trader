@@ -92,7 +92,7 @@ class DashboardTab(QWidget):
         pos_layout.addLayout(pos_header)
 
         self.positions_table = self._make_table(
-            ["종목코드", "종목명", "수량", "매수가", "현재가", "평가금액", "수익률", "손절가", "목표가"]
+            ["종목코드", "종목명", "전략", "수량", "매수가", "현재가", "평가금액", "수익률", "손절가", "목표가"]
         )
         pos_layout.addWidget(self.positions_table)
         splitter.addWidget(pos_widget)
@@ -384,9 +384,17 @@ class DashboardTab(QWidget):
             else:
                 pnl_pct = 0.0
 
+            strategy_kr = {
+                "golden_cross": "골든크로스",
+                "disparity_reversion": "이격도",
+            }
+            entry_strat = pos.get("entry_strategy", "")
+            strat_display = strategy_kr.get(entry_strat, entry_strat)
+
             items = [
                 pos.get("code", ""),
                 pos.get("name", ""),
+                strat_display,
                 f"{qty:,}",
                 f"{entry_price:,}",
                 f"{current_price:,}",
@@ -398,9 +406,14 @@ class DashboardTab(QWidget):
             for col, text in enumerate(items):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter)
-                if col == 6:  # 수익률
+                if col == 7:  # 수익률
                     color = _GREEN if pnl_pct >= 0 else _RED
                     item.setForeground(QColor(color))
+                if col == 2:  # 전략 컬럼 색상
+                    if entry_strat == "golden_cross":
+                        item.setForeground(QColor(_GREEN))
+                    elif entry_strat == "disparity_reversion":
+                        item.setForeground(QColor(_YELLOW))
                 self.positions_table.setItem(row, col, item)
 
         # 스탯 카드 갱신
@@ -423,8 +436,10 @@ class DashboardTab(QWidget):
         "trailing_stop": "트레일링",
         "target_reached": "목표가",
         "partial_target": "부분매도",
-        "macd_dead": "MACD역전",
+        "macd_dead": "데드크로스",
         "max_hold": "보유초과",
+        "flow_exit": "수급이탈",
+        "disparity_exit": "이격도청산",
         "signal": "매수",
     }
 

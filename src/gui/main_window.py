@@ -82,7 +82,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(title)
 
         # 버전 표시
-        ver_label = QLabel("v0.1.0")
+        ver_label = QLabel("v2.0.0")
         ver_label.setStyleSheet(
             "color: #45475a; font-size: 10px; margin-top: -8px; padding: 0;"
         )
@@ -114,6 +114,12 @@ class MainWindow(QMainWindow):
             "color: #6c7086; font-size: 12px; padding: 4px 0;"
         )
         sidebar_layout.addWidget(self._lbl_engine_status)
+
+        self._lbl_regime = QLabel("국면: -")
+        self._lbl_regime.setStyleSheet(
+            "color: #6c7086; font-size: 11px; padding: 2px 0;"
+        )
+        sidebar_layout.addWidget(self._lbl_regime)
 
         self._lbl_schedule_info = QLabel("")
         self._lbl_schedule_info.setStyleSheet(
@@ -206,6 +212,20 @@ class MainWindow(QMainWindow):
 
         sidebar_layout.addLayout(btn_manual_row3)
 
+        btn_manual_row4 = QHBoxLayout()
+        btn_manual_row4.setSpacing(8)
+
+        self.btn_refresh_watchlist = QPushButton("WL갱신")
+        self.btn_refresh_watchlist.setObjectName("manualBtn")
+        self.btn_refresh_watchlist.setEnabled(False)
+        self.btn_refresh_watchlist.setCursor(Qt.PointingHandCursor)
+        self.btn_refresh_watchlist.setToolTip(
+            "watchlist 수동 갱신 (시가총액 5조+, 거래대금 100억+)"
+        )
+        btn_manual_row4.addWidget(self.btn_refresh_watchlist)
+
+        sidebar_layout.addLayout(btn_manual_row4)
+
         # 구분선
         sidebar_layout.addWidget(self._hline())
 
@@ -263,8 +283,33 @@ class MainWindow(QMainWindow):
         self.btn_reconnect.clicked.connect(self._on_reconnect)
         self.btn_daily_reset.clicked.connect(self._on_daily_reset)
         self.btn_refresh_60m.clicked.connect(self._on_refresh_60m)
+        self.btn_refresh_watchlist.clicked.connect(self._on_refresh_watchlist)
 
     # ── 사이드바 헬퍼 ──
+
+    def update_regime_display(self, regime: str):
+        """사이드바 국면 표시 업데이트."""
+        regime_map = {
+            "trending": ("추세장 (golden_cross)", "#a6e3a1"),
+            "sideways": ("횡보장 (disparity)", "#f9e2af"),
+            "bearish": ("약세장 (매수 차단)", "#f38ba8"),
+            "unknown": ("판단 중...", "#6c7086"),
+        }
+        text, color = regime_map.get(regime, regime_map["unknown"])
+        self._lbl_regime.setText(f"국면: {text}")
+        self._lbl_regime.setStyleSheet(
+            f"color: {color}; font-size: 11px; font-weight: bold; padding: 2px 0;"
+        )
+
+    def _on_refresh_watchlist(self):
+        """수동 watchlist 갱신."""
+        reply = QMessageBox.question(
+            self, "watchlist 갱신",
+            "시가총액/거래대금 기준으로 watchlist를 갱신합니다.\n계속하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes and self._worker:
+            self._worker.run_watchlist_refresh()
 
     def _sidebar_section(self, text: str) -> QLabel:
         label = QLabel(text.upper())
