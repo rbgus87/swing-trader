@@ -1350,6 +1350,12 @@ if __name__ == "__main__":
         default=150,
         help="동적 유니버스 종목 수 (기본: 150)",
     )
+    parser.add_argument(
+        "--min-cap",
+        type=int,
+        default=300_000_000_000,
+        help="최소 시가총액 (기본: 3000억)",
+    )
 
     args = parser.parse_args()
 
@@ -1358,6 +1364,7 @@ if __name__ == "__main__":
         from data.provider import get_provider
         dynamic_codes = get_provider().get_top_stocks_by_market_cap(
             top_n=args.universe_size,
+            min_market_cap=args.min_cap,
         )
         if dynamic_codes:
             args.codes = dynamic_codes

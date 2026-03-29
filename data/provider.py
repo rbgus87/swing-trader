@@ -356,29 +356,36 @@ class DataProvider:
     ) -> list[str]:
         """시가총액 상위 종목 코드 리스트.
 
+        KRX API 우선 → pykrx 폴백. KOSPI + KOSDAQ 통합.
+
         Args:
             top_n: 상위 N종목.
             min_market_cap: 최소 시가총액 (원).
 
         Returns:
-            종목코드 리스트. 실패 시 빈 리스트.
+            종목코드 리스트 (시가총액 내림차순).
         """
         from datetime import timedelta
 
-        # 최근 거래일 시도 (주말/공휴일 대비 7일 전까지)
-        for days_back in range(7):
-            date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-            caps = self.get_market_caps(date)
-            if caps:
+        # 최근 거래일 찾기 (주말/공휴일 대비 7일 탐색)
+        for offset in range(7):
+            date = (datetime.now() - timedelta(days=offset)).strftime("%Y%m%d")
+            all_caps = {}
+
+            for market in ["kospi", "kosdaq"]:
+                caps = self.get_market_caps(date, market)
+                all_caps.update(caps)
+
+            if all_caps:
                 break
         else:
             logger.warning("시가총액 조회 실패 (7일간 데이터 없음)")
             return []
 
         # 시가총액 필터 + 정렬
-        filtered = {c: v for c, v in caps.items() if v >= min_market_cap}
-        sorted_caps = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
-        result = [code for code, _ in sorted_caps[:top_n]]
+        filtered = {k: v for k, v in all_caps.items() if v >= min_market_cap}
+        sorted_codes = sorted(filtered.keys(), key=lambda c: filtered[c], reverse=True)
+        result = sorted_codes[:top_n]
         logger.info(f"동적 유니버스: {len(result)}종목 (시총 {min_market_cap/1e8:.0f}억 이상)")
         return result
 
