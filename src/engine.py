@@ -400,13 +400,24 @@ class TradingEngine:
         """전략별 고유 청산 조건 체크.
 
         entry_strategy에 따라 분기. 미등록 전략은 MACD 데드크로스 폴백.
-        Phase B에서 새 전략별 분기 추가 예정.
         """
+        strategy = pos.entry_strategy
+
+        # institutional_flow: 외국인 2일 연속 순매도 시 청산
+        if strategy == "institutional_flow":
+            try:
+                from src.strategy.signals import get_institutional_net_buying
+                _inst_net, foreign_net = get_institutional_net_buying(pos.code, days=2)
+                if foreign_net < 0:
+                    return ExitReason.FLOW_EXIT
+            except Exception:
+                pass
+            # flow exit 미충족 시 MACD 데드크로스 폴백으로 이어짐
+
+        # 공통 MACD 데드크로스 (수익 +2% 이상)
         from src.strategy.signals import calculate_indicators
         import pandas as pd
 
-        # 공통 MACD 데드크로스 (수익 +2% 이상)
-        # 현재 모든 전략이 이걸 사용. Phase B에서 전략별 분기 추가 예정.
         pnl_pct = (current_price - pos.entry_price) / pos.entry_price
         if pnl_pct >= 0.02:
             try:

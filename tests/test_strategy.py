@@ -984,3 +984,72 @@ class TestMomentumPullbackStrategy:
         """전략이 레지스트리에 등록됨."""
         from src.strategy.base_strategy import available_strategies
         assert "momentum_pullback" in available_strategies()
+
+
+# ── InstitutionalFlow 전략 테스트 ──────────────────────────────
+
+
+class TestInstitutionalFlowStrategy:
+    """institutional_flow 전략 테스트."""
+
+    @pytest.fixture
+    def flow_df(self) -> pd.DataFrame:
+        """추세+방향성 시나리오 데이터 (200행).
+
+        강한 상승 추세 + 높은 ADX + 양봉 + 거래량 충분.
+        """
+        np.random.seed(456)
+        n = 200
+
+        base = 50000 + np.cumsum(np.random.normal(100, 100, n))
+        base = np.maximum(base, 30000)
+
+        close = np.round(base).astype(int)
+        high = np.round(close * 1.015).astype(int)
+        low = np.round(close * 0.985).astype(int)
+        open_ = np.round(close * 0.995).astype(int)  # 대부분 양봉
+        volume = np.random.randint(800000, 2000000, n)
+
+        df = pd.DataFrame({
+            "open": open_, "high": high, "low": low,
+            "close": close, "volume": volume,
+        })
+        return df
+
+    def test_screening_entry_strong_trend(self, flow_df):
+        """ADX > threshold + 양봉 + 거래량 → True."""
+        from src.strategy.institutional_flow_strategy import InstitutionalFlowStrategy
+
+        df = calculate_indicators(flow_df)
+        strategy = InstitutionalFlowStrategy({"adx_threshold": 20})
+        result = strategy.check_screening_entry(df)
+        assert result is True
+
+    def test_screening_entry_weak_trend(self, flow_df):
+        """ADX < threshold → False."""
+        from src.strategy.institutional_flow_strategy import InstitutionalFlowStrategy
+
+        df = calculate_indicators(flow_df)
+        # 매우 높은 threshold로 ADX 조건 불충족 유도
+        strategy = InstitutionalFlowStrategy({"adx_threshold": 99})
+        result = strategy.check_screening_entry(df)
+        assert result is False
+
+    def test_backtest_signals_shape(self, flow_df):
+        """백테스트 시그널: boolean Series + look-ahead bias 없음."""
+        from src.strategy.institutional_flow_strategy import InstitutionalFlowStrategy
+
+        strategy = InstitutionalFlowStrategy({"adx_threshold": 20})
+        entries, exits = strategy.generate_backtest_signals(flow_df)
+
+        assert isinstance(entries, pd.Series)
+        assert isinstance(exits, pd.Series)
+        assert entries.dtype == bool
+        assert exits.dtype == bool
+        assert not entries.iloc[0]
+        assert not exits.iloc[0]
+
+    def test_strategy_registered(self):
+        """전략이 레지스트리에 등록됨."""
+        from src.strategy.base_strategy import available_strategies
+        assert "institutional_flow" in available_strategies()

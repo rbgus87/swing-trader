@@ -89,6 +89,7 @@ class ExitReason(Enum):
     TARGET_REACHED = "target_reached"
     PARTIAL_TARGET = "partial_target"
     MACD_DEAD = "macd_dead"
+    FLOW_EXIT = "flow_exit"
     MAX_HOLD = "max_hold"
 
 
