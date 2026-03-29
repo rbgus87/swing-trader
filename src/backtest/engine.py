@@ -1198,6 +1198,9 @@ class BacktestEngine:
                     actual_entry = int(price * (1 + self.slippage))
                     cost_per_share = actual_entry * (1 + self.commission)
                     position_budget = cash / max(1, current_max_pos - len(positions))
+                    # 국면별 포지션 스케일링
+                    regime_scale = {"trending": 1.0, "sideways": 0.5, "bearish": 0.0}
+                    position_budget = position_budget * regime_scale.get(current_regime, 1.0)
                     shares = int(position_budget // cost_per_share)
                     if shares <= 0:
                         continue

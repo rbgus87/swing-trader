@@ -426,6 +426,10 @@ class TradingEngine:
                                 return ExitReason.STOP_LOSS
             except Exception:
                 pass
+            # 이격도 전략 전용 최대 보유일 (기본 7일)
+            disparity_max_hold = config.get("strategy.disparity_max_hold", 7)
+            if pos.hold_days >= disparity_max_hold:
+                return ExitReason.MAX_HOLD
             return None  # disparity 전략은 MACD 폴백 불필요
 
         # institutional_flow: 외국인 2일 연속 순매도 시 청산
@@ -602,6 +606,13 @@ class TradingEngine:
         invest_amount = self._sizer.calculate(
             capital=capital, win_rate=win_rate, avg_win=avg_win, avg_loss=avg_loss
         )
+
+        # 국면별 포지션 스케일링
+        regime = self._market_regime.regime_type
+        scale_map = config.get("strategy.regime_position_scale", {})
+        scale = scale_map.get(regime, 1.0) if isinstance(scale_map, dict) else 1.0
+        invest_amount = int(invest_amount * scale)
+
         if invest_amount <= 0:
             logger.info(f"진입 차단 ({name}): 가용자본 부족 (capital={capital:,}, invest=0)")
             return

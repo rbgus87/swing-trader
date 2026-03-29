@@ -65,14 +65,20 @@ screening:
 # --- 매매 전략 파라미터 ---
 # v2 전략: 모멘텀/수급/이격도 기반 (기존 전략은 비활성화됨)
 strategy:
-  type: momentum_pullback             # momentum_pullback | institutional_flow | disparity_reversion | adaptive
+  type: adaptive                       # adaptive: 국면별 자동 전환 | momentum_pullback | institutional_flow | disparity_reversion
   # 국면별 전략 매핑 (type=adaptive 일 때만 사용)
-  # Phase B 완료 시 adaptive로 전환 예정
   regime_strategy:
     trending:                          # 추세장
-      - momentum_pullback              #   모멘텀 + 눌림목 반등
-    sideways: momentum_pullback        # 횡보장 (disparity_reversion 구현 후 교체 예정)
+      - momentum_pullback              #   모멘텀 눌림목 반등
+      - institutional_flow             #   수급 기반 진입
+    sideways: disparity_reversion      # 횡보장 — 이격도 평균회귀
     # bearish: 매수 차단 (MarketRegime 게이트)
+
+  # 국면별 포지션 사이즈 스케일링
+  regime_position_scale:
+    trending: 1.0                      # 추세장: 100% 사이즈
+    sideways: 0.5                      # 횡보장: 50% 사이즈 (리스크 축소)
+    bearish: 0.0                       # 약세장: 매수 차단
   timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
   timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)
   adx_threshold: 15                 # ADX 추세 강도 기준 (튜닝: 20→15, 약한 추세에서도 진입 허용)
@@ -112,6 +118,7 @@ strategy:
   disparity_entry: 93             # 진입 이격도 (93% = 20일선 대비 -7%)
   disparity_exit: 100             # 청산 이격도 (100% = 20일선 터치)
   disparity_stop: 88              # 손절 이격도 (88% = 추가 -5% 하락)
+  disparity_max_hold: 7           # 이격도 전략 최대 보유일 (평균회귀는 짧게)
 
   # 청산 조건
   max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도
