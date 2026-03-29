@@ -361,17 +361,14 @@ class TradingEngine:
                 await self._execute_sell(pos, tick.price, exit_reason)
 
     def _evaluate_exit(self, pos: Position, current_price: int) -> ExitReason | None:
-        """종합 청산 판단 — 손절/목표가/트레일링/MACD 데드크로스/최대보유."""
-        from src.strategy.signals import calculate_indicators
-        import pandas as pd
-
+        """종합 청산 판단 — 공통 청산 + 전략별 exit 분기."""
         max_hold = config.get("strategy.max_hold_days", 10)
 
-        # 1. 손절가 이탈
+        # 1. 손절가 이탈 (공통 — 모든 전략)
         if self._stop_mgr.is_stopped(pos, current_price):
             return ExitReason.STOP_LOSS
 
-        # 2a. 부분 매도: 목표가의 N% 도달 시 (아직 부분 매도 안 한 포지션만)
+        # 2a. 부분 매도 (공통)
         partial_enabled = config.get("strategy.partial_sell_enabled", False)
         if (
             partial_enabled
@@ -384,11 +381,32 @@ class TradingEngine:
             if current_price >= partial_trigger:
                 return ExitReason.PARTIAL_TARGET
 
-        # 2b. 목표가 도달 (전량 매도)
+        # 2b. 목표가 도달 (공통)
         if pos.target_price > 0 and current_price >= pos.target_price:
             return ExitReason.TARGET_REACHED
 
-        # 3. MACD 데드크로스 (수익 +2% 이상이고, macd_hist 음전환)
+        # 3. 전략별 exit 조건
+        strategy_exit = self._check_strategy_exit(pos, current_price)
+        if strategy_exit:
+            return strategy_exit
+
+        # 4. 최대 보유기간 초과 (공통)
+        if pos.hold_days >= max_hold:
+            return ExitReason.MAX_HOLD
+
+        return None
+
+    def _check_strategy_exit(self, pos: Position, current_price: int) -> ExitReason | None:
+        """전략별 고유 청산 조건 체크.
+
+        entry_strategy에 따라 분기. 미등록 전략은 MACD 데드크로스 폴백.
+        Phase B에서 새 전략별 분기 추가 예정.
+        """
+        from src.strategy.signals import calculate_indicators
+        import pandas as pd
+
+        # 공통 MACD 데드크로스 (수익 +2% 이상)
+        # 현재 모든 전략이 이걸 사용. Phase B에서 전략별 분기 추가 예정.
         pnl_pct = (current_price - pos.entry_price) / pos.entry_price
         if pnl_pct >= 0.02:
             try:
@@ -406,10 +424,6 @@ class TradingEngine:
                             return ExitReason.MACD_DEAD
             except Exception:
                 pass
-
-        # 4. 최대 보유기간 초과
-        if pos.hold_days >= max_hold:
-            return ExitReason.MAX_HOLD
 
         return None
 
