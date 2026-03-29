@@ -1359,17 +1359,39 @@ if __name__ == "__main__":
         from src.backtest.optimizer import ParameterOptimizer
 
         optimizer = ParameterOptimizer(engine)
-        # Use a smaller grid for faster results
-        small_grid = {
-            "rsi_min": [30, 35, 40],
-            "rsi_max": [65, 70, 75],
-            "volume_multiplier": [1.0, 1.2, 1.5],
-            "stop_atr_mult": [1.5, 2.0, 2.5],
-            "target_return": [0.08, 0.10, 0.12],
-            "max_hold_days": [10, 15, 20],
+        # 전략별 그리드 자동 선택
+        strategy_grids = {
+            "momentum_pullback": {
+                "momentum_period": [40, 60],
+                "pullback_days": [3, 5],
+                "rsi_pullback_threshold": [25, 30, 35],
+                "stop_atr_mult": [1.5, 2.0],
+                "target_return": [0.08, 0.10],
+                "max_hold_days": [7, 10, 15],
+            },
+            "institutional_flow": {
+                "adx_threshold": [15, 20, 25],
+                "volume_multiplier": [0.8, 1.0],
+                "stop_atr_mult": [1.5, 2.0],
+                "target_return": [0.08, 0.10],
+                "max_hold_days": [10, 15],
+            },
+            "disparity_reversion": {
+                "disparity_entry": [91, 93, 95],
+                "rsi_oversold": [20, 25, 30],
+                "stop_atr_mult": [1.5, 2.0],
+                "target_return": [0.05, 0.08],
+                "max_hold_days": [5, 7],
+            },
         }
+        grid = strategy_grids.get(args.strategy, {
+            "stop_atr_mult": [1.5, 2.0],
+            "target_return": [0.08, 0.10],
+            "max_hold_days": [7, 10, 15],
+        })
         results = optimizer.run_grid_search(
-            args.codes, start_date, end_date, small_grid
+            args.codes, start_date, end_date, grid,
+            strategy_name=args.strategy,
         )
         if not results.empty:
             print(f"\n최적화 완료: {len(results)}개 조합 중 상위 결과:")

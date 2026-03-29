@@ -14,7 +14,7 @@ Usage:
     # 커스텀 종목으로 실행
     python scripts/run_walk_forward.py --strategy golden_cross --codes 005930,000660,005380
 
-    # 3개 전략 순차 실행 (golden_cross → bb_bounce → adaptive)
+    # 3개 전략 순차 실행 (momentum_pullback → institutional_flow → disparity_reversion)
     python scripts/run_walk_forward.py --all
 """
 
@@ -81,15 +81,58 @@ WF_GRID_ADAPTIVE = {
     "adx_threshold": [20, 25],
 }
 
+# ============================================================================
+# 신규 전략 파라미터 그리드 (v2)
+# ============================================================================
+
+# momentum_pullback: 모멘텀 + 눌림목 (72조합)
+WF_GRID_MOMENTUM_PULLBACK = {
+    # 진입 파라미터
+    "momentum_period": [40, 60],
+    "pullback_days": [3, 5],
+    "rsi_pullback_threshold": [25, 30],
+    # 청산 파라미터
+    "stop_atr_mult": [1.5, 2.0],
+    "target_return": [0.08, 0.10],
+    "max_hold_days": [7, 10, 15],
+}
+
+# institutional_flow: 수급 기반 (48조합)
+WF_GRID_INSTITUTIONAL_FLOW = {
+    # 진입 파라미터
+    "adx_threshold": [15, 20, 25],
+    "volume_multiplier": [0.8, 1.0],
+    # 청산 파라미터
+    "stop_atr_mult": [1.5, 2.0],
+    "target_return": [0.08, 0.10],
+    "max_hold_days": [10, 15],
+}
+
+# disparity_reversion: 이격도 평균회귀 (72조합)
+WF_GRID_DISPARITY_REVERSION = {
+    # 진입 파라미터
+    "disparity_entry": [91, 93, 95],
+    "rsi_oversold": [20, 25, 30],
+    # 청산 파라미터
+    "stop_atr_mult": [1.5, 2.0],
+    "target_return": [0.05, 0.08],
+    "max_hold_days": [5, 7],
+}
+
 # 전략명 → 그리드 매핑
 STRATEGY_GRIDS = {
+    # 기존 (비활성 전략, 비교용 유지)
     "golden_cross": WF_GRID_GOLDEN_CROSS,
     "bb_bounce": WF_GRID_BB_BOUNCE,
     "adaptive": WF_GRID_ADAPTIVE,
+    # 신규 (활성 전략)
+    "momentum_pullback": WF_GRID_MOMENTUM_PULLBACK,
+    "institutional_flow": WF_GRID_INSTITUTIONAL_FLOW,
+    "disparity_reversion": WF_GRID_DISPARITY_REVERSION,
 }
 
-# 레거시 호환 (기본 그리드)
-WF_GRID = WF_GRID_ADAPTIVE
+# 기본 그리드 (신규 전략)
+WF_GRID = WF_GRID_MOMENTUM_PULLBACK
 
 
 def run_walk_forward(
@@ -483,10 +526,10 @@ def run_single_strategy(args, strategy_name: str, codes: list[str]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Walk-Forward 검증")
-    parser.add_argument("--strategy", default="golden_cross",
-                        help="전략 (golden_cross | bb_bounce | adaptive)")
+    parser.add_argument("--strategy", default="momentum_pullback",
+                        help="전략 (momentum_pullback | institutional_flow | disparity_reversion)")
     parser.add_argument("--all", action="store_true",
-                        help="3개 전략 순차 실행 (golden_cross → bb_bounce → adaptive)")
+                        help="3개 전략 순차 실행 (momentum_pullback → institutional_flow → disparity_reversion)")
     parser.add_argument("--start", default="20190101", help="시작일 (YYYYMMDD)")
     parser.add_argument("--end", default="20260228", help="종료일 (YYYYMMDD)")
     parser.add_argument("--train", type=int, default=24, help="Train 개월 수 (기본: 24)")
@@ -509,8 +552,8 @@ def main():
     t0_total = time.time()
 
     if args.all:
-        # 3개 전략 순차 실행
-        strategies = ["golden_cross", "bb_bounce", "adaptive"]
+        # 신규 3개 전략 순차 실행
+        strategies = ["momentum_pullback", "institutional_flow", "disparity_reversion"]
         all_results = {}
         for strategy in strategies:
             results = run_single_strategy(args, strategy, codes)

@@ -15,16 +15,10 @@ from loguru import logger
 from src.backtest.engine import BacktestEngine, BacktestResult
 
 PARAM_GRID = {
-    "macd_fast": [8, 10, 12],
-    "macd_slow": [22, 24, 26],
-    "macd_signal": [7, 9],
-    "rsi_period": [12, 14],
-    "rsi_min": [30, 35, 40],
-    "rsi_max": [65, 70, 75],
-    "volume_multiplier": [1.0, 1.2, 1.5],
     "stop_atr_mult": [1.5, 2.0, 2.5],
-    "target_return": [0.08, 0.10, 0.12],
-    "max_hold_days": [10, 15, 20],
+    "target_return": [0.05, 0.08, 0.10],
+    "max_hold_days": [7, 10, 15],
+    "volume_multiplier": [0.8, 1.0],
 }
 
 
