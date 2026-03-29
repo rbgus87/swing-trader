@@ -52,7 +52,9 @@ class TradingEngine:
 
         self._kiwoom = KiwoomAPI(base_url, ws_url, appkey, secretkey)
         account = config.get_env("KIWOOM_ACCOUNT", "")
-        self._order_mgr = OrderManager(self._kiwoom, account)
+        self._order_mgr = OrderManager(self._kiwoom, account, is_paper=(self.mode == "paper"))
+        if self.mode == "paper":
+            logger.warning("PAPER 모드 — 실전 주문 비활성화")
 
         # REST polling 상태
         self._polling_task: asyncio.Task | None = None
@@ -65,10 +67,10 @@ class TradingEngine:
         self._risk_mgr = RiskManager(self._ds, config.data)
         self._sizer = PositionSizer()
         self._stop_mgr = StopManager(
-            stop_atr_mult=config.get("risk.stop_atr_multiplier", 2.5),
-            max_stop_pct=config.get("risk.max_stop_pct", 0.10),
-            trailing_atr_mult=config.get("risk.trailing_atr_multiplier", 2.5),
-            trailing_activate_pct=config.get("risk.trailing_activate_pct", 0.07),
+            stop_atr_mult=config.get("risk.stop_atr_multiplier", 1.5),
+            max_stop_pct=config.get("risk.max_stop_pct", 0.07),
+            trailing_atr_mult=config.get("risk.trailing_atr_multiplier", 2.0),
+            trailing_activate_pct=config.get("risk.trailing_activate_pct", 0.10),
         )
         self._telegram = TelegramBot()
 

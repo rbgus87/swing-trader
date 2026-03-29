@@ -1,5 +1,7 @@
 """DataStore CRUD 테스트."""
 
+import pytest
+
 from src.datastore import DataStore
 from src.models import Position, TradeRecord
 
@@ -149,6 +151,40 @@ class TestTradeCRUD:
 
         trades_16 = tmp_db.get_trades_by_date("2025-01-16")
         assert len(trades_16) == 1
+
+
+class TestTradeStatistics:
+    def test_no_trades_returns_none(self, tmp_db: DataStore):
+        """매도 거래 없으면 None 반환."""
+        result = tmp_db.get_trade_statistics()
+        assert result is None
+
+    def test_statistics_calculation(self, tmp_db: DataStore):
+        """매도 3건(2승1패) 통계 검증."""
+        # 2승 (+5%, +10%), 1패 (-3%)
+        for pnl_pct, i in [(0.05, 1), (0.10, 2), (-0.03, 3)]:
+            trade = TradeRecord(
+                code="005930",
+                name="삼성전자",
+                side="sell",
+                price=50000,
+                quantity=10,
+                amount=500000,
+                fee=75.0,
+                tax=750.0,
+                pnl=int(pnl_pct * 500000),
+                pnl_pct=pnl_pct,
+                reason="test",
+                executed_at=f"2025-01-1{i} 10:00:00",
+            )
+            tmp_db.record_trade(trade)
+
+        stats = tmp_db.get_trade_statistics()
+        assert stats is not None
+        assert stats["count"] == 3
+        assert stats["win_rate"] == pytest.approx(2 / 3, rel=1e-6)
+        assert stats["avg_win"] == pytest.approx((0.05 + 0.10) / 2, rel=1e-6)
+        assert stats["avg_loss"] == pytest.approx(0.03, rel=1e-6)
 
 
 class TestDailyPerformance:

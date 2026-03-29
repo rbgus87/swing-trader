@@ -35,9 +35,10 @@ class OrderManager:
         account: 계좌번호.
     """
 
-    def __init__(self, kiwoom_api: KiwoomAPI, account: str):
+    def __init__(self, kiwoom_api: KiwoomAPI, account: str, is_paper: bool = False):
         self._api = kiwoom_api
         self._account = account
+        self._is_paper = is_paper
         self._pending_orders: dict[str, Order] = {}
 
     # RISK_CHECK_REQUIRED
@@ -63,6 +64,12 @@ class OrderManager:
         Returns:
             주문 실행 결과.
         """
+        # Paper 모드 이중 안전장치  # RISK_CHECK_REQUIRED
+        if self._is_paper:
+            side_label = "매수" if order_type == ORDER_BUY else "매도"
+            logger.info(f"[PAPER] 주문 시뮬레이션: {code} {side_label} {qty}주")
+            return OrderResult(success=True, order_no="PAPER-SIM", message="paper mode")
+
         # 입력 검증
         if not _CODE_PATTERN.match(code):
             logger.error("잘못된 종목코드 형식: {}", code)

@@ -390,6 +390,40 @@ class DataStore:
             )
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_trade_statistics(self, limit: int = 50) -> dict | None:
+        """최근 N건 매도 거래의 승률/평균손익 통계.
+
+        Args:
+            limit: 최근 N건 (매도 거래만).
+
+        Returns:
+            {"count": int, "win_rate": float, "avg_win": float, "avg_loss": float}
+            거래 없으면 None.
+        """
+        try:
+            with self._lock:
+                cursor = self.conn.execute(
+                    "SELECT pnl_pct FROM trades WHERE side = 'sell' "
+                    "ORDER BY executed_at DESC LIMIT ?",
+                    (limit,),
+                )
+                rows = cursor.fetchall()
+            if not rows:
+                return None
+
+            pnls = [r[0] for r in rows]
+            wins = [p for p in pnls if p > 0]
+            losses = [abs(p) for p in pnls if p <= 0]
+
+            return {
+                "count": len(pnls),
+                "win_rate": len(wins) / len(pnls) if pnls else 0.5,
+                "avg_win": sum(wins) / len(wins) if wins else 0.08,
+                "avg_loss": sum(losses) / len(losses) if losses else 0.04,
+            }
+        except Exception:
+            return None
+
     # ── Daily Performance ──────────────────────────────────────
 
     def save_daily_performance(
