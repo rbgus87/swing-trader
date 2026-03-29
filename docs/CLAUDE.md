@@ -140,3 +140,5 @@ pytest tests/ -v
 - 백테스트 비용 모델은 config.yaml의 backtest 섹션에서 관리 (BacktestEngine이 자동 로드)
 - 슬리피지는 체결가 조정 방식 (proceeds = int(price * (1-slippage)) * (1-commission-tax))
 - Walk-Forward는 --codes 인자로 커스텀 종목 지정 가능 (미지정 시 DEFAULT_CODES 20종목)
+- 기존 전략 7개는 src/strategy/에 파일 존재하지만 __init__.py에서 비활성. 재활성화하려면 import 주석 해제 + config.yaml regime_strategy 수정.
+- institutional_flow 전략의 수급 exit(외국인 순매도)은 pykrx API 호출. API 장애 시 graceful하게 스킵 (MACD 데드크로스 폴백).
