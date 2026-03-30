@@ -35,7 +35,7 @@ class TelegramBot:
         self._cooldowns: dict[str, datetime] = {}
 
     def send(self, message: str, parse_mode: str = "HTML", retries: int = 1) -> bool:
-        """메시지 전송. timeout=5초.
+        """메시지 전송. timeout=10초.
 
         Args:
             message: 전송할 메시지 텍스트.
@@ -54,7 +54,7 @@ class TelegramBot:
                         "text": message,
                         "parse_mode": parse_mode,
                     },
-                    timeout=5,
+                    timeout=10,
                 )
                 if resp.status_code == 200:
                     return True
