@@ -466,7 +466,6 @@ QFrame#historyStatCard:hover {
 
 /* ── 미니 로그 ── */
 QTextEdit#miniLog {
-    max-height: 120px;
     background-color: #11111b;
     color: #a6adc8;
     border: 1px solid #313244;

@@ -191,7 +191,7 @@ class DashboardTab(QWidget):
         self._mini_log = QTextEdit()
         self._mini_log.setObjectName("miniLog")
         self._mini_log.setReadOnly(True)
-        self._mini_log.setMaximumHeight(120)
+        self._mini_log.setMinimumHeight(120)
         log_area.addWidget(self._mini_log)
 
         bottom_layout.addLayout(log_area, stretch=1)
