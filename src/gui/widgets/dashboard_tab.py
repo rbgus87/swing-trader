@@ -12,7 +12,6 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QPushButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -56,14 +55,14 @@ class DashboardTab(QWidget):
         stat_area.setStyleSheet(f"background-color: {_MANTLE};")
         stat_layout = QHBoxLayout(stat_area)
         stat_layout.setContentsMargins(12, 10, 12, 10)
-        stat_layout.setSpacing(8)
+        stat_layout.setSpacing(10)
 
-        self._stat_eval = self._make_stat_card("총 평가", "0원", _TEXT)
-        self._stat_avail = self._make_stat_card("가용자금", "0원", _TEXT)
-        self._stat_pos = self._make_stat_card("포지션", f"0/{self._max_positions}", _BLUE)
-        self._stat_cand = self._make_stat_card("후보", "0종목", _SUBTEXT)
-        self._stat_pnl = self._make_stat_card("일일 손익", "+0.00%", _GREEN)
-        self._stat_mdd = self._make_stat_card("MDD", "0.0%", _SUBTEXT)
+        self._stat_eval = self._make_stat_card("💰 총 평가", "0원", _TEXT)
+        self._stat_avail = self._make_stat_card("💵 가용자금", "0원", _TEXT)
+        self._stat_pos = self._make_stat_card("📊 포지션", f"0/{self._max_positions}", _BLUE)
+        self._stat_cand = self._make_stat_card("🔍 후보", "0종목", _SUBTEXT)
+        self._stat_pnl = self._make_stat_card("📈 일일 손익", "+0.00%", _GREEN)
+        self._stat_mdd = self._make_stat_card("📉 MDD", "0.0%", _SUBTEXT)
 
         for card, _, _ in [
             self._stat_eval, self._stat_avail, self._stat_pos,
@@ -92,7 +91,7 @@ class DashboardTab(QWidget):
         pos_layout.addLayout(pos_header)
 
         self.positions_table = self._make_table(
-            ["종목코드", "종목명", "전략", "수량", "매수가", "현재가", "평가금액", "수익률", "손절가", "목표가"]
+            ["종목코드", "종목명", "전략", "보유일", "수량", "매수가", "현재가", "평가금액", "수익률", "손절가"]
         )
         pos_layout.addWidget(self.positions_table)
         splitter.addWidget(pos_widget)
@@ -113,7 +112,7 @@ class DashboardTab(QWidget):
         self._lbl_cand_count.setStyleSheet(f"color: {_SUBTEXT}; font-size: 11px;")
         cand_header.addWidget(self._lbl_cand_count)
         cand_widget.addLayout(cand_header)
-        self.candidates_table = self._make_table(["종목코드", "종목명"])
+        self.candidates_table = self._make_table(["종목코드", "종목명", "현재가", "등락률", "점수"])
         cand_widget.addWidget(self.candidates_table)
         mid_layout.addLayout(cand_widget)
 
@@ -127,7 +126,7 @@ class DashboardTab(QWidget):
         self._lbl_trade_count.setStyleSheet(f"color: {_SUBTEXT}; font-size: 11px;")
         trade_header.addWidget(self._lbl_trade_count)
         trade_widget.addLayout(trade_header)
-        self.trades_table = self._make_table(["시간", "종목코드", "구분", "가격", "손익", "사유"])
+        self.trades_table = self._make_table(["시간", "종목코드", "종목명", "구분", "수량", "가격", "손익", "사유"])
         trade_widget.addWidget(self.trades_table)
         mid_layout.addLayout(trade_widget)
 
@@ -184,34 +183,16 @@ class DashboardTab(QWidget):
         chart_area.addWidget(self._chart_container)
         bottom_layout.addLayout(chart_area, stretch=1)
 
-        # 로그 영역
+        # 미니 로그 영역
         log_area = QVBoxLayout()
         log_area.setSpacing(4)
+        log_area.addWidget(self._section_label("로그"))
 
-        log_header = QHBoxLayout()
-        log_header.addWidget(self._section_label("로그"))
-        log_header.addStretch()
-
-        self._btn_log_clear = QPushButton("지우기")
-        self._btn_log_clear.setFixedSize(56, 22)
-        self._btn_log_clear.setStyleSheet("font-size: 10px; padding: 2px 6px;")
-        self._btn_log_clear.clicked.connect(self._on_log_clear)
-        log_header.addWidget(self._btn_log_clear)
-
-        self._btn_autoscroll = QPushButton("자동스크롤")
-        self._btn_autoscroll.setFixedSize(76, 22)
-        self._btn_autoscroll.setStyleSheet(
-            f"font-size: 10px; padding: 2px 6px; color: {_GREEN};"
-        )
-        self._btn_autoscroll.clicked.connect(self._toggle_autoscroll)
-        log_header.addWidget(self._btn_autoscroll)
-
-        log_area.addLayout(log_header)
-
-        self.log_view = QTextEdit()
-        self.log_view.setObjectName("logView")
-        self.log_view.setReadOnly(True)
-        log_area.addWidget(self.log_view)
+        self._mini_log = QTextEdit()
+        self._mini_log.setObjectName("miniLog")
+        self._mini_log.setReadOnly(True)
+        self._mini_log.setMaximumHeight(120)
+        log_area.addWidget(self._mini_log)
 
         bottom_layout.addLayout(log_area, stretch=1)
         splitter.addWidget(bottom_widget)
@@ -223,9 +204,8 @@ class DashboardTab(QWidget):
 
         layout.addWidget(splitter)
 
-        # 로그 상태
-        self._autoscroll = True
-        self._log_lines: list[str] = []
+        # 미니 로그 상태
+        self._mini_log_lines: list[str] = []
 
         # 차트 데이터
         self._equity_data: list[float] = []
@@ -242,7 +222,7 @@ class DashboardTab(QWidget):
 
         lbl_value = QLabel(value)
         lbl_value.setObjectName("statValue")
-        lbl_value.setStyleSheet(f"color: {color}; font-size: 15px; font-weight: bold;")
+        lbl_value.setStyleSheet(f"color: {color}; font-size: 18px; font-weight: bold;")
         lbl_value.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         card_layout.addWidget(lbl_value)
 
@@ -276,7 +256,7 @@ class DashboardTab(QWidget):
     # ── 로그 ──
 
     def append_log(self, message: str, level: str = "INFO"):
-        """로그 메시지 추가 (MainWindow에서 호출)."""
+        """로그 메시지 추가 (MainWindow에서 호출). 최근 10줄만 유지."""
         color = {
             "ERROR": _RED,
             "WARNING": _YELLOW,
@@ -285,25 +265,13 @@ class DashboardTab(QWidget):
         }.get(level, "#a6adc8")
 
         safe_msg = html.escape(message)
-        self.log_view.append(f'<span style="color:{color}">{safe_msg}</span>')
+        self._mini_log_lines.append(f'<span style="color:{color}">{safe_msg}</span>')
+        if len(self._mini_log_lines) > 10:
+            self._mini_log_lines = self._mini_log_lines[-10:]
+        self._mini_log.setHtml("<br>".join(self._mini_log_lines))
 
-        if self._autoscroll:
-            sb = self.log_view.verticalScrollBar()
-            sb.setValue(sb.maximum())
-
-    def _on_log_clear(self):
-        self.log_view.clear()
-
-    def _toggle_autoscroll(self):
-        self._autoscroll = not self._autoscroll
-        if self._autoscroll:
-            self._btn_autoscroll.setStyleSheet(
-                f"font-size: 10px; padding: 2px 6px; color: {_GREEN};"
-            )
-        else:
-            self._btn_autoscroll.setStyleSheet(
-                f"font-size: 10px; padding: 2px 6px; color: {_SUBTEXT};"
-            )
+        sb = self._mini_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     # ── 데이터 업데이트 ──
 
@@ -328,7 +296,7 @@ class DashboardTab(QWidget):
         _, pnl_val, _ = self._stat_pnl
         pnl_val.setText(f"{pnl:+.2f}%")
         pnl_val.setStyleSheet(
-            f"color: {pnl_color}; font-size: 15px; font-weight: bold;"
+            f"color: {pnl_color}; font-size: 18px; font-weight: bold;"
         )
 
         # MDD 카드
@@ -337,7 +305,7 @@ class DashboardTab(QWidget):
         _, mdd_val, _ = self._stat_mdd
         mdd_val.setText(f"{mdd:.1f}%")
         mdd_val.setStyleSheet(
-            f"color: {mdd_color}; font-size: 15px; font-weight: bold;"
+            f"color: {mdd_color}; font-size: 18px; font-weight: bold;"
         )
 
         # 내부 저장
@@ -391,22 +359,23 @@ class DashboardTab(QWidget):
             entry_strat = pos.get("entry_strategy", "")
             strat_display = strategy_kr.get(entry_strat, entry_strat)
 
+            hold_days = pos.get("hold_days", 0)
             items = [
                 pos.get("code", ""),
                 pos.get("name", ""),
                 strat_display,
+                f"D+{hold_days}",
                 f"{qty:,}",
                 f"{entry_price:,}",
                 f"{current_price:,}",
                 f"{eval_amount:,}",
                 f"{pnl_pct:+.2f}%",
                 f"{pos.get('stop_price', 0):,}",
-                f"{pos.get('target_price', 0):,}",
             ]
             for col, text in enumerate(items):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter)
-                if col == 7:  # 수익률
+                if col == 8:  # 수익률 (was 7, now 8)
                     color = _GREEN if pnl_pct >= 0 else _RED
                     item.setForeground(QColor(color))
                 if col == 2:  # 전략 컬럼 색상
@@ -424,7 +393,7 @@ class DashboardTab(QWidget):
         pos_val.setText(f"{len(positions)}/{self._max_positions}")
         pos_color = _BLUE if len(positions) < self._max_positions else _YELLOW
         pos_val.setStyleSheet(
-            f"color: {pos_color}; font-size: 15px; font-weight: bold;"
+            f"color: {pos_color}; font-size: 18px; font-weight: bold;"
         )
 
         # 카운트 라벨
@@ -456,18 +425,18 @@ class DashboardTab(QWidget):
             reason_raw = trade.get("reason", "")
             reason_kr = self._EXIT_REASON_KR.get(reason_raw, reason_raw)
 
-            items = [time_str, trade.get("code", ""), side_kr,
-                     f"{trade.get('price', 0):,}", pnl_str, reason_kr]
+            items = [time_str, trade.get("code", ""), trade.get("name", ""), side_kr,
+                     f"{trade.get('quantity', 0):,}", f"{trade.get('price', 0):,}", pnl_str, reason_kr]
 
             for col, text in enumerate(items):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter)
-                if col == 2:
+                if col == 3:  # 구분
                     color = _GREEN if side_kr == "매수" else _RED
                     item.setForeground(QColor(color))
-                if col == 4 and pnl != 0:
+                if col == 6 and pnl != 0:  # 손익
                     item.setForeground(QColor(_GREEN if pnl > 0 else _RED))
-                if col == 5 and reason_raw == "partial_target":
+                if col == 7 and reason_raw == "partial_target":  # 사유
                     item.setForeground(QColor(_PEACH))
                 self.trades_table.setItem(row, col, item)
 
@@ -477,11 +446,22 @@ class DashboardTab(QWidget):
         """매수 후보 테이블 업데이트."""
         self.candidates_table.setRowCount(len(candidates))
         for row, cand in enumerate(candidates):
-            code_item = QTableWidgetItem(cand.get("code", ""))
-            code_item.setTextAlignment(Qt.AlignCenter)
-            name_item = QTableWidgetItem(cand.get("name", ""))
-            name_item.setTextAlignment(Qt.AlignCenter)
-            self.candidates_table.setItem(row, 0, code_item)
-            self.candidates_table.setItem(row, 1, name_item)
+            price = cand.get("price", 0)
+            change_pct = cand.get("change_pct", 0)
+            score = cand.get("score", 0)
 
+            items = [
+                cand.get("code", ""),
+                cand.get("name", ""),
+                f"{price:,}" if price else "",
+                f"{change_pct:+.2f}%" if change_pct else "",
+                f"{score:.1f}" if score else "",
+            ]
+            for col, text in enumerate(items):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter)
+                if col == 3 and change_pct:  # 등락률 — 한국식: 양수 빨강, 음수 파랑
+                    color = _RED if change_pct > 0 else _BLUE
+                    item.setForeground(QColor(color))
+                self.candidates_table.setItem(row, col, item)
         self._lbl_cand_count.setText(f"{len(candidates)}건")

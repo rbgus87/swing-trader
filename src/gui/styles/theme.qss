@@ -58,7 +58,7 @@ QFrame#statCard:hover {
 }
 
 QLabel#statValue {
-    font-size: 16px;
+    font-size: 18px;
     font-weight: bold;
     color: #cdd6f4;
 }
@@ -435,4 +435,43 @@ QMessageBox QLabel {
 
 QMessageBox QPushButton {
     min-width: 80px;
+}
+
+/* ── 사이드바 전략 패널 ── */
+QLabel#strategyName {
+    font-size: 13px;
+    font-weight: bold;
+    color: #a6e3a1;
+    padding: 2px 0;
+}
+
+QLabel#sidebarInfo {
+    font-size: 11px;
+    color: #6c7086;
+    padding: 1px 0;
+}
+
+/* ── 매매 이력 탭 ── */
+QFrame#historyStatCard {
+    background-color: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 10px 14px;
+    min-width: 100px;
+}
+
+QFrame#historyStatCard:hover {
+    border-color: #45475a;
+}
+
+/* ── 미니 로그 ── */
+QTextEdit#miniLog {
+    max-height: 120px;
+    background-color: #11111b;
+    color: #a6adc8;
+    border: 1px solid #313244;
+    border-radius: 6px;
+    font-family: "Cascadia Code", "Consolas", "D2Coding", monospace;
+    font-size: 11px;
+    padding: 6px;
 }

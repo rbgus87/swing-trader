@@ -36,6 +36,7 @@ from loguru import logger
 from src.gui.widgets.dashboard_tab import DashboardTab
 from src.gui.widgets.log_tab import LogTab
 from src.gui.widgets.settings_tab import SettingsTab
+from src.gui.widgets.trade_history_tab import TradeHistoryTab
 from src.gui.workers.engine_worker import EngineWorker
 
 
@@ -82,7 +83,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(title)
 
         # 버전 표시
-        ver_label = QLabel("v2.0.0")
+        ver_label = QLabel("v2.1.0")
         ver_label.setStyleSheet(
             "color: #45475a; font-size: 10px; margin-top: -8px; padding: 0;"
         )
@@ -115,18 +116,37 @@ class MainWindow(QMainWindow):
         )
         sidebar_layout.addWidget(self._lbl_engine_status)
 
-        self._lbl_regime = QLabel("국면: -")
-        self._lbl_regime.setStyleSheet(
-            "color: #6c7086; font-size: 11px; padding: 2px 0;"
-        )
-        sidebar_layout.addWidget(self._lbl_regime)
-
         self._lbl_schedule_info = QLabel("")
         self._lbl_schedule_info.setStyleSheet(
             "color: #45475a; font-size: 10px; padding: 0;"
         )
         self._lbl_schedule_info.setWordWrap(True)
         sidebar_layout.addWidget(self._lbl_schedule_info)
+
+        # ── 전략 요약 패널 ──
+        sidebar_layout.addWidget(self._sidebar_section("전략"))
+
+        self._lbl_strategy_name = QLabel("golden_cross")
+        self._lbl_strategy_name.setObjectName("strategyName")
+        sidebar_layout.addWidget(self._lbl_strategy_name)
+
+        self._lbl_regime = QLabel("국면: -")
+        self._lbl_regime.setObjectName("sidebarInfo")
+        sidebar_layout.addWidget(self._lbl_regime)
+
+        self._lbl_sidebar_pos = QLabel("포지션: 0/4")
+        self._lbl_sidebar_pos.setObjectName("sidebarInfo")
+        self._lbl_sidebar_pos.setStyleSheet(
+            "color: #89b4fa; font-size: 11px; padding: 1px 0;"
+        )
+        sidebar_layout.addWidget(self._lbl_sidebar_pos)
+
+        self._lbl_sidebar_pnl = QLabel("손익: +0.00%")
+        self._lbl_sidebar_pnl.setObjectName("sidebarInfo")
+        self._lbl_sidebar_pnl.setStyleSheet(
+            "color: #a6e3a1; font-size: 11px; padding: 1px 0;"
+        )
+        sidebar_layout.addWidget(self._lbl_sidebar_pnl)
 
         # ── 제어 버튼 ──
         btn_row1 = QHBoxLayout()
@@ -203,18 +223,6 @@ class MainWindow(QMainWindow):
         btn_manual_row3 = QHBoxLayout()
         btn_manual_row3.setSpacing(8)
 
-        self.btn_refresh_60m = QPushButton("60분봉")
-        self.btn_refresh_60m.setObjectName("manualBtn")
-        self.btn_refresh_60m.setEnabled(False)
-        self.btn_refresh_60m.setCursor(Qt.PointingHandCursor)
-        self.btn_refresh_60m.setToolTip("60분봉 데이터 즉시 갱신 (진입 타이밍 판단용)")
-        btn_manual_row3.addWidget(self.btn_refresh_60m)
-
-        sidebar_layout.addLayout(btn_manual_row3)
-
-        btn_manual_row4 = QHBoxLayout()
-        btn_manual_row4.setSpacing(8)
-
         self.btn_refresh_watchlist = QPushButton("WL갱신")
         self.btn_refresh_watchlist.setObjectName("manualBtn")
         self.btn_refresh_watchlist.setEnabled(False)
@@ -222,9 +230,9 @@ class MainWindow(QMainWindow):
         self.btn_refresh_watchlist.setToolTip(
             "watchlist 수동 갱신 (시가총액 5조+, 거래대금 100억+)"
         )
-        btn_manual_row4.addWidget(self.btn_refresh_watchlist)
+        btn_manual_row3.addWidget(self.btn_refresh_watchlist)
 
-        sidebar_layout.addLayout(btn_manual_row4)
+        sidebar_layout.addLayout(btn_manual_row3)
 
         # 구분선
         sidebar_layout.addWidget(self._hline())
@@ -255,10 +263,12 @@ class MainWindow(QMainWindow):
         # 탭
         self.tabs = QTabWidget()
         self.dashboard_tab = DashboardTab()
+        self.trade_history_tab = TradeHistoryTab()
         self.log_tab = LogTab()
         self.settings_tab = SettingsTab()
 
         self.tabs.addTab(self.dashboard_tab, "\U0001F4C8 대시보드")
+        self.tabs.addTab(self.trade_history_tab, "\U0001F4CB 매매 이력")
         self.tabs.addTab(self.log_tab, "\U0001F4DD 로그")
         self.tabs.addTab(self.settings_tab, "\u2699 설정")
 
@@ -282,7 +292,6 @@ class MainWindow(QMainWindow):
         self.btn_report.clicked.connect(self._on_report)
         self.btn_reconnect.clicked.connect(self._on_reconnect)
         self.btn_daily_reset.clicked.connect(self._on_daily_reset)
-        self.btn_refresh_60m.clicked.connect(self._on_refresh_60m)
         self.btn_refresh_watchlist.clicked.connect(self._on_refresh_watchlist)
 
     # ── 사이드바 헬퍼 ──
@@ -299,6 +308,30 @@ class MainWindow(QMainWindow):
         self._lbl_regime.setText(f"국면: {text}")
         self._lbl_regime.setStyleSheet(
             f"color: {color}; font-size: 11px; font-weight: bold; padding: 2px 0;"
+        )
+
+    def update_sidebar_summary(self, positions: list, pnl: float = 0.0):
+        """사이드바 전략 요약 패널 갱신."""
+        from src.utils.config import config
+        max_pos = config.get("trading.max_positions", 4)
+        self._lbl_sidebar_pos.setText(f"포지션: {len(positions)}/{max_pos}")
+        pnl_color = "#a6e3a1" if pnl >= 0 else "#f38ba8"
+        self._lbl_sidebar_pnl.setText(f"손익: {pnl:+.2f}%")
+        self._lbl_sidebar_pnl.setStyleSheet(
+            f"color: {pnl_color}; font-size: 11px; padding: 1px 0;"
+        )
+        strategy_name = config.get("strategy.type", "golden_cross")
+        self._lbl_strategy_name.setText(strategy_name)
+
+    def _update_status_bar(self):
+        """상태바에 모드/전략/국면/종목수 표시."""
+        from src.utils.config import config
+        mode = self.combo_mode.currentText().upper()
+        strategy = config.get("strategy.type", "golden_cross")
+        watchlist = config.get("watchlist", [])
+        regime_text = self._lbl_regime.text().replace("국면: ", "")
+        self._lbl_status_left.setText(
+            f"{mode} | {strategy} | {regime_text} | {len(watchlist)}종목"
         )
 
     def _on_refresh_watchlist(self):
@@ -451,11 +484,6 @@ class MainWindow(QMainWindow):
             self._worker.signals.request_daily_reset.emit()
             logger.info("수동 일일 리셋 요청")
 
-    def _on_refresh_60m(self):
-        if self._worker:
-            self._worker.signals.request_refresh_60m.emit()
-            logger.info("수동 60분봉 갱신 요청")
-
     def _on_engine_started(self):
         # 연결 상태
         self._lbl_conn_dot.setStyleSheet("color: #a6e3a1; font-size: 10px;")
@@ -499,8 +527,12 @@ class MainWindow(QMainWindow):
         self.btn_report.setEnabled(True)
         self.btn_reconnect.setEnabled(True)
         self.btn_daily_reset.setEnabled(True)
-        self.btn_refresh_60m.setEnabled(True)
-        self._lbl_status_left.setText("스케줄러: 실행 중")
+        self.btn_refresh_watchlist.setEnabled(True)
+
+        # 사이드바 전략 요약
+        strategy_name = config.get("strategy.type", "golden_cross")
+        self._lbl_strategy_name.setText(strategy_name)
+        self._update_status_bar()
 
     def _on_engine_stopped(self):
         self._lbl_conn_dot.setStyleSheet("color: #f38ba8; font-size: 10px;")
@@ -529,7 +561,7 @@ class MainWindow(QMainWindow):
         self.btn_report.setEnabled(False)
         self.btn_reconnect.setEnabled(False)
         self.btn_daily_reset.setEnabled(False)
-        self.btn_refresh_60m.setEnabled(False)
+        self.btn_refresh_watchlist.setEnabled(False)
         self.combo_mode.setEnabled(True)
         self._lbl_status_left.setText("스케줄러: 중지")
         self._worker = None
@@ -559,8 +591,21 @@ class MainWindow(QMainWindow):
 
         self.btn_halt.setEnabled(running)
 
+        # 사이드바 손익 갱신
+        pnl = status.get("daily_pnl_pct", 0.0)
+        pnl_color = "#a6e3a1" if pnl >= 0 else "#f38ba8"
+        self._lbl_sidebar_pnl.setText(f"손익: {pnl:+.2f}%")
+        self._lbl_sidebar_pnl.setStyleSheet(
+            f"color: {pnl_color}; font-size: 11px; padding: 1px 0;"
+        )
+        self._update_status_bar()
+
     def _on_positions_updated(self, positions: list):
         self.dashboard_tab.update_positions(positions)
+        # 사이드바 포지션 갱신
+        from src.utils.config import config
+        max_pos = config.get("trading.max_positions", 4)
+        self._lbl_sidebar_pos.setText(f"포지션: {len(positions)}/{max_pos}")
 
     def _on_trades_updated(self, trades: list):
         self.dashboard_tab.update_trades(trades)

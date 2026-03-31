@@ -707,13 +707,13 @@ class SettingsTab(QWidget):
         strategy = self._config.get("strategy", {})
 
         self.w_strategy_type = SettingField.combo(
-            ["adaptive", "golden_cross", "disparity_reversion"],
+            ["golden_cross", "disparity_reversion", "adaptive"],
             strategy.get("type", "adaptive"),
         )
         form.addRow("전략 유형", self.w_strategy_type)
 
         # MACD
-        form.addRow(self._make_separator("MACD"))
+        form.addRow(self._make_separator("고급 설정 (MACD)"))
         self.w_macd_fast = SettingField.spin(strategy.get("macd_fast", 12), 2, 50)
         form.addRow("단기 기간", self.w_macd_fast)
         self.w_macd_slow = SettingField.spin(strategy.get("macd_slow", 26), 10, 100)
@@ -792,6 +792,22 @@ class SettingsTab(QWidget):
             strategy.get("partial_sell_ratio", 0.5), 0.1, 0.9
         )
         form.addRow("매도 비율", self.w_partial_sell_ratio)
+
+        # watchlist 자동 갱신
+        form.addRow(self._make_separator("watchlist 자동 갱신"))
+
+        wl_refresh = self._config.get("watchlist_refresh", {})
+        self.w_wl_enabled = SettingField.combo(
+            ["true", "false"],
+            "true" if wl_refresh.get("enabled", True) else "false",
+        )
+        form.addRow("자동 갱신", self.w_wl_enabled)
+
+        self.w_wl_min_cap = SettingField.spin(
+            int(wl_refresh.get("min_market_cap", 5_000_000_000_000) / 1_000_000_000_000),
+            1, 50, "조"
+        )
+        form.addRow("최소 시가총액", self.w_wl_min_cap)
 
         return scroll
 
@@ -1045,6 +1061,11 @@ class SettingsTab(QWidget):
         strategy["disparity_entry"] = self.w_disparity_entry.value()
         strategy["disparity_stop"] = self.w_disparity_stop.value()
         strategy["disparity_max_hold"] = self.w_disparity_max_hold.value()
+
+        # watchlist 자동 갱신
+        wl_refresh = self._config.setdefault("watchlist_refresh", {})
+        wl_refresh["enabled"] = self.w_wl_enabled.currentText() == "true"
+        wl_refresh["min_market_cap"] = self.w_wl_min_cap.value() * 1_000_000_000_000
 
         # 국면별 스케일링
         strategy.setdefault("regime_position_scale", {})
