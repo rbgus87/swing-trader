@@ -550,22 +550,11 @@ class TradingEngine:
                 )
 
             # 멀티전략 순회: 카테고리별 게이트 분기
+            # NOTE: score는 스크리닝(장전 후보 선정)에서만 사용.
+            # 실전 진입 판단은 check_realtime_entry()만으로 결정 (백테스트 동일).
             reject_reasons = []
             for strategy in self._strategies:
                 is_mr = strategy.category == "mean_reversion"
-
-                # Signal Score 게이트: trend 전략만 적용
-                if not is_mr:
-                    min_score = config.get("strategy.min_signal_score", 1.5)
-                    if score < min_score:
-                        reject_reasons.append(f"{strategy.name}: score {score:.1f} < {min_score}")
-                        continue
-                else:
-                    # 평균회귀: 완화된 최소 점수 (0.5)
-                    min_score_mr = config.get("strategy.min_signal_score_mr", 0.5)
-                    if score < min_score_mr:
-                        reject_reasons.append(f"{strategy.name}: score {score:.1f} < {min_score_mr}")
-                        continue
 
                 # 주봉 SMA20 필터: trend 전략만 적용
                 if not is_mr and not self._check_weekly_trend(df_daily):
