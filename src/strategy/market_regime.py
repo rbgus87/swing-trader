@@ -93,7 +93,12 @@ class MarketRegime:
 
             # 3. VKOSPI 공포 차단
             self._vkospi = self._get_vkospi(date)
-            is_calm = self._vkospi <= self._vkospi_fear_threshold
+            if self._vkospi < 0:
+                # VKOSPI 조회 실패 → 공포장 판단 스킵 (calm으로 간주)
+                is_calm = True
+                logger.info("VKOSPI 조회 실패 — 공포장 판단 스킵")
+            else:
+                is_calm = self._vkospi <= self._vkospi_fear_threshold
 
             # 종합 판단
             self._is_bullish = above_sma and is_calm  # ADX와 무관하게 매수 허용

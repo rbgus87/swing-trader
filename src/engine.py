@@ -170,11 +170,12 @@ class TradingEngine:
                 month="3,6,9,12", day=1, hour=8, minute=0,
             )
 
-        # 60분봉 갱신 (장중 매시 정각: 10, 11, 12, 13, 14, 15시)
-        self._scheduler.add_job(
-            self._refresh_minute_ohlcv, "cron",
-            hour="10-15", minute=1,  # 정각 1분 후 (캔들 확정 대기)
-        )
+        # 60분봉 갱신 — 비활성화 (golden_cross에서 60분봉 미사용, 5107608 커밋)
+        # 재활성화하려면 아래 주석 해제
+        # self._scheduler.add_job(
+        #     self._refresh_minute_ohlcv, "cron",
+        #     hour="10-15", minute=1,  # 정각 1분 후 (캔들 확정 대기)
+        # )
 
         self._scheduler.start()
 
@@ -556,10 +557,10 @@ class TradingEngine:
             for strategy in self._strategies:
                 is_mr = strategy.category == "mean_reversion"
 
-                # 주봉 SMA20 필터: trend 전략만 적용
-                if not is_mr and not self._check_weekly_trend(df_daily):
-                    reject_reasons.append(f"{strategy.name}: 주봉 추세 미확인")
-                    continue
+                # v3: 주봉 SMA20 필터 비활성화 — 백테스트에 없는 조건 (백테스트 ↔ 실전 일치 원칙)
+                # if not is_mr and not self._check_weekly_trend(df_daily):
+                #     reject_reasons.append(f"{strategy.name}: 주봉 추세 미확인")
+                #     continue
 
                 # 전략별 실시간 진입 판단
                 if strategy.check_realtime_entry(df_daily, df_60m):

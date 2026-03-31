@@ -130,7 +130,7 @@ class DataProvider:
     ) -> pd.DataFrame:
         """KOSPI 지수 OHLCV 조회.
 
-        KRX API 우선 (pykrx 인코딩 이슈 해결).
+        KODEX200 ETF 프록시 우선 (1콜, 가장 빠르고 안정적).
 
         Args:
             start_date: 시작일 (YYYYMMDD).
@@ -139,42 +139,36 @@ class DataProvider:
         Returns:
             DatetimeIndex OHLCV DataFrame.
         """
-        # 방법 1: KRX API (공식)
-        if self._krx.available:
-            try:
-                df = self._krx.get_index_ohlcv_range(
-                    start_date, end_date, "kospi", "코스피"
-                )
-                if not df.empty:
-                    logger.info(f"KOSPI 지수 로드 (KRX API): {len(df)}행")
-                    return df
-            except Exception as e:
-                logger.warning(f"KRX API KOSPI 지수 실패: {e}")
+        # 방법 1: KODEX200 ETF 프록시 (가장 빠르고 안정적)
+        try:
+            df = self.get_ohlcv_by_date_range("069500", start_date, end_date)
+            if not df.empty:
+                df.attrs["source"] = "kodex200_proxy"
+                return df
+        except Exception as e:
+            logger.warning(f"KODEX200 프록시 실패: {e}")
 
-        # 방법 2: pykrx index API
+        # 방법 2: pykrx (Python 3.14에서 불안정)
         try:
             from pykrx import stock
             df = stock.get_index_ohlcv_by_date(start_date, end_date, "1001")
             if not df.empty:
                 df = map_columns(df, OHLCV_MAP)
                 df.index.name = "date"
-                logger.info(f"KOSPI 지수 로드 (pykrx): {len(df)}행")
                 return df
         except Exception as e:
             logger.warning(f"pykrx KOSPI 지수 실패: {e}")
 
-        # 방법 3: KODEX 200 ETF 프록시 (가격 스케일이 다름에 주의)
-        try:
-            df = self.get_ohlcv_by_date_range("069500", start_date, end_date)
-            if not df.empty:
-                df.attrs["source"] = "kodex200_proxy"
-                logger.warning(
-                    f"KOSPI 지수 대신 KODEX200 ETF 프록시 사용: {len(df)}행 "
-                    "(가격 스케일이 지수와 다름)"
+        # 방법 3: KRX API (날짜별 순차 호출 — 느리지만 최후 수단)
+        if self._krx.available:
+            try:
+                df = self._krx.get_index_ohlcv_range(
+                    start_date, end_date, "kospi", "코스피"
                 )
-                return df
-        except Exception as e:
-            logger.error(f"KODEX200 프록시 실패: {e}")
+                if not df.empty:
+                    return df
+            except Exception as e:
+                logger.warning(f"KRX API KOSPI 지수 실패: {e}")
 
         return pd.DataFrame()
 
@@ -185,20 +179,24 @@ class DataProvider:
             date: 기준일 (YYYYMMDD).
 
         Returns:
-            VKOSPI 종가 (실패 시 0.0).
+            VKOSPI 종가. 조회 실패 시 -1.0 (0.0이 아닌 음수로 실패 표시).
         """
         # KRX API 시도 (인코딩 이슈 없음)
         if self._krx.available:
             try:
                 df = self._krx.get_index_by_date(date, "kospi")
                 if not df.empty and "name" in df.columns:
-                    match = df[df["name"].str.contains("VKOSPI", case=False, na=False)]
-                    if not match.empty and "close" in match.columns:
-                        return float(match.iloc[0]["close"])
+                    # VKOSPI, V-KOSPI, 변동성 등 다양한 이름 시도
+                    for keyword in ["VKOSPI", "V-KOSPI", "변동성"]:
+                        match = df[df["name"].str.contains(keyword, case=False, na=False)]
+                        if not match.empty and "close" in match.columns:
+                            val = float(match.iloc[0]["close"])
+                            if val > 0:
+                                return val
             except Exception:
                 pass
 
-        # pykrx 폴백
+        # pykrx 폴백 (Python 3.14에서 불안정)
         try:
             from pykrx import stock
             from datetime import timedelta
@@ -206,11 +204,14 @@ class DataProvider:
             df = stock.get_index_ohlcv_by_date(start, date, "1004")
             if not df.empty:
                 close_col = "종가" if "종가" in df.columns else "close"
-                return float(df[close_col].iloc[-1])
+                if close_col in df.columns:
+                    val = float(df[close_col].iloc[-1])
+                    if val > 0:
+                        return val
         except Exception:
             pass
 
-        return 0.0
+        return -1.0
 
     # ── 종목 리스트 / 종목명 ──
 
