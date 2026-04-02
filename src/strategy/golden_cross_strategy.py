@@ -63,12 +63,16 @@ class GoldenCrossStrategy(BaseStrategy):
         screening_lookback = p.get("screening_lookback", 3)
 
         if len(df_daily) < screening_lookback + 1:
+            self._last_reject = "데이터부족"
             return False
 
         latest = df_daily.iloc[-1]
 
         # 1. SMA5 > SMA20 유지 중
-        if latest["sma5"] <= latest["sma20"]:
+        sma5 = latest["sma5"]
+        sma20 = latest["sma20"]
+        if sma5 <= sma20:
+            self._last_reject = f"SMA5({sma5:,.0f})<=SMA20({sma20:,.0f})"
             return False
 
         # 2. 최근 N일 내 크로스 발생 (백테스트와 동일)
@@ -80,20 +84,29 @@ class GoldenCrossStrategy(BaseStrategy):
                 cross_found = True
                 break
         if not cross_found:
+            self._last_reject = f"크로스없음(최근{screening_lookback}일)"
             return False
 
         # 3. RSI >= 하한 (상한 없음 — 백테스트와 동일)
-        if latest.get("rsi", 50) < rsi_entry_min:
+        rsi = latest.get("rsi", 50)
+        if rsi < rsi_entry_min:
+            self._last_reject = f"RSI({rsi:.1f})<{rsi_entry_min}"
             return False
 
         # 4. ADX >= 임계값
-        if latest.get("adx", 0) < adx_threshold:
+        adx = latest.get("adx", 0)
+        if adx < adx_threshold:
+            self._last_reject = f"ADX({adx:.1f})<{adx_threshold}"
             return False
 
         # 5. 거래량 >= 20일 평균
-        if latest["volume"] < latest.get("volume_sma20", 0) * volume_multiplier:
+        vol = latest["volume"]
+        vol_sma = latest.get("volume_sma20", 0)
+        if vol < vol_sma * volume_multiplier:
+            self._last_reject = f"거래량({vol:,.0f})<평균({vol_sma:,.0f})"
             return False
 
+        self._last_reject = ""
         return True
         # v3: close > SMA20 제거 (크로스 직후 걸림)
         # v3: RSI 상한 65 제거 (강한 모멘텀 차단)

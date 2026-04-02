@@ -639,7 +639,8 @@ class TradingEngine:
                     matched_strategy = strategy
                     break
                 else:
-                    reject_reasons.append(f"{strategy.name}: realtime_entry 미충족")
+                    detail = getattr(strategy, '_last_reject', '')
+                    reject_reasons.append(f"{strategy.name}: {detail}")
 
             if not matched_strategy:
                 reason_key = f"불발:{','.join(reject_reasons)}"

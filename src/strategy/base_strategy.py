@@ -20,6 +20,7 @@ class BaseStrategy(ABC):
 
     def __init__(self, params: dict | None = None):
         self.params = params or {}
+        self._last_reject = ""
 
     @abstractmethod
     def check_screening_entry(self, df: pd.DataFrame) -> bool:
