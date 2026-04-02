@@ -151,18 +151,27 @@ class TradingEngine:
         # 체결 콜백 등록 (REST polling 모드에서도 체결 이벤트는 별도 처리)
         self._kiwoom.on_chejan_callback = self.on_chejan
 
-    async def _safe_job(self, func, job_name: str):
-        """스케줄 job 안전 래퍼 — 예외 시 로그 + 텔레그램."""
-        try:
-            result = func()
-            if inspect.isawaitable(result):
-                await result
-        except Exception as e:
-            logger.error(f"스케줄 job 실패 [{job_name}]: {e}", exc_info=True)
+    def _make_safe_job(self, func, job_name: str):
+        """스케줄 job 안전 래퍼 팩토리.
+
+        AsyncIOScheduler가 직접 호출할 수 있는 async 함수를 반환.
+        async/sync 함수 모두 지원.
+        """
+        async def wrapper():
             try:
-                self._telegram.send(f"⚠️ 스케줄 실패: {job_name}\n{str(e)[:200]}")
-            except Exception:
-                pass
+                logger.info(f"스케줄 실행: {job_name}")
+                if inspect.iscoroutinefunction(func):
+                    await func()
+                else:
+                    await asyncio.to_thread(func)
+                logger.info(f"스케줄 완료: {job_name}")
+            except Exception as e:
+                logger.error(f"스케줄 job 실패 [{job_name}]: {e}", exc_info=True)
+                try:
+                    self._telegram.send(f"⚠️ 스케줄 실패: {job_name}\n{str(e)[:200]}")
+                except Exception:
+                    pass
+        return wrapper
 
     async def start(self):
         """메인루프 시작."""
@@ -179,54 +188,42 @@ class TradingEngine:
 
         h, m = screening_time.split(":")
         self._scheduler.add_job(
-            lambda: asyncio.ensure_future(
-                self._safe_job(self._pre_market_screening, "장전스크리닝")
-            ),
+            self._make_safe_job(self._pre_market_screening, "장전스크리닝"),
             "cron", hour=int(h), minute=int(m),
             misfire_grace_time=_grace,
         )
 
         h, m = report_time.split(":")
         self._scheduler.add_job(
-            lambda: asyncio.ensure_future(
-                self._safe_job(self._daily_report, "일간리포트")
-            ),
+            self._make_safe_job(self._daily_report, "일간리포트"),
             "cron", hour=int(h), minute=int(m),
             misfire_grace_time=_grace,
         )
 
         h, m = polling_start_time.split(":")
         self._scheduler.add_job(
-            lambda: asyncio.ensure_future(
-                self._safe_job(self._start_polling, "폴링시작")
-            ),
+            self._make_safe_job(self._start_polling, "폴링시작"),
             "cron", hour=int(h), minute=int(m),
             misfire_grace_time=_grace,
         )
 
         h, m = polling_stop_time.split(":")
         self._scheduler.add_job(
-            lambda: asyncio.ensure_future(
-                self._safe_job(self._stop_polling, "폴링중지")
-            ),
+            self._make_safe_job(self._stop_polling, "폴링중지"),
             "cron", hour=int(h), minute=int(m),
             misfire_grace_time=_grace,
         )
 
         # 미체결 주문 정리 (15:35 — 장 마감 5분 후)
         self._scheduler.add_job(
-            lambda: asyncio.ensure_future(
-                self._safe_job(self._post_market_cleanup, "장후정리")
-            ),
+            self._make_safe_job(self._post_market_cleanup, "장후정리"),
             "cron", hour=15, minute=35,
             misfire_grace_time=_grace,
         )
 
         # 일일 리셋 (09:00)
         self._scheduler.add_job(
-            lambda: asyncio.ensure_future(
-                self._safe_job(self._daily_reset, "일일리셋")
-            ),
+            self._make_safe_job(self._daily_reset, "일일리셋"),
             "cron", hour=9, minute=0,
             misfire_grace_time=_grace,
         )
@@ -234,9 +231,7 @@ class TradingEngine:
         # 분기 watchlist 자동 갱신 (3/6/9/12월 1일 08:00)
         if config.get("watchlist_refresh.enabled", False):
             self._scheduler.add_job(
-                lambda: asyncio.ensure_future(
-                    self._safe_job(self._quarterly_watchlist_refresh, "WL갱신")
-                ),
+                self._make_safe_job(self._quarterly_watchlist_refresh, "WL갱신"),
                 "cron", month="3,6,9,12", day=1, hour=8, minute=0,
                 misfire_grace_time=_grace,
             )
