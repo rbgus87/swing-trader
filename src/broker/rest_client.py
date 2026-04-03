@@ -14,6 +14,9 @@ from src.broker.rate_limiter import AsyncRateLimiter
 class KiwoomRestClient:
     """키움 REST API HTTP 클라이언트."""
 
+    # 토큰 재발급 최소 간격 (연속 호출 방지)
+    TOKEN_REISSUE_MIN_INTERVAL = 60  # seconds
+
     def __init__(self, base_url: str, appkey: str, secretkey: str):
         if base_url and not base_url.startswith("https://"):
             raise ValueError("base_url은 https://로 시작해야 합니다 (보안)")
@@ -22,6 +25,7 @@ class KiwoomRestClient:
         self._secretkey = secretkey
         self._access_token: str | None = None
         self._token_expires: datetime | None = None
+        self._last_reissue: datetime | None = None
         self._client = httpx.AsyncClient(
             base_url=base_url, timeout=10.0,
             limits=httpx.Limits(max_connections=10)
@@ -80,11 +84,42 @@ class KiwoomRestClient:
             "Authorization": f"Bearer {self._access_token}",
         }
 
+    def _is_token_invalid_response(self, result: dict) -> bool:
+        """응답이 토큰 무효화 에러(8005)인지 확인."""
+        return_code = result.get("return_code")
+        return_msg = str(result.get("return_msg", ""))
+        if return_code == 3:
+            return True
+        if "8005" in return_msg or "Token" in return_msg:
+            return True
+        return False
+
+    async def _reissue_token(self) -> bool:
+        """토큰 재발급 (최소 간격 60초 제한).
+
+        Returns:
+            True: 재발급 성공, False: 실패 또는 간격 미달
+        """
+        now = datetime.now()
+        if (self._last_reissue and
+                (now - self._last_reissue).total_seconds() < self.TOKEN_REISSUE_MIN_INTERVAL):
+            logger.warning("토큰 재발급 간격 미달 (60초 제한)")
+            return False
+        try:
+            await self.authenticate()
+            self._last_reissue = datetime.now()
+            logger.info("토큰 만료 감지 → 자동 재발급 완료")
+            return True
+        except Exception as e:
+            logger.error(f"토큰 재발급 실패: {e}")
+            return False
+
     async def request(self, method: str, endpoint: str, api_id: str,
                       data: dict | None = None, params: dict | None = None) -> dict:
         """API 요청 실행.
 
         인증 헤더 자동 포함, 토큰 자동 갱신, rate limit 준수.
+        8005 토큰 무효화 에러 시 자동 재발급 후 1회 재시도.
         """
         await self._ensure_token()
         await self._rate_limiter.wait()
@@ -103,7 +138,35 @@ class KiwoomRestClient:
                     response = await self._client.post(endpoint, headers=headers, json=data)
 
                 response.raise_for_status()
-                return response.json()
+                result = response.json()
+
+                # 8005 토큰 무효화 감지 → 재발급 후 1회 재시도
+                if self._is_token_invalid_response(result):
+                    logger.warning(f"토큰 무효 응답 감지: {result.get('return_msg', '')}")
+                    if await self._reissue_token():
+                        headers = self._auth_headers()
+                        headers["api-id"] = api_id
+                        headers["cont-yn"] = "N"
+                        headers["next-key"] = ""
+                        await self._rate_limiter.wait()
+                        if method.upper() == "GET":
+                            retry_resp = await self._client.get(
+                                endpoint, headers=headers, params=params)
+                        else:
+                            retry_resp = await self._client.post(
+                                endpoint, headers=headers, json=data)
+                        retry_resp.raise_for_status()
+                        return retry_resp.json()
+                    else:
+                        # 재발급 실패 — 텔레그램 알림은 호출자에서 처리
+                        from src.notification.telegram_bot import TelegramBot
+                        try:
+                            TelegramBot().send("⚠️ 토큰 재발급 실패 — 수동 확인 필요")
+                        except Exception:
+                            pass
+                        return result
+
+                return result
             except httpx.HTTPStatusError as e:
                 logger.error(f"API 요청 실패: {endpoint} ({e.response.status_code})")
                 if e.response.status_code >= 500 and attempt < max_retries - 1:
