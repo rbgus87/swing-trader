@@ -295,13 +295,76 @@ class TradingEngine:
         watchlist 없음: 전체 시장 스캔 → 후보 선정 → WebSocket 구독
         """
         max_retries = 3
-        watchlist = config.get("watchlist", [])
 
         # 토큰 갱신 (밤새 만료 방어)
         try:
             await self._ensure_connection()
         except Exception as e:
             logger.warning(f"스크리닝 전 토큰 갱신 실패: {e}")
+
+        # ── watchlist 결정 (조건검색 vs 고정) ──
+        watchlist_mode = config.get("watchlist_mode", "fixed")
+
+        if watchlist_mode == "condition":
+            logger.info("watchlist 모드: 조건검색 (HTS 조건식)")
+            from src.broker.condition_search import run_condition_search
+
+            cs_config = config.get("condition_search", {})
+            condition_name = cs_config.get("condition_name", "swing_pre_cross")
+            max_stocks = cs_config.get("max_stocks", 30)
+            ws_url = config.get("broker.ws_url", "")
+
+            try:
+                codes = await run_condition_search(
+                    ws_url=ws_url,
+                    access_token=self._kiwoom._rest.access_token,
+                    condition_name=condition_name,
+                )
+            except Exception as e:
+                logger.error(f"조건검색 호출 실패: {e}", exc_info=True)
+                codes = []
+
+            if codes:
+                if len(codes) > max_stocks:
+                    logger.info(
+                        f"조건검색 결과 {len(codes)}개 → 상위 {max_stocks}개 제한"
+                    )
+                    codes = codes[:max_stocks]
+
+                watchlist = codes
+                self._candidates = set(codes)
+                logger.info(
+                    f"동적 watchlist 설정: {len(watchlist)}종목 {codes[:5]}..."
+                )
+
+                try:
+                    self._telegram.send(
+                        f"🎯 조건검색 완료\n"
+                        f"조건식: {condition_name}\n"
+                        f"매칭: {len(watchlist)}종목"
+                    )
+                except Exception:
+                    pass
+            else:
+                if cs_config.get("fallback_to_fixed", True):
+                    logger.warning("조건검색 실패 → 고정 watchlist 폴백")
+                    watchlist = config.get("watchlist", [])
+                    self._candidates = set(watchlist)
+                    try:
+                        self._telegram.send(
+                            f"⚠️ 조건검색 실패 → 고정 watchlist 사용 "
+                            f"({len(watchlist)}종목)"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    logger.error("조건검색 실패 + 폴백 비활성 → 스크리닝 중단")
+                    return
+        else:
+            # 기존 동작: 고정 watchlist
+            watchlist = config.get("watchlist", [])
+            self._candidates = set(watchlist)
+            logger.info(f"고정 watchlist: {len(watchlist)}종목")
 
         try:
             today = datetime.now().strftime("%Y%m%d")
