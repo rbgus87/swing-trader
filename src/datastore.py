@@ -138,6 +138,17 @@ class DataStore:
                 CREATE INDEX IF NOT EXISTS idx_trades_executed_at
                     ON trades(executed_at);
 
+                CREATE TABLE IF NOT EXISTS daily_watchlist (
+                    date TEXT PRIMARY KEY,
+                    codes TEXT NOT NULL,
+                    source TEXT DEFAULT 'condition_search',
+                    stock_count INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_daily_watchlist_date
+                    ON daily_watchlist(date);
+
                 -- 스키마 버전 관리
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER PRIMARY KEY,
@@ -482,6 +493,59 @@ class DataStore:
             )
             row = cursor.fetchone()
             return dict(row) if row else None
+
+    # ── Daily Watchlist ────────────────────────────────────────
+
+    def save_daily_watchlist(
+        self, date: str, codes: list[str],
+        source: str = "condition_search",
+    ) -> None:
+        """날짜별 watchlist 저장. 같은 날짜면 덮어쓰기.
+
+        Args:
+            date: 대상 날짜 (YYYY-MM-DD)
+            codes: 종목 코드 리스트
+            source: 소스 태그 (기본 'condition_search')
+        """
+        import json
+        with self._lock:
+            try:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO daily_watchlist "
+                    "(date, codes, source, stock_count) VALUES (?, ?, ?, ?)",
+                    (date, json.dumps(codes), source, len(codes)),
+                )
+                self.conn.commit()
+                logger.info(f"daily_watchlist 저장: {date} ({len(codes)}종목, source={source})")
+            except Exception as e:
+                logger.error(f"daily_watchlist 저장 실패 ({date}): {e}")
+                raise
+
+    def load_daily_watchlist(self, date: str) -> list[str] | None:
+        """특정 날짜 watchlist 로드.
+
+        Args:
+            date: 대상 날짜 (YYYY-MM-DD)
+
+        Returns:
+            종목 코드 리스트. 없으면 None.
+        """
+        import json
+        with self._lock:
+            try:
+                cursor = self.conn.execute(
+                    "SELECT codes FROM daily_watchlist WHERE date = ?",
+                    (date,),
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    codes = json.loads(row[0])
+                    logger.info(f"daily_watchlist 로드: {date} ({len(codes)}종목)")
+                    return codes
+                return None
+            except Exception as e:
+                logger.error(f"daily_watchlist 로드 실패 ({date}): {e}")
+                return None
 
     # ── OHLCV Cache ────────────────────────────────────────────
 

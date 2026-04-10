@@ -221,6 +221,14 @@ class TradingEngine:
             misfire_grace_time=_grace,
         )
 
+        # 저녁 조건검색 스케줄 (15:40 — 장마감 10분 후)
+        # 다음 거래일 watchlist를 DB에 저장
+        self._scheduler.add_job(
+            self._make_safe_job(self._evening_watchlist_screening, "저녁스크리닝"),
+            "cron", hour=15, minute=40,
+            misfire_grace_time=_grace,
+        )
+
         # 일일 리셋 (09:00)
         self._scheduler.add_job(
             self._make_safe_job(self._daily_reset, "일일리셋"),
@@ -302,63 +310,47 @@ class TradingEngine:
         except Exception as e:
             logger.warning(f"스크리닝 전 토큰 갱신 실패: {e}")
 
-        # ── watchlist 결정 (조건검색 vs 고정) ──
+        # ── watchlist 결정 (DB 로드 vs 고정) ──
         watchlist_mode = config.get("watchlist_mode", "fixed")
 
         if watchlist_mode == "condition":
-            logger.info("watchlist 모드: 조건검색 (HTS 조건식)")
-            from src.broker.condition_search import run_condition_search
+            # DB에서 오늘 날짜 watchlist 로드 (어제 저녁 저장된 것)
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            saved_codes = self._ds.load_daily_watchlist(today_str)
 
-            cs_config = config.get("condition_search", {})
-            condition_name = cs_config.get("condition_name", "swing_pre_cross")
-            max_stocks = cs_config.get("max_stocks", 30)
-            ws_url = config.get("broker.ws_url", "")
-
-            try:
-                codes = await run_condition_search(
-                    ws_url=ws_url,
-                    access_token=self._kiwoom._rest.access_token,
-                    condition_name=condition_name,
-                )
-            except Exception as e:
-                logger.error(f"조건검색 호출 실패: {e}", exc_info=True)
-                codes = []
-
-            if codes:
-                if len(codes) > max_stocks:
-                    logger.info(
-                        f"조건검색 결과 {len(codes)}개 → 상위 {max_stocks}개 제한"
-                    )
-                    codes = codes[:max_stocks]
-
-                watchlist = codes
-                self._candidates = set(codes)
+            if saved_codes:
                 logger.info(
-                    f"동적 watchlist 설정: {len(watchlist)}종목 {codes[:5]}..."
+                    f"watchlist 모드: DB 로드 (어제 저녁 저장) — {len(saved_codes)}종목"
                 )
-
+                watchlist = saved_codes
+                self._candidates = set(saved_codes)
                 try:
                     self._telegram.send(
-                        f"🎯 조건검색 완료\n"
-                        f"조건식: {condition_name}\n"
-                        f"매칭: {len(watchlist)}종목"
+                        f"📋 watchlist 로드 완료\n"
+                        f"소스: 어제 저녁 조건검색\n"
+                        f"종목: {len(watchlist)}개"
                     )
                 except Exception:
                     pass
             else:
+                # DB에 없으면 폴백
+                logger.warning(
+                    f"오늘 날짜({today_str}) watchlist가 DB에 없음 "
+                    "(첫 운영일 또는 저녁 스크리닝 실패)"
+                )
+                cs_config = config.get("condition_search", {})
                 if cs_config.get("fallback_to_fixed", True):
-                    logger.warning("조건검색 실패 → 고정 watchlist 폴백")
                     watchlist = config.get("watchlist", [])
                     self._candidates = set(watchlist)
+                    logger.info(f"고정 watchlist 폴백: {len(watchlist)}종목")
                     try:
                         self._telegram.send(
-                            f"⚠️ 조건검색 실패 → 고정 watchlist 사용 "
-                            f"({len(watchlist)}종목)"
+                            f"⚠️ DB watchlist 없음 → 고정 {len(watchlist)}종목 사용"
                         )
                     except Exception:
                         pass
                 else:
-                    logger.error("조건검색 실패 + 폴백 비활성 → 스크리닝 중단")
+                    logger.error("폴백 비활성 → 스크리닝 중단")
                     return
         else:
             # 기존 동작: 고정 watchlist
@@ -1217,6 +1209,96 @@ class TradingEngine:
             logger.info(f"config.yaml watchlist 업데이트: {len(codes)}종목")
         except Exception as e:
             logger.error(f"config.yaml 업데이트 실패: {e}")
+
+    async def _evening_watchlist_screening(self):
+        """장마감 후 조건검색 실행 → 다음 거래일 watchlist를 DB에 저장.
+
+        실행 시점: 15:40 (장마감 10분 후, 데이터 확정)
+        대상 키: 다음 영업일 날짜 (주말 건너뜀)
+        조건검색 실패 시 저장 스킵 → 다음날 고정 watchlist 폴백.
+        """
+        logger.info("저녁 조건검색 시작 (다음 거래일 watchlist 생성)")
+
+        watchlist_mode = config.get("watchlist_mode", "fixed")
+        if watchlist_mode != "condition":
+            logger.info("watchlist_mode != 'condition' → 저녁 스크리닝 건너뜀")
+            return
+
+        cs_config = config.get("condition_search", {})
+        condition_name = cs_config.get("condition_name", "swing_pre_cross")
+        max_stocks = cs_config.get("max_stocks", 30)
+        ws_url = config.get("broker.ws_url", "")
+
+        if not ws_url:
+            logger.error("broker.ws_url 미설정 → 저녁 스크리닝 중단")
+            return
+
+        # 토큰 확인 (만료 대비)
+        try:
+            await self._ensure_connection()
+        except Exception as e:
+            logger.warning(f"저녁 스크리닝 토큰 갱신 실패: {e}")
+
+        # 조건검색 실행
+        try:
+            from src.broker.condition_search import run_condition_search
+            codes = await run_condition_search(
+                ws_url=ws_url,
+                access_token=self._kiwoom._rest.access_token,
+                condition_name=condition_name,
+            )
+        except Exception as e:
+            logger.error(f"저녁 조건검색 호출 실패: {e}", exc_info=True)
+            codes = []
+
+        if not codes:
+            logger.warning("저녁 조건검색 결과 없음 → 저장 스킵 (다음날 폴백 예정)")
+            try:
+                self._telegram.send(
+                    "⚠️ 저녁 스크리닝 결과 없음\n"
+                    "내일 아침 고정 watchlist 사용 예정"
+                )
+            except Exception:
+                pass
+            return
+
+        # 상한 적용
+        if len(codes) > max_stocks:
+            logger.info(
+                f"저녁 조건검색 {len(codes)}개 → 상위 {max_stocks}개 제한"
+            )
+            codes = codes[:max_stocks]
+
+        # 다음 영업일 계산 (주말 건너뛰기)
+        from datetime import timedelta
+        today = datetime.now()
+        next_day = today + timedelta(days=1)
+        while next_day.weekday() >= 5:  # 5=토, 6=일
+            next_day += timedelta(days=1)
+        next_date_str = next_day.strftime("%Y-%m-%d")
+
+        # DB 저장
+        try:
+            self._ds.save_daily_watchlist(
+                date=next_date_str,
+                codes=codes,
+                source="condition_search",
+            )
+            logger.info(
+                f"저녁 조건검색 완료: {len(codes)}종목 → {next_date_str} watchlist 저장"
+            )
+            try:
+                self._telegram.send(
+                    f"🌙 저녁 스크리닝 완료\n"
+                    f"대상일: {next_date_str}\n"
+                    f"매칭: {len(codes)}종목\n"
+                    f"샘플: {', '.join(codes[:5])}"
+                    + ("..." if len(codes) > 5 else "")
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"watchlist DB 저장 실패: {e}", exc_info=True)
 
     async def _post_market_cleanup(self):
         """장 마감 후 미체결 주문 정리 (15:35 스케줄).

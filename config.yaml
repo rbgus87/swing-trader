@@ -205,6 +205,7 @@ schedule:
   screening_time: "08:30"           # 장전 스크리닝 실행 시간 (08:30 → 장 시작 전 후보 선별)
   polling_start_time: "09:25"       # REST polling 시작 시간 (09:25 → 매수 진입 5분 전)
   polling_stop_time: "15:35"        # REST polling 종료 시간 (15:35 → 장 마감 5분 후)
+  evening_screening_time: "15:40"   # 저녁 조건검색 (다음날 watchlist 생성, 장마감 10분 후)
   polling_interval: 10              # polling 간격 (초) — 만석 시 보유종목만 조회하므로 10초 가능
   daily_report_time: "16:00"        # 일간 리포트 발송 시간 (16:00 → 장 마감 후 텔레그램 발송)
   reconnect_time: 08:45
