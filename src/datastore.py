@@ -140,7 +140,7 @@ class DataStore:
 
                 CREATE TABLE IF NOT EXISTS daily_watchlist (
                     date TEXT PRIMARY KEY,
-                    codes TEXT NOT NULL,
+                    stocks TEXT NOT NULL,
                     source TEXT DEFAULT 'condition_search',
                     stock_count INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -187,6 +187,28 @@ class DataStore:
             except sqlite3.OperationalError:
                 pass  # 이미 존재
             self._set_schema_version(2)
+
+        if current < 3:
+            # v3: daily_watchlist 컬럼 변경 (codes → stocks, JSON dict 배열)
+            try:
+                self.conn.execute("DROP TABLE IF EXISTS daily_watchlist")
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS daily_watchlist (
+                        date TEXT PRIMARY KEY,
+                        stocks TEXT NOT NULL,
+                        source TEXT DEFAULT 'condition_search',
+                        stock_count INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                self.conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_daily_watchlist_date
+                    ON daily_watchlist(date)
+                """)
+                logger.info("마이그레이션 v3: daily_watchlist 테이블 재생성 (codes→stocks)")
+            except sqlite3.OperationalError:
+                pass
+            self._set_schema_version(3)
 
     def _get_schema_version(self) -> int:
         """현재 스키마 버전 조회."""
@@ -497,14 +519,14 @@ class DataStore:
     # ── Daily Watchlist ────────────────────────────────────────
 
     def save_daily_watchlist(
-        self, date: str, codes: list[str],
+        self, date: str, stocks: list[dict],
         source: str = "condition_search",
     ) -> None:
-        """날짜별 watchlist 저장. 같은 날짜면 덮어쓰기.
+        """날짜별 watchlist 저장 (종목 코드+이름). 같은 날짜면 덮어쓰기.
 
         Args:
             date: 대상 날짜 (YYYY-MM-DD)
-            codes: 종목 코드 리스트
+            stocks: [{"code": "005930", "name": "삼성전자"}, ...]
             source: 소스 태그 (기본 'condition_search')
         """
         import json
@@ -512,36 +534,36 @@ class DataStore:
             try:
                 self.conn.execute(
                     "INSERT OR REPLACE INTO daily_watchlist "
-                    "(date, codes, source, stock_count) VALUES (?, ?, ?, ?)",
-                    (date, json.dumps(codes), source, len(codes)),
+                    "(date, stocks, source, stock_count) VALUES (?, ?, ?, ?)",
+                    (date, json.dumps(stocks, ensure_ascii=False), source, len(stocks)),
                 )
                 self.conn.commit()
-                logger.info(f"daily_watchlist 저장: {date} ({len(codes)}종목, source={source})")
+                logger.info(f"daily_watchlist 저장: {date} ({len(stocks)}종목, source={source})")
             except Exception as e:
                 logger.error(f"daily_watchlist 저장 실패 ({date}): {e}")
                 raise
 
-    def load_daily_watchlist(self, date: str) -> list[str] | None:
+    def load_daily_watchlist(self, date: str) -> list[dict] | None:
         """특정 날짜 watchlist 로드.
 
         Args:
             date: 대상 날짜 (YYYY-MM-DD)
 
         Returns:
-            종목 코드 리스트. 없으면 None.
+            [{"code": "005930", "name": "삼성전자"}, ...] 또는 None.
         """
         import json
         with self._lock:
             try:
                 cursor = self.conn.execute(
-                    "SELECT codes FROM daily_watchlist WHERE date = ?",
+                    "SELECT stocks FROM daily_watchlist WHERE date = ?",
                     (date,),
                 )
                 row = cursor.fetchone()
                 if row and row[0]:
-                    codes = json.loads(row[0])
-                    logger.info(f"daily_watchlist 로드: {date} ({len(codes)}종목)")
-                    return codes
+                    stocks = json.loads(row[0])
+                    logger.info(f"daily_watchlist 로드: {date} ({len(stocks)}종목)")
+                    return stocks
                 return None
             except Exception as e:
                 logger.error(f"daily_watchlist 로드 실패 ({date}): {e}")

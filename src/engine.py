@@ -316,19 +316,37 @@ class TradingEngine:
         if watchlist_mode == "condition":
             # DB에서 오늘 날짜 watchlist 로드 (어제 저녁 저장된 것)
             today_str = datetime.now().strftime("%Y-%m-%d")
-            saved_codes = self._ds.load_daily_watchlist(today_str)
+            saved_stocks = self._ds.load_daily_watchlist(today_str)
 
-            if saved_codes:
+            if saved_stocks:
                 logger.info(
-                    f"watchlist 모드: DB 로드 (어제 저녁 저장) — {len(saved_codes)}종목"
+                    f"watchlist 모드: DB 로드 (어제 저녁 저장) — {len(saved_stocks)}종목"
                 )
-                watchlist = saved_codes
-                self._candidates = set(saved_codes)
+                watchlist = [s["code"] for s in saved_stocks]
+                self._candidates = set(watchlist)
+
+                # 종목명 캐시 미리 채움 (polling 시점부터 종목명 사용 가능)
+                for s in saved_stocks:
+                    code = s.get("code", "")
+                    name = s.get("name", "")
+                    if code and name:
+                        self._poll_stock_names[code] = name
+
+                # 텔레그램 알림 (종목명 포함)
+                sample_lines = []
+                for s in saved_stocks[:5]:
+                    name = s.get("name") or "?"
+                    code = s.get("code", "")
+                    sample_lines.append(f"  {name} ({code})")
+                more = f"\n  ... 외 {len(saved_stocks) - 5}종목" if len(saved_stocks) > 5 else ""
+                sample_text = "\n".join(sample_lines)
+
                 try:
                     self._telegram.send(
                         f"📋 watchlist 로드 완료\n"
                         f"소스: 어제 저녁 조건검색\n"
-                        f"종목: {len(watchlist)}개"
+                        f"종목: {len(watchlist)}개\n\n"
+                        f"{sample_text}{more}"
                     )
                 except Exception:
                     pass
@@ -1242,16 +1260,16 @@ class TradingEngine:
         # 조건검색 실행
         try:
             from src.broker.condition_search import run_condition_search
-            codes = await run_condition_search(
+            stocks = await run_condition_search(
                 ws_url=ws_url,
                 access_token=self._kiwoom._rest.access_token,
                 condition_name=condition_name,
             )
         except Exception as e:
             logger.error(f"저녁 조건검색 호출 실패: {e}", exc_info=True)
-            codes = []
+            stocks = []
 
-        if not codes:
+        if not stocks:
             logger.warning("저녁 조건검색 결과 없음 → 저장 스킵 (다음날 폴백 예정)")
             try:
                 self._telegram.send(
@@ -1263,11 +1281,11 @@ class TradingEngine:
             return
 
         # 상한 적용
-        if len(codes) > max_stocks:
+        if len(stocks) > max_stocks:
             logger.info(
-                f"저녁 조건검색 {len(codes)}개 → 상위 {max_stocks}개 제한"
+                f"저녁 조건검색 {len(stocks)}개 → 상위 {max_stocks}개 제한"
             )
-            codes = codes[:max_stocks]
+            stocks = stocks[:max_stocks]
 
         # 다음 영업일 계산 (주말 건너뛰기)
         from datetime import timedelta
@@ -1281,19 +1299,28 @@ class TradingEngine:
         try:
             self._ds.save_daily_watchlist(
                 date=next_date_str,
-                codes=codes,
+                stocks=stocks,
                 source="condition_search",
             )
             logger.info(
-                f"저녁 조건검색 완료: {len(codes)}종목 → {next_date_str} watchlist 저장"
+                f"저녁 조건검색 완료: {len(stocks)}종목 → {next_date_str} watchlist 저장"
             )
+
+            # 텔레그램 알림 (종목명 포함)
+            sample_lines = []
+            for s in stocks[:5]:
+                name = s.get("name") or "?"
+                code = s.get("code", "")
+                sample_lines.append(f"  {name} ({code})")
+            more = f"\n  ... 외 {len(stocks) - 5}종목" if len(stocks) > 5 else ""
+            sample_text = "\n".join(sample_lines)
+
             try:
                 self._telegram.send(
                     f"🌙 저녁 스크리닝 완료\n"
                     f"대상일: {next_date_str}\n"
-                    f"매칭: {len(codes)}종목\n"
-                    f"샘플: {', '.join(codes[:5])}"
-                    + ("..." if len(codes) > 5 else "")
+                    f"매칭: {len(stocks)}종목\n\n"
+                    f"{sample_text}{more}"
                 )
             except Exception:
                 pass

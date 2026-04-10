@@ -133,14 +133,15 @@ class ConditionSearchClient:
             logger.error(f"[CS] ka10171 실패: {e}")
             return []
 
-    async def execute_condition(self, seq: str) -> list[str]:
+    async def execute_condition(self, seq: str) -> list[dict]:
         """ka10172 — 조건식 실행 (일반 모드).
 
         Args:
             seq: 조건식 일련번호
 
         Returns:
-            매칭 종목 코드 리스트. 실패 시 [].
+            [{"code": "005930", "name": "삼성전자"}, ...] 형태.
+            실패 시 [].
         """
         if not self._ws:
             return []
@@ -156,7 +157,7 @@ class ConditionSearchClient:
             }))
             logger.info(f"[CS] ka10172 조건식 실행: seq={seq}")
 
-            all_codes: list[str] = []
+            all_stocks: list[dict] = []
 
             for _ in range(50):
                 raw = await asyncio.wait_for(
@@ -174,17 +175,23 @@ class ConditionSearchClient:
 
                     items = resp.get("data", [])
                     for item in items:
-                        code = None
-                        if isinstance(item, dict):
-                            # 후보 키 순차 시도 (실제 응답에 맞춰 조정)
-                            code = (
-                                item.get("jmcode")
-                                or item.get("9001")
-                                or item.get("code")
-                                or item.get("stk_cd")
-                            )
-                        elif isinstance(item, str):
-                            code = item
+                        if not isinstance(item, dict):
+                            continue
+
+                        # 종목 코드 추출 (9001 키가 정답)
+                        code = (
+                            item.get("9001")
+                            or item.get("jmcode")
+                            or item.get("code")
+                            or item.get("stk_cd")
+                        )
+                        # 종목명 추출 (302 키가 정답)
+                        name = (
+                            item.get("302")
+                            or item.get("hts_kor_isnm")
+                            or item.get("name")
+                            or ""
+                        )
 
                         if code:
                             code = str(code).strip()
@@ -192,7 +199,10 @@ class ConditionSearchClient:
                             if code.startswith("A") and len(code) == 7:
                                 code = code[1:]
                             if code and len(code) >= 6:
-                                all_codes.append(code)
+                                all_stocks.append({
+                                    "code": code,
+                                    "name": str(name).strip(),
+                                })
 
                     # 연속 조회 여부
                     if resp.get("cont_yn", "N") != "Y":
@@ -200,8 +210,8 @@ class ConditionSearchClient:
                     logger.warning("[CS] 연속 조회 필요 — 첫 페이지만 사용")
                     break
 
-            logger.info(f"[CS] 조건식 실행 완료: {len(all_codes)}종목")
-            return all_codes
+            logger.info(f"[CS] 조건식 실행 완료: {len(all_stocks)}종목")
+            return all_stocks
 
         except asyncio.TimeoutError:
             logger.warning("[CS] ka10172 응답 타임아웃")
@@ -225,8 +235,8 @@ async def run_condition_search(
     ws_url: str,
     access_token: str,
     condition_name: str,
-) -> list[str]:
-    """장전용 조건검색 실행 — 연결 → 쿼리 → 종료 원샷.
+) -> list[dict]:
+    """조건검색 실행 — 연결 → 쿼리 → 종료 원샷.
 
     Args:
         ws_url: WebSocket URL
@@ -234,7 +244,7 @@ async def run_condition_search(
         condition_name: 영웅문 저장 조건식 이름
 
     Returns:
-        매칭 종목 코드 리스트. 실패 시 [].
+        [{"code": "005930", "name": "삼성전자"}, ...] 형태. 실패 시 [].
     """
     if not ws_url or not access_token:
         logger.error("[CS] ws_url 또는 access_token 없음")
