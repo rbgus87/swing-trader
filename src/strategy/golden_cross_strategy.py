@@ -53,9 +53,20 @@ class GoldenCrossStrategy(BaseStrategy):
         return all([cond_rsi, cond_adx, cond_vol])
 
     def check_realtime_entry(
-        self, df_daily: pd.DataFrame, df_60m: pd.DataFrame | None = None
+        self,
+        df_daily: pd.DataFrame,
+        df_60m: pd.DataFrame | None = None,
+        current_price: int | None = None,
+        today_volume: int | None = None,
     ) -> bool:
-        """장중 진입 — 백테스트(generate_backtest_signals)와 동일한 조건."""
+        """장중 진입 — 오늘 현재가를 가상 일봉으로 추가하여 SMA 재계산.
+
+        Args:
+            df_daily: 어제까지의 일봉 OHLCV+지표 (calculate_indicators 적용).
+            df_60m: 사용 안 함 (호환성 유지).
+            current_price: 오늘 현재가 (가상 일봉의 close). None이면 기존 동작.
+            today_volume: 오늘 누적 거래량 (없으면 어제 거래량으로 fallback).
+        """
         p = self.params
         adx_threshold = p.get("adx_threshold", 20)
         volume_multiplier = p.get("volume_multiplier", 1.0)
@@ -66,7 +77,18 @@ class GoldenCrossStrategy(BaseStrategy):
             self._last_reject = "데이터부족"
             return False
 
-        latest = df_daily.iloc[-1]
+        # current_price가 없으면 기존 동작 (어제 종가 기준)
+        if current_price is None:
+            df_for_check = df_daily
+        else:
+            df_for_check = self._build_with_today_candle(
+                df_daily, current_price, today_volume
+            )
+            if df_for_check is None or df_for_check.empty:
+                self._last_reject = "가상일봉생성실패"
+                return False
+
+        latest = df_for_check.iloc[-1]
 
         # 1. SMA5 > SMA20 유지 중
         sma5 = latest["sma5"]
@@ -76,7 +98,7 @@ class GoldenCrossStrategy(BaseStrategy):
             return False
 
         # 2. 최근 N일 내 크로스 발생 (백테스트와 동일)
-        recent = df_daily.iloc[-(screening_lookback + 1):]
+        recent = df_for_check.iloc[-(screening_lookback + 1):]
         cross_found = False
         for i in range(1, len(recent)):
             if (recent.iloc[i]["sma5"] > recent.iloc[i]["sma20"] and
@@ -108,9 +130,58 @@ class GoldenCrossStrategy(BaseStrategy):
 
         self._last_reject = ""
         return True
-        # v3: close > SMA20 제거 (크로스 직후 걸림)
-        # v3: RSI 상한 65 제거 (강한 모멘텀 차단)
-        # v3: 60분봉 제거 (백테스트 미검증)
+
+    def _build_with_today_candle(
+        self,
+        df_daily: pd.DataFrame,
+        current_price: int,
+        today_volume: int | None,
+    ) -> pd.DataFrame | None:
+        """어제까지 일봉에 오늘 가상 일봉을 추가하고 지표 재계산.
+
+        오늘 가상 일봉:
+            open: 어제 종가 (시가 추적 안 함, 갭 영향 무시)
+            high: max(어제 종가, 현재가)
+            low: min(어제 종가, 현재가)
+            close: 현재가
+            volume: today_volume 또는 어제 거래량 (fallback)
+        """
+        from datetime import datetime
+
+        from src.strategy.signals import calculate_indicators
+
+        if df_daily is None or df_daily.empty:
+            return None
+
+        yesterday = df_daily.iloc[-1]
+        yesterday_close = float(yesterday.get("close", current_price))
+
+        # fallback: today_volume 없으면 어제 거래량 사용
+        if today_volume and today_volume > 0:
+            vol = int(today_volume)
+        else:
+            vol = int(yesterday.get("volume", 0))
+
+        today_row = {
+            "open": yesterday_close,
+            "high": float(max(yesterday_close, current_price)),
+            "low": float(min(yesterday_close, current_price)),
+            "close": float(current_price),
+            "volume": vol,
+        }
+
+        if "date" in df_daily.columns:
+            today_row["date"] = datetime.now().strftime("%Y-%m-%d")
+
+        base_cols = [
+            c for c in ["date", "open", "high", "low", "close", "volume"]
+            if c in df_daily.columns
+        ]
+        df_ohlcv = df_daily[base_cols].copy()
+        new_row_df = pd.DataFrame([{c: today_row.get(c) for c in base_cols}])
+        df_combined = pd.concat([df_ohlcv, new_row_df], ignore_index=True)
+
+        return calculate_indicators(df_combined)
 
     def generate_backtest_signals(
         self, df: pd.DataFrame

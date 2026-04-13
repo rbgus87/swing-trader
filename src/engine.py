@@ -708,7 +708,18 @@ class TradingEngine:
                 #     continue
 
                 # 전략별 실시간 진입 판단
-                if strategy.check_realtime_entry(df_daily, df_60m):
+                # golden_cross는 오늘 현재가를 가상 일봉으로 반영 (장중 크로스 감지)
+                if strategy.name == "golden_cross":
+                    entered = strategy.check_realtime_entry(
+                        df_daily,
+                        df_60m,
+                        current_price=tick.price,
+                        today_volume=getattr(tick, "volume", None),
+                    )
+                else:
+                    entered = strategy.check_realtime_entry(df_daily, df_60m)
+
+                if entered:
                     matched_strategy = strategy
                     break
                 else:
