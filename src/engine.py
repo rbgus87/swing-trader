@@ -664,8 +664,8 @@ class TradingEngine:
                 logger.info(f"진입체크 탈락 ({name}): OHLCV 캐시 부족 ({len(ohlcv) if ohlcv else 0}행, 최소 30 필요)")
                 return
 
-            df_daily = pd.DataFrame(ohlcv)
-            df_daily = calculate_indicators(df_daily)
+            df_daily_raw = pd.DataFrame(ohlcv)  # raw OHLCV 보관 (dropna 전, 250행)
+            df_daily = calculate_indicators(df_daily_raw.copy())
             if df_daily.empty:
                 logger.info(f"진입체크 탈락 ({name}): 지표 계산 실패")
                 return
@@ -710,21 +710,24 @@ class TradingEngine:
                 # 전략별 실시간 진입 판단
                 # golden_cross는 오늘 현재가를 가상 일봉으로 반영 (장중 크로스 감지)
                 if strategy.name == "golden_cross":
-                    entered = strategy.check_realtime_entry(
-                        df_daily,
-                        df_60m,
+                    if strategy.check_realtime_entry(
+                        df_daily, df_60m,
                         current_price=tick.price,
                         today_volume=getattr(tick, "volume", None),
-                    )
+                        df_daily_raw=df_daily_raw,
+                    ):
+                        matched_strategy = strategy
+                        break
+                    else:
+                        detail = getattr(strategy, '_last_reject', '')
+                        reject_reasons.append(f"{strategy.name}: {detail}")
                 else:
-                    entered = strategy.check_realtime_entry(df_daily, df_60m)
-
-                if entered:
-                    matched_strategy = strategy
-                    break
-                else:
-                    detail = getattr(strategy, '_last_reject', '')
-                    reject_reasons.append(f"{strategy.name}: {detail}")
+                    if strategy.check_realtime_entry(df_daily, df_60m):
+                        matched_strategy = strategy
+                        break
+                    else:
+                        detail = getattr(strategy, '_last_reject', '')
+                        reject_reasons.append(f"{strategy.name}: {detail}")
 
             if not matched_strategy:
                 reason_key = f"불발:{','.join(reject_reasons)}"
@@ -741,7 +744,8 @@ class TradingEngine:
             )
             self._entry_logged.pop(tick.code, None)
         except Exception as e:
-            logger.warning(f"진입 조건 체크 실패 ({tick.code}): {e}")
+            # loguru는 exc_info 대신 opt(exception=True)로 stack trace 출력
+            logger.opt(exception=True).warning(f"진입 조건 체크 실패 ({tick.code}): {e}")
             return
 
         # 4. 리스크 사전 체크 (추세 유지 시 재진입 쿨다운 단축)

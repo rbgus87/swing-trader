@@ -58,14 +58,16 @@ class GoldenCrossStrategy(BaseStrategy):
         df_60m: pd.DataFrame | None = None,
         current_price: int | None = None,
         today_volume: int | None = None,
+        df_daily_raw: pd.DataFrame | None = None,
     ) -> bool:
         """장중 진입 — 오늘 현재가를 가상 일봉으로 추가하여 SMA 재계산.
 
         Args:
-            df_daily: 어제까지의 일봉 OHLCV+지표 (calculate_indicators 적용).
+            df_daily: 어제까지의 일봉 OHLCV+지표 (calculate_indicators 적용, dropna됨).
             df_60m: 사용 안 함 (호환성 유지).
             current_price: 오늘 현재가 (가상 일봉의 close). None이면 기존 동작.
             today_volume: 오늘 누적 거래량 (없으면 어제 거래량으로 fallback).
+            df_daily_raw: dropna 이전의 raw OHLCV. 가상 일봉 재계산에 사용.
         """
         p = self.params
         adx_threshold = p.get("adx_threshold", 20)
@@ -81,8 +83,10 @@ class GoldenCrossStrategy(BaseStrategy):
         if current_price is None:
             df_for_check = df_daily
         else:
+            # raw OHLCV 우선 사용, 없으면 fallback (지표 계산된 df_daily)
+            base_df = df_daily_raw if df_daily_raw is not None else df_daily
             df_for_check = self._build_with_today_candle(
-                df_daily, current_price, today_volume
+                base_df, current_price, today_volume
             )
             if df_for_check is None or df_for_check.empty:
                 self._last_reject = "가상일봉생성실패"
@@ -137,35 +141,51 @@ class GoldenCrossStrategy(BaseStrategy):
         current_price: int,
         today_volume: int | None,
     ) -> pd.DataFrame | None:
-        """어제까지 일봉에 오늘 가상 일봉을 추가하고 지표 재계산.
+        """raw OHLCV에 오늘 가상 일봉을 추가하고 지표 재계산.
 
-        오늘 가상 일봉:
-            open: 어제 종가 (시가 추적 안 함, 갭 영향 무시)
-            high: max(어제 종가, 현재가)
-            low: min(어제 종가, 현재가)
-            close: 현재가
-            volume: today_volume 또는 어제 거래량 (fallback)
+        Args:
+            df_daily: dropna 이전의 raw OHLCV DataFrame (ADX 28일 NaN 커버용).
         """
         from datetime import datetime
 
+        from loguru import logger
+
         from src.strategy.signals import calculate_indicators
 
+        # 방어 1: raw OHLCV 길이 검증 (ADX 28일 NaN + 여유)
         if df_daily is None or df_daily.empty:
+            logger.debug("[가상일봉] df_daily is None/empty")
+            return None
+        if len(df_daily) < 50:
+            logger.debug(f"[가상일봉] OHLCV 길이 부족: {len(df_daily)} < 50")
+            return None
+
+        # 방어 2: current_price 검증
+        if current_price is None or current_price <= 0:
+            logger.debug(f"[가상일봉] current_price 무효: {current_price}")
             return None
 
         yesterday = df_daily.iloc[-1]
-        yesterday_close = float(yesterday.get("close", current_price))
+        yesterday_close_raw = yesterday.get("close")
+        if yesterday_close_raw is None or pd.isna(yesterday_close_raw):
+            logger.debug(f"[가상일봉] 어제 종가 무효: {yesterday_close_raw}")
+            return None
+        yesterday_close = float(yesterday_close_raw)
 
-        # fallback: today_volume 없으면 어제 거래량 사용
+        # 거래량 fallback
         if today_volume and today_volume > 0:
             vol = int(today_volume)
         else:
-            vol = int(yesterday.get("volume", 0))
+            yesterday_vol = yesterday.get("volume", 0)
+            if yesterday_vol is None or pd.isna(yesterday_vol):
+                vol = 0
+            else:
+                vol = int(yesterday_vol)
 
         today_row = {
             "open": yesterday_close,
-            "high": float(max(yesterday_close, current_price)),
-            "low": float(min(yesterday_close, current_price)),
+            "high": max(yesterday_close, float(current_price)),
+            "low": min(yesterday_close, float(current_price)),
             "close": float(current_price),
             "volume": vol,
         }
@@ -181,7 +201,21 @@ class GoldenCrossStrategy(BaseStrategy):
         new_row_df = pd.DataFrame([{c: today_row.get(c) for c in base_cols}])
         df_combined = pd.concat([df_ohlcv, new_row_df], ignore_index=True)
 
-        return calculate_indicators(df_combined)
+        # 방어 3: 지표 재계산
+        try:
+            df_with_indicators = calculate_indicators(df_combined)
+        except Exception as e:
+            logger.opt(exception=True).warning(
+                f"[가상일봉] calculate_indicators 예외: {e}"
+            )
+            return None
+
+        if df_with_indicators is None or df_with_indicators.empty:
+            length = len(df_with_indicators) if df_with_indicators is not None else "None"
+            logger.warning(f"[가상일봉] 지표 재계산 후 empty (len={length})")
+            return None
+
+        return df_with_indicators
 
     def generate_backtest_signals(
         self, df: pd.DataFrame
