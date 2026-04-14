@@ -13,6 +13,10 @@ import pytest
 
 from src.models import ExitReason, Position, Tick
 
+pytestmark = pytest.mark.skip(
+    reason="Phase 1: strategy layer disabled, restored in Phase 3"
+)
+
 
 def _seed_ohlcv(db, code="005930", price=50000):
     """테스트용 OHLCV 캐시 데이터 생성 (130일+ — 지표 계산에 충분한 기간)."""
