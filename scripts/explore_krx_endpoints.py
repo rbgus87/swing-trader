@@ -115,9 +115,8 @@ def probe_base_info() -> None:
         rows = show_rows(body, n=2)
 
 
-# ─── Probe 1: delisted candidates ───
+# ─── Probe 1: delisted candidates (Step 1b-탐색 initial) ───
 DELIST_CANDIDATES = [
-    # Common KRX OpenAPI naming patterns; only one is expected to exist (if any)
     ("/sto/dlst_stk", {"basDd": PROBE_DATE}),
     ("/sto/dlst_isu_stk", {"basDd": PROBE_DATE}),
     ("/sto/dlst_isu_stk_list", {"basDd": PROBE_DATE}),
@@ -125,10 +124,30 @@ DELIST_CANDIDATES = [
     ("/sto/sto_dlst_stk", {"basDd": PROBE_DATE}),
 ]
 
+# ─── Probe F: Step 1b-3 후속 — extended delisting / status candidates ───
+DELIST_CANDIDATES_EXT = [
+    # Tier 2: sto namespace extended naming
+    ("/sto/stk_delist", {"basDd": PROBE_DATE}),
+    ("/sto/stk_delisting", {"basDd": PROBE_DATE}),
+    ("/sto/stk_dlst_lst", {"basDd": PROBE_DATE}),
+    ("/sto/stk_delst_lst", {"basDd": PROBE_DATE}),
+    ("/sto/ksq_delist", {"basDd": PROBE_DATE}),
+    ("/sto/ksq_delisting", {"basDd": PROBE_DATE}),
+    ("/sto/stk_susp", {"basDd": PROBE_DATE}),
+    ("/sto/stk_admin", {"basDd": PROBE_DATE}),
+    ("/sto/stk_admin_stk", {"basDd": PROBE_DATE}),
+    ("/sto/stk_isu_list_chg", {"basDd": PROBE_DATE}),
+    # dis (공시) namespace
+    ("/dis/dlst_corp", {"basDd": PROBE_DATE}),
+    ("/dis/delisting", {"basDd": PROBE_DATE}),
+    # gen (general)
+    ("/gen/delist", {"basDd": PROBE_DATE}),
+]
+
 
 def probe_delisted() -> None:
     print("\n" + "=" * 78)
-    print("PROBE C — Delisted-stock endpoint candidates")
+    print("PROBE C — Delisted-stock endpoint candidates (Step 1b-탐색)")
     print("=" * 78)
     for path, params in DELIST_CANDIDATES:
         status, body, _ = call(path, params, label="delist?")
@@ -140,7 +159,6 @@ def probe_delisted() -> None:
                 return
             else:
                 print(f"     (empty OutBlock_1 — endpoint exists but no data for {PROBE_DATE}?)")
-                # Try a known-delisting period
                 status2, body2, _ = call(
                     path, {"basDd": "20200401"}, label="delist?-2020"
                 )
@@ -153,11 +171,73 @@ def probe_delisted() -> None:
         time.sleep(0.3)
 
 
+def probe_delisted_extended() -> list[dict]:
+    """Step 1b-3 후속 탐색. Tier 2 확장 후보.
+
+    Returns list of dicts summarizing each probe outcome.
+    """
+    print("\n" + "=" * 78)
+    print("PROBE F — Extended delisting/status candidates (Step 1b-3 후속)")
+    print("=" * 78)
+    results: list[dict] = []
+    for path, params in DELIST_CANDIDATES_EXT:
+        status, body, _ = call(path, params, label="ext?")
+        summary = "(no body)"
+        if status == 200 and body:
+            rows = body.get("OutBlock_1") or []
+            summary = f"OutBlock_1 len={len(rows)}"
+            if rows:
+                print(f"     ✓ ALIVE with data: {path}")
+                show_rows(body, n=3)
+                results.append(
+                    {"path": path, "status": status, "summary": summary, "alive": True}
+                )
+                time.sleep(0.3)
+                continue
+        elif status == 200 and not body:
+            summary = "200 but empty body"
+        results.append(
+            {"path": path, "status": status, "summary": summary, "alive": False}
+        )
+        time.sleep(0.2)
+    return results
+
+
 def main() -> int:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=["all", "initial", "extended"],
+        default="extended",
+        help="initial=Step 1b-탐색만, extended=Step 1b-3 후속만, all=전체",
+    )
+    args = parser.parse_args()
+
     started = time.monotonic()
-    probe_base_info()
-    probe_delisted()
+    ext_results: list[dict] = []
+    if args.mode in ("all", "initial"):
+        probe_base_info()
+        probe_delisted()
+    if args.mode in ("all", "extended"):
+        ext_results = probe_delisted_extended()
     elapsed = time.monotonic() - started
+
+    if ext_results:
+        print("\n" + "=" * 78)
+        print("SUMMARY — Extended candidates")
+        print("=" * 78)
+        alive = [r for r in ext_results if r["alive"]]
+        dead = [r for r in ext_results if not r["alive"]]
+        print(f"  ALIVE: {len(alive)} / {len(ext_results)}")
+        for r in alive:
+            print(f"    ✓ {r['path']}  status={r['status']}  {r['summary']}")
+        print(f"  DEAD:  {len(dead)}")
+        status_counts: dict[int, int] = {}
+        for r in dead:
+            status_counts[r["status"]] = status_counts.get(r["status"], 0) + 1
+        for st, cnt in sorted(status_counts.items()):
+            print(f"    status {st}: {cnt} paths")
 
     print("\n" + "=" * 78)
     print(f"Total KRX calls: {call_counter['n']}   Elapsed: {elapsed:.1f}s")
