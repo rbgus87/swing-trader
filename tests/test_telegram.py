@@ -43,7 +43,7 @@ class TestSend:
                 "text": "테스트 메시지",
                 "parse_mode": "HTML",
             },
-            timeout=5,
+            timeout=10,
         )
 
     def test_send_failure_status(self, bot, mock_post):
