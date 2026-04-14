@@ -8,19 +8,22 @@ CREATE TABLE stocks (
     ticker TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     market TEXT NOT NULL,                -- 'KOSPI' / 'KOSDAQ'
-    sector TEXT,
-    stock_type TEXT NOT NULL,            -- 'COMMON' / 'PREFERRED' / 'SPAC' / 'ETF' / 'ETN' / 'REIT' / 'OTHER'
+    sector TEXT,                         -- 산업 분류 (별도 Phase에서 채움)
+    stock_type TEXT NOT NULL,            -- 'COMMON' / 'PREFERRED' / 'SPAC' / 'REIT' / 'FOREIGN' / 'ETF' / 'ETN' / 'OTHER'
     parent_ticker TEXT,
     listed_date DATE,
     delisted_date DATE,
     delisting_reason TEXT,
     first_candle_date DATE,
     last_candle_date DATE,
+    isin TEXT,                           -- KRX ISU_CD (KR7XXXXXXXXX)
+    market_division TEXT,                -- KOSDAQ 소속부 (산업 분류 아님)
     last_updated DATETIME NOT NULL
 );
 CREATE INDEX idx_stocks_market ON stocks(market);
 CREATE INDEX idx_stocks_active ON stocks(delisted_date) WHERE delisted_date IS NULL;
 CREATE INDEX idx_stocks_type ON stocks(stock_type);
+CREATE INDEX idx_stocks_isin ON stocks(isin);
 
 CREATE TABLE daily_candles (
     ticker TEXT NOT NULL,

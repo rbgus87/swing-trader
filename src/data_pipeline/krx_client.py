@@ -24,10 +24,17 @@ from src.data_pipeline.config import (
 BASE_URL = "https://data-dbg.krx.co.kr/svc/apis"
 ENDPOINT_KOSPI_DAILY = "/sto/stk_bydd_trd"
 ENDPOINT_KOSDAQ_DAILY = "/sto/ksq_bydd_trd"
+ENDPOINT_KOSPI_BASE_INFO = "/sto/stk_isu_base_info"
+ENDPOINT_KOSDAQ_BASE_INFO = "/sto/ksq_isu_base_info"
 
 MARKET_TO_ENDPOINT = {
     "KOSPI": ENDPOINT_KOSPI_DAILY,
     "KOSDAQ": ENDPOINT_KOSDAQ_DAILY,
+}
+
+MARKET_TO_BASE_INFO_ENDPOINT = {
+    "KOSPI": ENDPOINT_KOSPI_BASE_INFO,
+    "KOSDAQ": ENDPOINT_KOSDAQ_BASE_INFO,
 }
 
 
@@ -60,6 +67,34 @@ class KrxStockMeta(BaseModel):
     @classmethod
     def _strip_isu_nm(cls, v: Any) -> str:
         return str(v).strip()
+
+
+class KrxIsuBaseInfo(BaseModel):
+    """One row from a KRX `*_isu_base_info` response.
+
+    Field names follow KRX raw key casing per spec. extra="allow" preserves
+    any newly-added KRX fields without breaking ingestion.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    ISU_CD: str           # ISIN 12자리 (KR7XXXXXXXXX)
+    ISU_SRT_CD: str       # 단축코드 6자리
+    ISU_NM: str           # 정식명 ("삼성전자보통주")
+    ISU_ABBRV: str        # 약식명 ("삼성전자")
+    ISU_ENG_NM: Optional[str] = None
+    LIST_DD: str          # 상장일 YYYYMMDD
+    MKT_TP_NM: str        # 시장 ("KOSPI" / "KOSDAQ")
+    SECUGRP_NM: Optional[str] = None
+    SECT_TP_NM: Optional[str] = None       # KOSDAQ 소속부 (산업 분류 아님)
+    KIND_STKCERT_TP_NM: Optional[str] = None  # 종목 유형 ("보통주" / "우선주" 등)
+    PARVAL: Optional[str] = None
+    LIST_SHRS: Optional[str] = None
+
+    @field_validator("ISU_SRT_CD", mode="before")
+    @classmethod
+    def _normalize_short_code(cls, v: Any) -> str:
+        return _normalize_ticker(str(v))
 
 
 class KrxClient:
@@ -152,3 +187,30 @@ class KrxClient:
         )
         rows = body.get("OutBlock_1", [])
         return [KrxStockMeta.model_validate(r) for r in rows]
+
+    def get_stock_base_info(
+        self,
+        market: str,
+        base_date: Optional[str] = None,
+    ) -> List[KrxIsuBaseInfo]:
+        """Return stock base info (LIST_DD, ISIN, KIND_STKCERT_TP_NM, ...) for market.
+
+        Endpoints:
+            KOSPI:  /sto/stk_isu_base_info
+            KOSDAQ: /sto/ksq_isu_base_info
+        """
+        if market not in MARKET_TO_BASE_INFO_ENDPOINT:
+            raise ValueError(
+                f"Unsupported market: {market!r}. Expected one of "
+                f"{list(MARKET_TO_BASE_INFO_ENDPOINT)}"
+            )
+        if base_date is None:
+            raise ValueError(
+                "base_date (YYYYMMDD) is required — pass a known trading day."
+            )
+
+        body = self._request(
+            MARKET_TO_BASE_INFO_ENDPOINT[market], params={"basDd": base_date}
+        )
+        rows = body.get("OutBlock_1", [])
+        return [KrxIsuBaseInfo.model_validate(r) for r in rows]
