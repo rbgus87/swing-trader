@@ -43,9 +43,21 @@ from src.notification.telegram_bot import TelegramBot
 from src.risk.position_sizer import PositionSizer
 from src.risk.risk_manager import RiskManager
 from src.risk.stop_manager import StopManager
-from src.strategy import get_strategy
+# Phase 1: 전략 레이어 무력화 — Phase 3에서 4-레이어 재구축
+# from src.strategy import get_strategy
+# from src.strategy.screener import Screener
 from src.strategy.market_regime import MarketRegime
-from src.strategy.screener import Screener
+
+
+def get_strategy(*args, **kwargs):  # noqa: ARG001
+    raise NotImplementedError("Phase 1: strategy layer disabled")
+
+
+class Screener:  # noqa: D401
+    """Phase 1 stub — 호출 시 NotImplementedError."""
+
+    def __init__(self, *args, **kwargs):  # noqa: ARG002
+        raise NotImplementedError("Phase 1: Screener disabled")
 from src.utils.config import config
 from src.utils.market_calendar import is_market_open
 

@@ -1,17 +1,22 @@
-"""전략 패키지 — 전략 클래스 자동 등록."""
+"""Phase 1 재설계 중 — 전략 레이어 무력화.
 
-# ── 비활성 전략 (코드 보존) ──
-# from src.strategy.macd_rsi_strategy import MacdRsiStrategy
-# from src.strategy.bb_bounce_strategy import BbBounceStrategy
-# from src.strategy.breakout_strategy import BreakoutStrategy
-# from src.strategy.macd_pullback_strategy import MacdPullbackStrategy
-# from src.strategy.stoch_reversal_strategy import StochReversalStrategy
-# from src.strategy.volume_breakout_strategy import VolumeBreakoutStrategy
-# from src.strategy.momentum_pullback_strategy import MomentumPullbackStrategy  # v2 검증 실패
-# from src.strategy.institutional_flow_strategy import InstitutionalFlowStrategy  # v2 검증 실패
+archive/strategies_legacy/ 의 10개 전략은 참고용. import 금지.
+Phase 3에서 4-레이어 구조 (Regime → Router → Strategy → PM)로 재구축 예정.
 
-# ── 확정 전략 ──
-from src.strategy.golden_cross_strategy import GoldenCrossStrategy  # noqa: F401
-from src.strategy.disparity_reversion_strategy import DisparityReversionStrategy  # noqa: F401
+현재 살아있는 모듈:
+- src.strategy.signals        인프라급 공용 지표 계산
+- src.strategy.market_regime  시장 국면 판단기 (Phase 3 Regime 레이어의 기반)
+- src.strategy.screener       스크리닝 (전략 호출부는 stub)
+- src.strategy.base_strategy  추상 클래스 (레지스트리 비어있음)
+"""
 
-from src.strategy.base_strategy import get_strategy, available_strategies  # noqa: F401
+
+def get_strategy(name, params=None):  # noqa: ARG001
+    raise NotImplementedError(
+        "Strategy layer disabled (Phase 1 restructure). "
+        "Phase 3에서 4-레이어 구조로 재구축 예정."
+    )
+
+
+def available_strategies() -> list[str]:
+    return []

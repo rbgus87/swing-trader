@@ -15,11 +15,16 @@ from loguru import logger
 
 from data.column_mapper import OHLCV_MAP, map_columns
 from data.provider import get_provider
-from src.strategy.base_strategy import get_strategy
-from src.strategy.signals import (
+# Phase 1: 전략 레이어 무력화 — Phase 3에서 4-레이어 재구축
+# from src.strategy.base_strategy import get_strategy
+from src.strategy.signals import (  # signals는 인프라급 유지
     calculate_indicators,
     calculate_signal_score,
 )
+
+
+def get_strategy(*args, **kwargs):  # noqa: ARG001
+    raise NotImplementedError("Phase 1: strategy layer disabled")
 
 
 class Screener:

@@ -87,7 +87,7 @@ screening:
 # --- 매매 전략 파라미터 ---
 # 확정 전략: golden_cross(trending) + disparity_reversion(sideways)
 strategy:
-  type: disabled                       # Phase 1 재설계 중 — 전략 레이어 무력화
+  type: golden_cross                   # 2전략 adaptive (국면별 자동 전환)
 
   regime_strategy:
     trending: golden_cross             # 추세장: SMA5/20 골든크로스

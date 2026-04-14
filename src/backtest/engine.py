@@ -13,8 +13,13 @@ from loguru import logger
 
 from data.column_mapper import OHLCV_MAP, map_columns
 from data.provider import get_provider
-from src.strategy import get_strategy
-from src.strategy.signals import calculate_indicators
+# Phase 1: 전략 레이어 무력화 — Phase 3에서 4-레이어 재구축
+# from src.strategy import get_strategy
+from src.strategy.signals import calculate_indicators  # signals는 인프라급 유지
+
+
+def get_strategy(*args, **kwargs):  # noqa: ARG001
+    raise NotImplementedError("Phase 1: strategy layer disabled")
 
 # 비용 모델 기본값 (fallback)
 _DEFAULT_COMMISSION = 0.00015  # 수수료 0.015% (편도)
