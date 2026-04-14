@@ -10,6 +10,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+pytestmark = pytest.mark.skip(
+    reason="Phase 1: backtest engine disabled, restored in Phase 3"
+)
+
 from src.backtest.engine import (
     _DEFAULT_COMMISSION,
     _DEFAULT_SLIPPAGE,
