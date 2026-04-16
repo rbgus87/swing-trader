@@ -50,7 +50,7 @@ CREATE INDEX idx_mcap_date ON market_cap_history(date);
 CREATE TABLE stock_status_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker TEXT NOT NULL,
-    event_type TEXT NOT NULL,
+    event_type TEXT NOT NULL,            -- 'ADMIN_DESIGNATED' / 'INVESTMENT_WARNING' / 'DELISTED_PRIOR'
     start_date DATE NOT NULL,
     end_date DATE,
     reason TEXT,
