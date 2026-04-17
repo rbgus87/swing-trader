@@ -3,209 +3,232 @@
 # ============================================================================
 # 민감 정보(API키, 계좌번호 등)는 .env 파일에서 관리합니다.
 # 이 파일은 git에 커밋되므로 비밀번호/토큰을 절대 포함하지 마세요.
+#
+# Phase 2 기준 갱신: 2026-04-18
+# - Phase 0 결정: 자본 500만원, 4종목 동시 보유
+# - Phase 2 비용 모델: 왕복 0.31%
+# - 구 전략(golden_cross/disparity_reversion) 비활성화
 
-# --- 종목 리스트 ---
-# watchlist가 비어있으면 pre_screening + screening 2단계 동적 선별 모드로 동작
-# watchlist에 종목이 있으면 해당 종목만 감시 (기존 고정 모드)
+
+# ============================================================================
+# Phase 2 — TrendFollowing v0.1 전략 파라미터
+# ============================================================================
+# 이 섹션이 Phase 2 백테스트 및 향후 라이브 운용의 기준값.
+
+trend_following:
+  # 스크리너
+  ma_short: 5
+  ma_mid: 20
+  ma_long: 60
+  adx_period: 14
+  adx_threshold: 20
+  min_trading_value: 5_000_000_000    # 50억원
+
+  # 진입
+  breakout_period: 60                  # 60일 신고가
+  volume_multiplier: 1.5
+
+  # 청산
+  atr_period: 14
+  stop_loss_atr: 1.5                   # v0.1
+  take_profit_atr: 2.0                 # v0.1
+  trailing_atr: 3.0                    # v0.1
+  max_hold_days: 15
+
+  # 비용 모델
+  buy_commission: 0.00015              # 0.015%
+  sell_commission: 0.00015             # 0.015%
+  sell_tax: 0.0018                     # 0.18% (2026)
+  slippage: 0.0005                     # 0.05%
+
+
+# ============================================================================
+# 매매 기본 설정
+# ============================================================================
+
+trading:
+  universe: kospi_kosdaq
+  max_positions: 4
+  initial_capital: 5_000_000           # Phase 0 결정: 500만원
+  reentry_cooldown_days: 3
+  order_type: market
+  entry_start_time: "09:30"
+  entry_end_time: "15:00"
+
+
+# ============================================================================
+# 포트폴리오 / Universe Pool
+# ============================================================================
+
+universe_pool:
+  min_market_cap: 5_000_000_000_000    # 시총 5조원
+  min_trading_value: 5_000_000_000     # 거래대금 50억원
+  refresh_interval_days: 60            # 분기별 재계산
+  excluded_types:
+    - SPAC
+    - REIT
+    - FOREIGN
+    - PREFERRED
+
+
+# ============================================================================
+# 리스크 관리
+# ============================================================================
+
+risk:
+  max_position_ratio: 0.30             # 종목당 최대 30% (4종목 기준 25% 균등 + 여유)
+  min_position_amount: 1_000_000       # 종목당 최소 100만원
+  daily_loss_limit: -0.03
+  daily_loss_warning: -0.02
+  max_mdd: -0.20
+
+
+# ============================================================================
+# 백테스트 비용 모델
+# ============================================================================
+
+backtest:
+  commission: 0.00015                  # 0.015%
+  tax: 0.0018                          # 0.18% (2026)
+  slippage: 0.0005                     # 0.05%
+  initial_capital: 5_000_000           # 500만원
+
+
+# ============================================================================
+# 브로커 설정 (키움 REST API)
+# ============================================================================
+
+broker:
+  type: rest
+  base_url: "https://api.kiwoom.com"
+  ws_url: "wss://api.kiwoom.com:10000/api/dostk/websocket"
+
+
+# ============================================================================
+# 스케줄러
+# ============================================================================
+
+schedule:
+  screening_time: "08:30"
+  polling_start_time: "09:25"
+  polling_stop_time: "15:35"
+  polling_interval: 10
+  daily_report_time: "16:00"
+  reconnect_time: "08:45"
+
+
+# ============================================================================
+# 아래는 구 전략 설정 (Phase 1 이전). 구 engine.py 의존성 있어 보존.
+# Phase 3 엔진 재구축 시 일괄 제거 예정.
+# ============================================================================
+
+# --- [LEGACY] 종목 리스트 (Phase 2는 동적 Universe Pool 사용) ---
 watchlist:
-- '005930'
-- '000660'
-- '005380'
-- '000270'
-- '068270'
-- '035420'
-- '035720'
-- '105560'
-- '055550'
-- '066570'
-- '006400'
-- '003670'
-- '012330'
-- '028260'
-- '096770'
-- '003550'
-- '034730'
-- '032830'
-- '030200'
-- '017670'
+  - '005930'
+  - '000660'
+  - '005380'
+  - '000270'
+  - '068270'
+  - '035420'
+  - '035720'
+  - '105560'
+  - '055550'
+  - '066570'
+  - '006400'
+  - '003670'
+  - '012330'
+  - '028260'
+  - '096770'
+  - '003550'
+  - '034730'
+  - '032830'
+  - '030200'
+  - '017670'
+
+# --- [LEGACY] watchlist 갱신 ---
 watchlist_refresh:
   enabled: true
-  min_market_cap: 5_000_000_000_000   # 시가총액 5조원 이상
-  min_daily_amount: 10_000_000_000    # 20일 평균 거래대금 100억 이상
-  min_atr_pct: 0.02                   # ATR% 하한 2%
-  max_atr_pct: 0.05                   # ATR% 상한 5%
+  min_market_cap: 5_000_000_000_000
+  min_daily_amount: 10_000_000_000
+  min_atr_pct: 0.02
+  max_atr_pct: 0.05
   top_n: 20
 
-# --- 1차 Pre-Screening (장전 후보군 축소 필터) ---
-# 시장 국면(regime)에 따라 조건식을 자동 선택
+# --- [LEGACY] Pre-Screening ---
 pre_screening:
-  # 공통 필터
-  min_market_cap: 100_000_000_000    # 시가총액 1000억원 이상
-  volume_ratio_threshold: 1.5        # 당일 거래량 / 20일 평균 거래량 >= 150%
-
-  # 조건식 1: 눌림목 (trending 국면용 — golden_cross/breakout 전략과 매칭)
-  # 52주 고점 근처에서 조정 중이나 추세는 유지된 종목
+  min_market_cap: 100_000_000_000
+  volume_ratio_threshold: 1.5
   pullback:
-    week52_high_min: -0.15           # 52주 최고가 대비 -15% 이상
-    week52_high_max: 0.0             # 52주 최고가 대비 0% 이하
-    rsi_min: 45                      # RSI(14) 하한
-    rsi_max: 65                      # RSI(14) 상한
-    disparity_sma20_min: 100         # 이격도(종가/SMA20) 하한 (%)
-    disparity_sma20_max: 200         # 이격도(종가/SMA20) 상한 (%)
-    disparity_sma60_min: 100         # 이격도(종가/SMA60) 하한 (%)
-    disparity_sma60_max: 200         # 이격도(종가/SMA60) 상한 (%)
-
-  # 조건식 2: 변동성 수축 (sideways 국면용 — bb_bounce 전략과 매칭)
-  # 횡보 압축 후 방향성 출현 예상 종목 (평균회귀용 거래량 기준 완화)
+    week52_high_min: -0.15
+    week52_high_max: 0.0
+    rsi_min: 45
+    rsi_max: 65
+    disparity_sma20_min: 100
+    disparity_sma20_max: 200
+    disparity_sma60_min: 100
+    disparity_sma60_max: 200
   squeeze:
-    price_range_period: 20           # 변동폭 측정 기간 (일)
-    price_range_max: 0.15            # 최고최저폭 15% 이하 (변동성 수축)
-    min_price: 3000                  # 최소 주가 (원)
-    max_price: 200000                # 최대 주가 (원)
-    volume_ratio_threshold: 0.8      # 거래량비율 (0.8x — 평균회귀는 거래량 급증 불필요)
+    price_range_period: 20
+    price_range_max: 0.15
+    min_price: 3000
+    max_price: 200000
+    volume_ratio_threshold: 0.8
 
-# --- 매매 기본 설정 ---
-# 모드 제어는 .env의 IS_PAPER_TRADING으로 관리 (True=모의, False=실거래)
-trading:
-  universe: kospi_kosdaq            # 매매 대상 시장 (kospi | kosdaq | kospi_kosdaq)
-  max_positions: 4                  # 동시에 보유할 수 있는 최대 종목 수 (자본금 300만원 기준 4종목, 종목당 ~75만원)
-  reentry_cooldown_days: 3          # 같은 종목을 매도 후 다시 매수하기까지 대기 영업일
-  reentry_cooldown_trend_days: 1    # 추세 유지 시 (SMA5>SMA20, ADX>임계값) 단축 쿨다운
-  initial_capital: 3000000          # 실거래/페이퍼 초기 자본금 (원)
-  order_type: market                # 주문 호가 유형 (market: 시장가, limit: 지정가)
-  entry_start_time: "09:30"         # 매수 진입 허용 시작 시각 (장 초반 변동성 회피)
-  entry_end_time: "15:00"           # 매수 진입 허용 종료 시각 (동시호가 15:20~ 회피)
-
-# --- 종목 스크리닝 (장 시작 전 후보 선별) ---
+# --- [LEGACY] Screening ---
 screening:
-  min_daily_amount: 1000000000      # 최소 일 거래대금 (원) — 10억 미만 종목 제외 (유동성 확보)
-  min_market_cap: 30000000000       # 최소 시가총액 (원) — 300억 미만 종목 제외 (소형주 제외)
-  min_price: 1000                   # 최소 주가 (원) — 1,000원 미만 동전주 제외
-  max_price: 500000                 # 최대 주가 (원) — 50만원 초과 고가주 제외
-  top_n: 30                         # 스크리닝 결과 상위 N종목까지만 매수 후보로 선정 (백테스트 최적: 30종목/8포지션)
+  min_daily_amount: 1000000000
+  min_market_cap: 30000000000
+  min_price: 1000
+  max_price: 500000
+  top_n: 30
 
-# --- 매매 전략 파라미터 ---
-# 확정 전략: golden_cross(trending) + disparity_reversion(sideways)
+# --- [LEGACY] 전략 ---
 strategy:
-  type: disabled                       # Phase 1 재설계 중 — 전략 레이어 무력화
-
+  type: disabled
   regime_strategy:
-    trending: golden_cross             # 추세장: SMA5/20 골든크로스
-    sideways: disparity_reversion      # 횡보장: 이격도 평균회귀
-    # bearish: 매수 차단 (MarketRegime 게이트)
-
-  flow_filter_enabled: false           # 수급 가산점 비활성
-
+    trending: golden_cross
+    sideways: disparity_reversion
+  flow_filter_enabled: false
   regime_position_scale:
-    trending: 1.0                      # 추세장: 100%
-    sideways: 0.7                      # 횡보장: 70% (리스크 축소)
-    bearish: 0.0                       # 약세장: 매수 차단
-  timeframe_primary: D              # 기본 분석 타임프레임 (D: 일봉)
-  timeframe_entry: 60               # 진입 타이밍 타임프레임 (분봉, 60=60분봉)
-  adx_threshold: 20                 # ADX 추세 강도 기준 (golden_cross Sharpe 0.84 검증 값)
+    trending: 1.0
+    sideways: 0.7
+    bearish: 0.0
+  timeframe_primary: D
+  timeframe_entry: 60
+  adx_threshold: 20
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  ma_trend: 20
+  rsi_period: 14
+  rsi_entry_min: 35
+  rsi_entry_max: 65
+  bb_period: 20
+  bb_std: 2.0
+  bb_touch_pct: 0.15
+  rsi_oversold: 45
+  rsi_pullback: 45
+  screening_lookback: 5
+  volume_multiplier: 1.0
+  vol_breakout_multiplier: 1.5
+  vol_lookback: 20
+  momentum_period: 60
+  pullback_days: 3
+  rsi_pullback_threshold: 40
+  disparity_entry: 96
+  disparity_exit: 100
+  disparity_stop: 88
+  disparity_max_hold: 7
+  max_hold_days: 10
+  target_return: 0.1
+  partial_sell_enabled: true
+  partial_target_pct: 0.5
+  partial_sell_ratio: 0.5
 
-  # 이동평균선 (Moving Average)
-  macd_fast: 12                     # MACD 빠른선 기간 (기본 12일)
-  macd_slow: 26                     # MACD 느린선 기간 (기본 26일)
-  macd_signal: 9                    # MACD 시그널선 기간 (기본 9일)
-  ma_trend: 20                      # 추세 판단용 이동평균 기간 (20일선)
-
-  # RSI (Relative Strength Index, 상대강도지수)
-  rsi_period: 14                    # RSI 계산 기간 (14일)
-  rsi_entry_min: 35                 # 매수 허용 RSI 하한 (튜닝: 40→35, 진입 기회 확대)
-  rsi_entry_max: 65                 # 매수 허용 RSI 상한 (65 초과면 과매수로 판단)
-
-  # 볼린저밴드 (Bollinger Bands)
-  bb_period: 20                     # 볼린저밴드 기간 (20일)
-  bb_std: 2.0                       # 볼린저밴드 표준편차 배수 (2.0σ)
-  bb_touch_pct: 0.15                # BB 하단 터치 범위 (튜닝: 0.10→0.15, BB 진입 확대)
-  rsi_oversold: 45                  # BB 과매도 기준 (튜닝: 40→45, BB 진입 확대)
-  rsi_pullback: 45                  # MACD Pullback 눌림 RSI 기준
-  screening_lookback: 5             # 골든크로스 lookback 기간 (일)
-
-  # 거래량 필터
-  volume_multiplier: 1.0            # 20일 평균 거래량 대비 배수 (1.0 = 평균 이상이면 OK)
-
-  # 거래량 돌파 전략 (volume_breakout) 파라미터
-  vol_breakout_multiplier: 1.5      # N일 최대 거래량 대비 배수 (튜닝: 0.8→1.5, 강한 돌파만 허용)
-  vol_lookback: 20                  # 거래량 돌파 기준 기간 (일)
-
-  # 모멘텀 + 눌림목 전략 (momentum_pullback)
-  momentum_period: 60             # 모멘텀 측정 기간 (거래일)
-  pullback_days: 3                # 눌림목 확인 기간 (거래일)
-  rsi_pullback_threshold: 40      # 눌림목 RSI 기준 (완화: 30→40)
-
-  # 이격도 평균회귀 전략 (disparity_reversion)
-  disparity_entry: 96             # 진입 이격도 (96% = 20일선 대비 -4%)
-  disparity_exit: 100             # 청산 이격도 (100% = 20일선 터치)
-  disparity_stop: 88              # 손절 이격도 (88% = 추가 하락)
-  disparity_max_hold: 7           # 이격도 전략 최대 보유일 (평균회귀는 짧게)
-
-  # 청산 조건
-  max_hold_days: 10                 # 최대 보유 기간 (영업일) — 초과 시 강제 매도
-  target_return: 0.1                # 목표 수익률 (0.10 = +10%) — 도달 시 자동 매도 (최적화: 0.12→0.10, 빠른 익절+승률 향상)
-
-  # 부분 매도 설정
-  partial_sell_enabled: true         # 부분 매도 활성화
-  partial_target_pct: 0.5            # 목표가의 50% 도달 시 부분 매도 트리거
-  partial_sell_ratio: 0.5            # 보유 수량의 50%를 매도
-
-# --- 리스크 관리 ---
-risk:
-  # 포지션 사이징
-  max_position_ratio: 0.15          # 종목당 최대 투자 비율 (총 자본의 15%)
-  min_position_ratio: 0.03          # 종목당 최소 투자 비율 (총 자본의 3%)
-  sizing_method: half_kelly         # 포지션 크기 결정 방식 (half_kelly | fixed)
-
-  # 포지션 사이징 기본 파라미터
-  default_win_rate: 0.5              # 기본 승률 (실거래 이력 충분히 쌓이면 동적 계산 전환 가능)
-  default_avg_win: 0.08              # 기본 평균 수익 (8%)
-  default_avg_loss: 0.04             # 기본 평균 손실 (4%)
-
-  # 손절 (Stop Loss)
-  stop_atr_multiplier: 2.0          # 초기 손절가 = 진입가 - ATR × 2.0 (golden_cross Sharpe 0.84 검증 값)
-  max_stop_pct: 0.1                 # 최대 손절 비율 10% (stop_atr_mult 2.0 기준)
-
-  # 트레일링 스톱 (수익 보호)
-  trailing_atr_multiplier: 2.0      # 트레일링 = 고점 - ATR × 이 값
-  trailing_activate_pct: 0.10       # 트레일링 활성화 수익률 (최적화: 0.06→0.10, 조기 청산 방지)
-
-  # 일일 손실 관리
-  daily_loss_limit: -0.03           # 일일 손실 한도 (-0.03 = -3%) — 초과 시 당일 매매 중단
-  daily_loss_warning: -0.02         # 일일 손실 경고 (-0.02 = -2%) — 텔레그램 경고 발송
-  max_mdd: -0.20                    # 최대 낙폭 한도 (-0.20 = -20%) — 초과 시 전략 중단
-
-# --- 백테스트 비용 모델 ---
-backtest:
-  commission: 0.00015               # 수수료 (0.015%, 매수/매도 각각 적용)
-  tax: 0.0015                       # 거래세 (0.15%, 매도 시에만 적용, 2025년 기준)
-  slippage: 0.001                   # 슬리피지 (0.1%, 체결가 불리함 가정)
-  initial_capital: 3_000_000        # 백테스트 초기 자본금 (원)
-
-# --- 브로커 연결 설정 (키움 REST API) ---
-# paper/live 모두 실전 서버 사용 (paper 모드는 주문만 시뮬레이션)
-broker:
-  type: rest                        # 키움 REST API
-  base_url: "https://api.kiwoom.com"                              # REST API 기본 URL
-  ws_url: "wss://api.kiwoom.com:10000/api/dostk/websocket"        # WebSocket URL (조건검색용)
-
-# --- watchlist 모드 ---
-# "fixed": 기존 고정 watchlist 사용
-# "condition": HTS 조건검색으로 동적 watchlist 생성 (실패 시 고정 폴백)
+# --- [LEGACY] 조건검색 ---
 watchlist_mode: "condition"
-
 condition_search:
   enabled: true
   condition_name: "swing_pre_cross"
   fallback_to_fixed: true
   max_stocks: 30
-
-# --- 스케줄러 (자동 작업 시간) ---
-schedule:
-  screening_time: "08:30"           # 장전 스크리닝 실행 시간 (08:30 → 장 시작 전 후보 선별)
-  polling_start_time: "09:25"       # REST polling 시작 시간 (09:25 → 매수 진입 5분 전)
-  polling_stop_time: "15:35"        # REST polling 종료 시간 (15:35 → 장 마감 5분 후)
-  evening_screening_time: "15:40"   # 저녁 조건검색 (다음날 watchlist 생성, 장마감 10분 후)
-  polling_interval: 10              # polling 간격 (초) — 만석 시 보유종목만 조회하므로 10초 가능
-  daily_report_time: "16:00"        # 일간 리포트 발송 시간 (16:00 → 장 마감 후 텔레그램 발송)
-  reconnect_time: 08:45
