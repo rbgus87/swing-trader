@@ -1,9 +1,47 @@
 # CLAUDE.md — swing-trader
 
-## 현재 상태: Phase 1 재설계 진행 중 (시작: 2026-04-14)
+## 현재 상태: Phase 1 완료 (2026-04-18). Phase 2 진입 준비.
 
 이 프로젝트는 전면 재설계 중입니다. 기존 전략과 운영 방식은 모두 archive되었고,
 Phase 0 기획에 따라 데이터 파이프라인부터 새로 구축합니다.
+
+## Phase 1: 데이터 파이프라인 ✅ 완료 (2026-04-14)
+
+### 최종 데이터 현황
+
+| 테이블 | 행 수 | 범위 | 비고 |
+|--------|-------|------|------|
+| stocks | 3,444 | - | Active 2,736 + Delisted 708 |
+| daily_candles | 7.03M | 2014-01~2026-04 | 수정주가, FDR 기반 |
+| market_cap_history | 7.03M | 2014-01~2026-04 | KRX bydd_trd 기반 |
+| stock_status_events | 135 | - | ADMIN 80 + WARNING 50 + PRIOR 5 |
+| collection_log | 3,389 | - | SUCCESS 3,211 + PARTIAL 178 |
+
+### 데이터 소스
+
+- 일봉 OHLCV: FinanceDataReader (Naver 기반 수정주가)
+- 종목 메타/시총: KRX OpenAPI (openapi.krx.co.kr)
+- 폐지 종목: data.krx.co.kr 수동 다운로드 (상장폐지현황.xls)
+
+### 알려진 한계
+
+- 폐지 종목 market='UNKNOWN' (KRX 메타 미제공, SQLite ALTER COLUMN 미지원)
+- sector 전종목 NULL (KRX OpenAPI 미제공, Phase 5 이후 보강)
+- 폐지 종목 2% 누락 (KRX historical snapshot 미반환 소형주)
+- 생존편향 제거 완료 (2014~2026, 708종목 폐지 이력 포함)
+- 티커 재사용 0건 확인 (003620/097230 = 단순 상호변경)
+
+### 갱신 절차
+
+- 일봉/시총 일일 갱신: Phase 2 이후 구축 (Step 4b)
+- 폐지 종목 갱신: 월 1회 `bash scripts/update_delisting.sh`
+
+### 정합성 검증 (Step 4a)
+
+- 수정주가 연속성: 3종목 분할 케이스 PASS
+- Universe Pool 시뮬레이션: 43종목 (2020-01-02 기준, 시총 5조+거래대금 100억)
+- 지표 계산 (SMA/RSI/ATR): 5종목 inf/NaN/zero 없음 PASS
+- ERROR급 이상치: 0건
 
 ## Phase 0 결정사항 (불변)
 
@@ -18,18 +56,8 @@ Phase 0 기획에 따라 데이터 파이프라인부터 새로 구축합니다.
 ## 진행 단계
 
 - [x] Phase 0: 기획·아키텍처 결정
-- [ ] Phase 1: 데이터 파이프라인 (현재 진행)
-  - [x] 백업 + 코드 정리
-  - [x] Step 1a: 종목 메타 수집 (2,773종목, KOSPI 950 + KOSDAQ 1,823)
-  - [x] Step 1b-1: base_info 보강 (listed_date, ISIN 100%)
-  - [x] Step 1b-2: sector 정정 (market_division 컬럼 신설)
-  - [x] Step 1b-2b: market_division cleanup + FOREIGN type 도입
-  - [ ] Step 1b-3: 상장폐지 데이터 — KRX Data Marketplace 차단 이슈로 Step 2에서 역산 처리 예정
-  - [ ] Step 2: 일봉 OHLCV 수집 (FDR 기반, 12년, 2,773종목)
-  - [ ] Step 3: 시총 이력 수집 (KRX OpenAPI)
-  - [ ] Step 4: 상태 이벤트 확장 + 정합성 검증
-  - [ ] Step 1b-3 후보강: KRX Marketplace 계정 확보 시 폐지 데이터 교체
-- [ ] Phase 2: TrendFollowing 전략 신규 설계
+- [x] Phase 1: 데이터 파이프라인 ✅
+- [ ] Phase 2: TrendFollowing 전략 신규 설계 ← 다음
 - [ ] Phase 3: Engine 4-레이어 재구축
 - [ ] Phase 4: TrendFollowing 백테스트·페이퍼
 - [ ] Phase 5: MeanReversion 전략 추가
