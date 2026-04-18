@@ -32,6 +32,7 @@ class Position:
     highest_since_entry: float
     hold_days: int = 0
     tp1_triggered: bool = False
+    strategy: str = 'TF'       # 'TF' or 'MR'
 
 
 @dataclass
@@ -553,3 +554,4 @@ def _compute_portfolio_summary(
     result.max_concurrent = max_concurrent
     result.universe_refresh_count = universe_refresh_count
     return result
+
