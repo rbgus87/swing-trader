@@ -113,9 +113,10 @@ def build_universe(date_str: str, conn) -> set:
     return {row['ticker'] for row in cursor.fetchall()}
 
 
-def load_all_candles(tickers: set) -> dict:
+def load_all_candles(tickers: set, params: StrategyParams = None) -> dict:
     """전 종목 일봉 로드 + 지표 계산."""
-    params = StrategyParams()
+    if params is None:
+        params = StrategyParams()
     result = {}
 
     with get_connection() as conn:
@@ -140,18 +141,17 @@ def load_all_candles(tickers: set) -> dict:
     return result
 
 
-def run_portfolio_backtest(
-    initial_capital: float = 5_000_000,
-    max_positions: int = 4,
-    params: StrategyParams = None,
-    cost: CostModel = None,
-    min_position_amount: float = 300_000,
-) -> PortfolioResult:
-    """포트폴리오 레벨 백테스트 실행."""
+def load_backtest_data(params: StrategyParams = None) -> dict:
+    """백테스트에 필요한 데이터(거래일/종목풀/지표) 1회 로드.
+
+    반복 실험에서 재사용 목적. run_portfolio_backtest(preloaded_data=...)로 전달.
+
+    Returns dict keys:
+        trading_dates, initial_universe, all_possible,
+        ticker_data, ticker_date_idx, ticker_names
+    """
     if params is None:
         params = StrategyParams()
-    if cost is None:
-        cost = CostModel()
 
     logger.info("Loading trading dates...")
     with get_connection() as conn:
@@ -161,14 +161,12 @@ def run_portfolio_backtest(
             ORDER BY date
         """)
         trading_dates = [row['date'] for row in cursor.fetchall()]
-
     logger.info(f"Trading dates: {len(trading_dates)}")
 
     logger.info("Building initial universe...")
     with get_connection() as conn:
-        universe = build_universe(trading_dates[0], conn)
-
-    logger.info(f"Initial universe: {len(universe)} tickers")
+        initial_universe = build_universe(trading_dates[0], conn)
+    logger.info(f"Initial universe: {len(initial_universe)} tickers")
 
     logger.info("Collecting candidate tickers (ever-eligible)...")
     with get_connection() as conn:
@@ -180,13 +178,12 @@ def run_portfolio_backtest(
               AND s.stock_type NOT IN (?, ?, ?, ?)
         """, (MCAP_THRESHOLD, *EXCLUDED_TYPES))
         all_possible = {row['ticker'] for row in cursor.fetchall()}
-
     logger.info(f"Candidate tickers: {len(all_possible)}")
+
     logger.info("Loading candle data + computing indicators...")
-    ticker_data = load_all_candles(all_possible)
+    ticker_data = load_all_candles(all_possible, params)
     logger.info(f"Loaded candle data for {len(ticker_data)} tickers")
 
-    # 날짜 -> 인덱스 빠른 매핑
     ticker_date_idx = {}
     for tk, df in ticker_data.items():
         ticker_date_idx[tk] = {d: i for i, d in enumerate(df['date'])}
@@ -194,6 +191,42 @@ def run_portfolio_backtest(
     with get_connection() as conn:
         cursor = conn.execute("SELECT ticker, name FROM stocks")
         ticker_names = {row['ticker']: row['name'] for row in cursor.fetchall()}
+
+    return {
+        'trading_dates': trading_dates,
+        'initial_universe': initial_universe,
+        'all_possible': all_possible,
+        'ticker_data': ticker_data,
+        'ticker_date_idx': ticker_date_idx,
+        'ticker_names': ticker_names,
+    }
+
+
+def run_portfolio_backtest(
+    initial_capital: float = 5_000_000,
+    max_positions: int = 4,
+    params: StrategyParams = None,
+    cost: CostModel = None,
+    min_position_amount: float = 300_000,
+    preloaded_data: dict = None,
+) -> PortfolioResult:
+    """포트폴리오 레벨 백테스트 실행.
+
+    preloaded_data: load_backtest_data()의 반환값. 제공 시 데이터 로딩 스킵.
+    """
+    if params is None:
+        params = StrategyParams()
+    if cost is None:
+        cost = CostModel()
+
+    if preloaded_data is None:
+        preloaded_data = load_backtest_data(params)
+
+    trading_dates = preloaded_data['trading_dates']
+    universe = set(preloaded_data['initial_universe'])
+    ticker_data = preloaded_data['ticker_data']
+    ticker_date_idx = preloaded_data['ticker_date_idx']
+    ticker_names = preloaded_data['ticker_names']
 
     cash = initial_capital
     positions = []
