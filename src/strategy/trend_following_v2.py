@@ -62,7 +62,7 @@ class StrategyParams:
     take_profit_atr: float = 2.0
     trailing_atr: float = 4.0
     max_hold_days: int = 20
-    tp1_sell_ratio: float = 0.5
+    tp1_sell_ratio: float = 0.3
 
 
 @dataclass
