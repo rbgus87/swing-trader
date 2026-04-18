@@ -17,10 +17,13 @@ LOG="logs/daily_run_$(date '+%Y%m%d').log"
 
 echo "$(date) === Daily Run Start ===" | tee -a "$LOG"
 
-echo "$(date) Step 1/2: Data Update..." | tee -a "$LOG"
+echo "$(date) Step 1/3: Data Update..." | tee -a "$LOG"
 bash scripts/daily_update.sh 2>&1 | tee -a "$LOG"
 
-echo "$(date) Step 2/2: Signal Engine..." | tee -a "$LOG"
+echo "$(date) Step 2/3: Index Daily Update..." | tee -a "$LOG"
+python -m src.data_pipeline.collect_index_daily --update-only 2>&1 | tee -a "$LOG"
+
+echo "$(date) Step 3/3: Signal Engine..." | tee -a "$LOG"
 python -m src.engine.orchestrator 2>&1 | tee -a "$LOG"
 
 echo "$(date) === Daily Run Complete ===" | tee -a "$LOG"

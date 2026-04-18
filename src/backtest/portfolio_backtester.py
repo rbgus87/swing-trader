@@ -101,6 +101,11 @@ class RiskParams:
     atr_sizing_risk_pct: float = 0.02    # 계좌 2% risk
     atr_sizing_max_pct: float = 0.30     # 한 종목 최대 30%
 
+    # 조기 시간손절 (dead money 회수) — Hold 시간 미만 시점에 수익률 체크
+    early_exit_enabled: bool = False
+    early_exit_hold_days: int = 10       # 이 날짜 시점부터 매일 체크
+    early_exit_return_min: float = 0.02  # 이 수익률 미달 시 조기 청산
+
     # 개별 규칙 on/off (실험용)
     enable_sizing: bool = True           # DD 기반 3단계 사이징
     enable_atr_sizing: bool = False      # ATR 역비례 사이징 (enable_sizing과 배타)
@@ -454,6 +459,11 @@ def precompute_pullback_signals(
             if day['volume'] <= prev['volume']:
                 continue
 
+            # 20일 고점 대비 조정폭 (음수)
+            lo = max(0, curr_i - 19)
+            window_high = float(ticker_data[ticker].iloc[lo:curr_i + 1]['close'].max())
+            pullback_depth = (day['close'] / window_high - 1.0) if window_high > 0 else 0.0
+
             cands.append({
                 'ticker': ticker,
                 'score': float(mom),
@@ -461,6 +471,7 @@ def precompute_pullback_signals(
                 'atr': float(day['atr']),
                 'rsi14': float(day['rsi14']),
                 'atr_ratio': float(atr_ratio),
+                'pullback_depth': float(pullback_depth),
             })
         cands.sort(key=lambda x: x['score'], reverse=True)
         candidates_by_date[date_str] = cands
@@ -622,7 +633,15 @@ def run_portfolio_backtest(
                         exit_price = day['close']
                         exit_reason = 'TREND_EXIT'
 
-            # 5. 시간 청산
+            # 5a. 조기 시간손절 (dead money)
+            if (exit_price is None and risk is not None and risk.early_exit_enabled
+                    and pos.hold_days >= risk.early_exit_hold_days):
+                current_return = (day['close'] / pos.entry_price) - 1
+                if current_return < risk.early_exit_return_min:
+                    exit_price = day['close']
+                    exit_reason = 'EARLY_TIME_EXIT'
+
+            # 5b. 시간 청산
             if exit_price is None and pos.hold_days >= params.max_hold_days:
                 exit_price = day['close']
                 exit_reason = 'TIME_EXIT'
