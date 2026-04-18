@@ -21,6 +21,6 @@ echo "$(date) Step 1/2: Data Update..." | tee -a "$LOG"
 bash scripts/daily_update.sh 2>&1 | tee -a "$LOG"
 
 echo "$(date) Step 2/2: Signal Engine..." | tee -a "$LOG"
-python src/engine/orchestrator.py 2>&1 | tee -a "$LOG"
+python -m src.engine.orchestrator 2>&1 | tee -a "$LOG"
 
 echo "$(date) === Daily Run Complete ===" | tee -a "$LOG"
