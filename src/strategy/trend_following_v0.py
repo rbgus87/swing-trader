@@ -21,10 +21,11 @@ class StrategyParams:
     breakout_period: int = 60          # 신고가 기간
     volume_multiplier: float = 1.5     # 거래량 배수
     atr_period: int = 14
-    stop_loss_atr: float = 1.5
+    stop_loss_atr: float = 2.0
     take_profit_atr: float = 2.0
-    trailing_atr: float = 3.0
-    max_hold_days: int = 15
+    trailing_atr: float = 4.0
+    max_hold_days: int = 20
+    tp1_sell_ratio: float = 0.5    # TP1 도달 시 매도할 비율 (0~1, 0이면 TP1 비활성화와 동일)
     min_trading_value: float = 5e9     # 50억원
 
 

@@ -390,9 +390,11 @@ def run_portfolio_backtest(
                 exit_price = pos.stop_price
                 exit_reason = 'STOP_LOSS'
 
-            # 2. TP1 (아직 미발동이면)
-            elif not pos.tp1_triggered and day['high'] >= pos.tp1_price:
-                partial_shares = pos.shares // 2
+            # 2. TP1 (take_profit_atr > 0 이고 아직 미발동이면)
+            elif (params.take_profit_atr > 0
+                  and not pos.tp1_triggered
+                  and day['high'] >= pos.tp1_price):
+                partial_shares = int(pos.shares * params.tp1_sell_ratio)
                 if partial_shares > 0:
                     pnl_pct = (pos.tp1_price / pos.entry_price - 1) - total_cost_pct
                     pnl_amount = (partial_shares * pos.entry_price
