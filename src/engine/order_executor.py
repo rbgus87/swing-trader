@@ -142,7 +142,7 @@ class OrderExecutor:
             if not pendings:
                 return
 
-            from src.strategy.trend_following_v0 import StrategyParams
+            from src.strategy.trend_following_v2 import StrategyParams
             params = StrategyParams()
 
             for p in pendings:

@@ -11,29 +11,48 @@
 
 
 # ============================================================================
-# Phase 2 — TrendFollowing v0.1 전략 파라미터
+# Phase 2 연장 — TrendFollowing v2.2 전략 파라미터 (상태 기반 추세추종)
 # ============================================================================
-# 이 섹션이 Phase 2 백테스트 및 향후 라이브 운용의 기준값.
+# 이 섹션이 백테스트 및 라이브 운용의 기준값.
 
 trend_following:
-  # 스크리너
+  # 이동평균
   ma_short: 5
   ma_mid: 20
-  ma_long: 60
+  ma_mid2: 60
+  ma_long: 120                         # v2.2 신규
+  # MA60 대비 위치
+  ma60_position_min: 0.05              # v2.2 신규
+  ma60_position_max: 0.20              # v2.2 신규
+  ma60_slope_lookback: 5               # v2.2 신규
+
+  # MACD
+  macd_fast: 12                        # v2.2 신규
+  macd_slow: 26                        # v2.2 신규
+  macd_signal: 9                       # v2.2 신규
+
+  # 상대강도 (vs KOSPI)
+  relative_strength_period: 20         # v2.2 신규
+  relative_strength_threshold: 0.05    # v2.2 신규 (+5%p)
+
+  # 거래량
+  vol_short: 5                         # v2.2 신규
+  vol_long: 20
+
+  # 공통
   adx_period: 14
   adx_threshold: 20
-  min_trading_value: 5_000_000_000    # 50억원
-
-  # 진입
-  breakout_period: 60                  # 60일 신고가
-  volume_multiplier: 1.5
-
-  # 청산
   atr_period: 14
-  stop_loss_atr: 2.0                   # v2
-  take_profit_atr: 2.0                 # v2
-  trailing_atr: 4.0                    # v2
-  max_hold_days: 20                    # v2
+  atr_price_min: 0.025                 # ATR 밴드 하한
+  atr_price_max: 0.08                  # ATR 밴드 상한
+  min_trading_value: 5_000_000_000     # 50억원
+
+  # 청산 (v2.1 ATR 기반 유지)
+  stop_loss_atr: 2.0
+  take_profit_atr: 2.0
+  trailing_atr: 4.0
+  max_hold_days: 20
+  tp1_sell_ratio: 0.5
 
   # 비용 모델
   buy_commission: 0.00015              # 0.015%

@@ -9,7 +9,7 @@ import pandas as pd
 from loguru import logger
 
 from src.data_pipeline.db import get_connection
-from src.strategy.trend_following_v0 import StrategyParams, calculate_indicators
+from src.strategy.trend_following_v2 import StrategyParams, calculate_indicators
 
 
 MAX_POSITIONS = 4

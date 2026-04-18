@@ -13,7 +13,7 @@ import numpy as np
 from loguru import logger
 
 from src.data_pipeline.db import get_connection
-from src.strategy.trend_following_v0 import StrategyParams, calculate_indicators
+from src.strategy.trend_following_v2 import StrategyParams, calculate_indicators
 from src.backtest.swing_backtester import CostModel
 
 
@@ -176,14 +176,30 @@ def load_all_candles(tickers: set, params: StrategyParams = None) -> dict:
     return result
 
 
+def load_kospi_ret_map(period: int) -> dict:
+    """KOSPI 지수의 N일 수익률 맵 {pd.Timestamp: float} 로드."""
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT date, close FROM index_daily
+            WHERE index_code = 'KOSPI' ORDER BY date
+        """).fetchall()
+    if not rows:
+        logger.warning("index_daily(KOSPI) empty — relative strength disabled")
+        return {}
+    df = pd.DataFrame([dict(r) for r in rows])
+    df['date'] = pd.to_datetime(df['date'])
+    df['ret_n'] = df['close'].pct_change(period)
+    return dict(zip(df['date'], df['ret_n']))
+
+
 def load_backtest_data(params: StrategyParams = None) -> dict:
-    """백테스트에 필요한 데이터(거래일/종목풀/지표) 1회 로드.
+    """백테스트에 필요한 데이터(거래일/종목풀/지표/KOSPI) 1회 로드.
 
     반복 실험에서 재사용 목적. run_portfolio_backtest(preloaded_data=...)로 전달.
 
     Returns dict keys:
         trading_dates, initial_universe, all_possible,
-        ticker_data, ticker_date_idx, ticker_names
+        ticker_data, ticker_date_idx, ticker_names, kospi_ret_map
     """
     if params is None:
         params = StrategyParams()
@@ -227,6 +243,10 @@ def load_backtest_data(params: StrategyParams = None) -> dict:
         cursor = conn.execute("SELECT ticker, name FROM stocks")
         ticker_names = {row['ticker']: row['name'] for row in cursor.fetchall()}
 
+    logger.info("Loading KOSPI relative strength map...")
+    kospi_ret_map = load_kospi_ret_map(params.relative_strength_period)
+    logger.info(f"KOSPI ret map entries: {len(kospi_ret_map)}")
+
     return {
         'trading_dates': trading_dates,
         'initial_universe': initial_universe,
@@ -234,6 +254,7 @@ def load_backtest_data(params: StrategyParams = None) -> dict:
         'ticker_data': ticker_data,
         'ticker_date_idx': ticker_date_idx,
         'ticker_names': ticker_names,
+        'kospi_ret_map': kospi_ret_map,
     }
 
 
@@ -243,16 +264,25 @@ def precompute_daily_signals(
     ticker_date_idx: dict,
     initial_universe: set,
     params: StrategyParams = None,
+    kospi_ret_map: dict = None,
 ) -> dict:
-    """SL/Trail/Hold/TP와 무관한 일별 정보를 사전 계산.
+    """v2.2 상태 기반 추세추종 진입 후보 사전 계산.
 
-    진입 조건(adx_threshold, volume_multiplier, min_trading_value)은 params에 의존.
-    이 값들이 바뀌면 precompute를 재실행해야 함.
+    조건 (모두 AND):
+      완전 정배열 (close > MA20 > MA60 > MA120)
+      MA60 기울기(+) — ma60_slope > 0
+      MA60 위치 적정 — ma60_position_min ≤ ma60_dist ≤ ma60_position_max
+      MACD histogram > 0
+      거래량 avg_volume_5 > avg_volume_20
+      ADX ≥ adx_threshold / 거래대금 ≥ min_trading_value
+      ATR/close 밴드 atr_price_min ~ atr_price_max
+      상대강도 stock_ret_n - KOSPI_ret_n ≥ relative_strength_threshold
+        (kospi_ret_map 제공 시에만)
 
     Returns:
         {
             'breadth':      {date_str: float},
-            'candidates':   {date_str: [dict]},  # score 내림차순
+            'candidates':   {date_str: [dict]},  # score(ADX) 내림차순
             'universe_at':  {date_str: set},
             'universe_refresh_count': int,
         }
@@ -295,183 +325,56 @@ def precompute_daily_signals(
                 above += 1
         breadth_by_date[date_str] = above / total_b if total_b > 0 else 0.5
 
-        # candidates (held_set 제외는 시뮬에서)
+        kospi_ret = kospi_ret_map.get(ts) if kospi_ret_map else None
+
         cands = []
         for ticker in universe:
             idx_map = ticker_date_idx.get(ticker)
             if not idx_map:
                 continue
             curr_i = idx_map.get(ts)
-            if curr_i is None or curr_i == 0:
+            if curr_i is None or curr_i < params.ma_long:
                 continue
             day = ticker_data[ticker].iloc[curr_i]
-            if (pd.isna(day.get('ma5')) or pd.isna(day.get('ma60'))
-                    or pd.isna(day.get('adx')) or pd.isna(day.get('atr'))):
-                continue
-            if day['atr'] <= 0:
-                continue
-            aligned = day['ma5'] > day['ma20'] > day['ma60']
-            trending = day['adx'] >= params.adx_threshold
-            liquid = day.get('avg_trading_value_20', 0) >= params.min_trading_value
-            if not (aligned and trending and liquid):
-                continue
-            prev = ticker_data[ticker].iloc[curr_i - 1]
-            if pd.isna(prev.get('highest_n')):
-                continue
-            breakout = day['close'] > prev['highest_n']
-            vol_confirm = day['volume'] > day['avg_volume_20'] * params.volume_multiplier
-            if breakout and vol_confirm:
-                rsi_v = day.get('rsi14')
-                rsi_v = float(rsi_v) if (rsi_v is not None and pd.notna(rsi_v)) else 50.0
-                atr_ratio = float(day['atr'] / day['close']) if day['close'] > 0 else 0.0
-                cands.append({
-                    'ticker': ticker,
-                    'score': float(day['adx']),
-                    'close': float(day['close']),
-                    'atr': float(day['atr']),
-                    'rsi14': rsi_v,
-                    'atr_ratio': atr_ratio,
-                })
-        cands.sort(key=lambda x: x['score'], reverse=True)
-        candidates_by_date[date_str] = cands
 
-    return {
-        'breadth': breadth_by_date,
-        'candidates': candidates_by_date,
-        'universe_at': universe_by_date,
-        'universe_refresh_count': refresh_count,
-    }
-
-
-def precompute_pullback_signals(
-    trading_dates: list,
-    ticker_data: dict,
-    ticker_date_idx: dict,
-    initial_universe: set,
-    params: StrategyParams = None,
-    momentum_period: int = 20,
-    momentum_top_n: int = 50,
-    atr_ratio_min: float = 0.025,
-    atr_ratio_max: float = 0.08,
-    rsi_min: float = 40.0,
-    rsi_max: float = 55.0,
-    bearish_lookback: int = 3,
-    bearish_count_min: int = 2,
-) -> dict:
-    """레퍼런스 눌림목 전략 진입 후보 사전 계산.
-
-    필터: MA20>MA60, ADX≥20, 거래대금 50억+, ATR/close 2.5~8%,
-          20일 수익률 상위 momentum_top_n.
-    진입: close<MA5, RSI rsi_min~rsi_max, 직전 bearish_lookback일 중
-          bearish_count_min 이상 음봉, 당일 양봉 + 거래량 > 전일.
-    """
-    if params is None:
-        params = StrategyParams()
-
-    breadth_by_date = {}
-    candidates_by_date = {}
-    universe_by_date = {}
-
-    universe = set(initial_universe)
-    last_refresh = 0
-    refresh_count = 1
-
-    for day_idx, date_str in enumerate(trading_dates):
-        ts = pd.Timestamp(date_str)
-        if day_idx - last_refresh >= UNIVERSE_REFRESH_DAYS:
-            with get_connection() as conn:
-                universe = build_universe(date_str, conn)
-            last_refresh = day_idx
-            refresh_count += 1
-
-        universe_by_date[date_str] = set(universe)
-
-        # breadth (공용)
-        above = 0
-        total_b = 0
-        for tk in universe:
-            idx_map_b = ticker_date_idx.get(tk, {})
-            bi = idx_map_b.get(ts)
-            if bi is None or bi < 199:
-                continue
-            br_row = ticker_data[tk].iloc[bi]
-            ma200_v = br_row.get('ma200')
-            if pd.isna(ma200_v):
-                continue
-            total_b += 1
-            if br_row['close'] > ma200_v:
-                above += 1
-        breadth_by_date[date_str] = above / total_b if total_b > 0 else 0.5
-
-        # 1차 필터 + 20일 모멘텀 랭킹
-        scored = []
-        for ticker in universe:
-            idx_map = ticker_date_idx.get(ticker)
-            if not idx_map:
-                continue
-            curr_i = idx_map.get(ts)
-            if curr_i is None or curr_i < momentum_period:
-                continue
-            day = ticker_data[ticker].iloc[curr_i]
-            if (pd.isna(day.get('ma5')) or pd.isna(day.get('ma20'))
-                    or pd.isna(day.get('ma60')) or pd.isna(day.get('adx'))
-                    or pd.isna(day.get('atr')) or pd.isna(day.get('rsi14'))):
+            req = ['ma20', 'ma60', 'ma120', 'ma60_slope', 'ma60_dist',
+                   'atr', 'adx', 'macd_hist', 'avg_volume_5', 'avg_volume_20',
+                   'avg_trading_value_20', 'stock_ret_n']
+            if any(pd.isna(day.get(k)) for k in req):
                 continue
             if day['atr'] <= 0 or day['close'] <= 0:
                 continue
-            if not (day['ma20'] > day['ma60']):
+
+            if not (day['close'] > day['ma20'] > day['ma60'] > day['ma120']):
+                continue
+            if day['ma60_slope'] <= 0:
+                continue
+            if not (params.ma60_position_min <= day['ma60_dist'] <= params.ma60_position_max):
+                continue
+            if day['macd_hist'] <= 0:
+                continue
+            if day['avg_volume_5'] <= day['avg_volume_20']:
                 continue
             if day['adx'] < params.adx_threshold:
                 continue
-            if day.get('avg_trading_value_20', 0) < params.min_trading_value:
+            if day['avg_trading_value_20'] < params.min_trading_value:
                 continue
             atr_ratio = day['atr'] / day['close']
-            if atr_ratio < atr_ratio_min or atr_ratio > atr_ratio_max:
+            if not (params.atr_price_min <= atr_ratio <= params.atr_price_max):
                 continue
-            prev_n = ticker_data[ticker].iloc[curr_i - momentum_period]['close']
-            if prev_n <= 0:
-                continue
-            mom = (day['close'] / prev_n) - 1
-            scored.append((mom, ticker, day, curr_i, atr_ratio))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top_pool = scored[:momentum_top_n]
-
-        # 진입 조건 (눌림 + 반등)
-        cands = []
-        for mom, ticker, day, curr_i, atr_ratio in top_pool:
-            if not (day['close'] < day['ma5']):
-                continue
-            if not (rsi_min <= day['rsi14'] <= rsi_max):
-                continue
-            if curr_i < bearish_lookback:
-                continue
-            bearish_n = 0
-            for k in range(1, bearish_lookback + 1):
-                prev = ticker_data[ticker].iloc[curr_i - k]
-                if prev['close'] < prev['open']:
-                    bearish_n += 1
-            if bearish_n < bearish_count_min:
-                continue
-            if day['close'] <= day['open']:
-                continue
-            prev = ticker_data[ticker].iloc[curr_i - 1]
-            if day['volume'] <= prev['volume']:
-                continue
-
-            # 20일 고점 대비 조정폭 (음수)
-            lo = max(0, curr_i - 19)
-            window_high = float(ticker_data[ticker].iloc[lo:curr_i + 1]['close'].max())
-            pullback_depth = (day['close'] / window_high - 1.0) if window_high > 0 else 0.0
+            if kospi_ret_map is not None:
+                if kospi_ret is None or pd.isna(kospi_ret):
+                    continue
+                if (day['stock_ret_n'] - float(kospi_ret)) < params.relative_strength_threshold:
+                    continue
 
             cands.append({
                 'ticker': ticker,
-                'score': float(mom),
+                'score': float(day['adx']),
                 'close': float(day['close']),
                 'atr': float(day['atr']),
-                'rsi14': float(day['rsi14']),
                 'atr_ratio': float(atr_ratio),
-                'pullback_depth': float(pullback_depth),
+                'ma60_dist': float(day['ma60_dist']),
             })
         cands.sort(key=lambda x: x['score'], reverse=True)
         candidates_by_date[date_str] = cands
@@ -715,46 +618,13 @@ def run_portfolio_backtest(
         if open_slots > 0:
             held_set = {p.ticker for p in positions}
 
-            if precomputed is not None:
-                candidates = [c for c in precomputed['candidates'].get(date_str, [])
-                              if c['ticker'] not in held_set]
-            else:
-                candidates = []
-                for ticker in universe:
-                    if ticker in held_set:
-                        continue
-                    day, curr_i = get_day_row(ticker)
-                    if day is None or curr_i is None or curr_i == 0:
-                        continue
-
-                    if pd.isna(day.get('ma5')) or pd.isna(day.get('ma60')) or pd.isna(day.get('adx')) or pd.isna(day.get('atr')):
-                        continue
-                    if day['atr'] <= 0:
-                        continue
-
-                    aligned = day['ma5'] > day['ma20'] > day['ma60']
-                    trending = day['adx'] >= params.adx_threshold
-                    liquid = day.get('avg_trading_value_20', 0) >= params.min_trading_value
-
-                    if not (aligned and trending and liquid):
-                        continue
-
-                    prev = ticker_data[ticker].iloc[curr_i - 1]
-                    if pd.isna(prev.get('highest_n')):
-                        continue
-
-                    breakout = day['close'] > prev['highest_n']
-                    vol_confirm = day['volume'] > day['avg_volume_20'] * params.volume_multiplier
-
-                    if breakout and vol_confirm:
-                        candidates.append({
-                            'ticker': ticker,
-                            'score': day['adx'],
-                            'close': day['close'],
-                            'atr': day['atr'],
-                        })
-
-                candidates.sort(key=lambda x: x['score'], reverse=True)
+            if precomputed is None:
+                raise ValueError(
+                    "v2.2: precomputed signals required. "
+                    "Call precompute_daily_signals(..., kospi_ret_map=...) first."
+                )
+            candidates = [c for c in precomputed['candidates'].get(date_str, [])
+                          if c['ticker'] not in held_set]
 
             filtered_cands = []
             for c in candidates:

@@ -75,7 +75,7 @@ def run_single_backtest(
 
     date_to_idx = {d.strftime('%Y-%m-%d'): i for i, d in enumerate(df['date'])}
 
-    from src.strategy.trend_following_v0 import calculate_indicators
+    from src.strategy.trend_following_v2 import calculate_indicators
     df = calculate_indicators(df, params)
 
     trades = []
