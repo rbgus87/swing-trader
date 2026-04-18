@@ -57,10 +57,39 @@ Phase 0 기획에 따라 데이터 파이프라인부터 새로 구축합니다.
 
 - [x] Phase 0: 기획·아키텍처 결정
 - [x] Phase 1: 데이터 파이프라인 ✅
-- [ ] Phase 2: TrendFollowing 전략 신규 설계 ← 다음
+- [ ] Phase 2: TrendFollowing 전략 신규 설계 (진행 중)
+  - [x] Step 1: TrendFollowing v1 baseline 확정 (2026-04-18)
+  - [ ] Step 2: MeanReversion 전략 설계
+  - [ ] Step 3: 합산 포트폴리오 백테스트
 - [ ] Phase 3: Engine 4-레이어 재구축
 - [ ] Phase 4: TrendFollowing 백테스트·페이퍼
 - [ ] Phase 5: MeanReversion 전략 추가
+
+## Phase 2: TrendFollowing 전략 설계
+
+### Step 1 완료 — TrendFollowing v1 확정 (2026-04-18)
+
+**확정 사양**:
+- Universe: 시총 3조+, 거래대금 50억+, 60일 갱신
+- 스크리너: MA5>MA20>MA60 + ADX≥20
+- 진입: 60일 신고가 + 거래량 1.5x → 익일 시가
+- 청산: SL ATR×1.5 / TP1 ATR×2.0(50% 분할) / Trail ATR×3.0 / 15일 / MA5<MA20
+- 가드레일: breadth ≥ 0.40 (MA200 기반, Universe 종목 중 비율)
+- 비용: 왕복 0.31%
+
+**백테스트 성과 (2014~2026, 12년, 자본 500만/4종목)**:
+- PF 0.97 / CAGR +1.4% / MDD 41% / WR 49% / 864건
+- 단독 엣지 약함 — MeanReversion 합산 포트폴리오로 보완 예정
+
+**실험 이력**:
+- v0 baseline (SL 2.0/TP 3.0/Trail 2.5): PF 0.85, 대형주 손실
+- v0.1 파라미터 조정 (SL 1.5/TP 2.0/Trail 3.0): PF 0.97로 개선, 기준 확정
+- 포트폴리오 엔진 버그 수정: 100만원 배분 데드락 → `cash × (1/max_positions)`·최소 30만원으로 수정
+- 가드레일 breadth 50% → 40%: 2020 반등 포착, Gate CLOSED 45%→29%
+- 모멘텀 필터 (60일 수익률 상위 50%): 후행 편향 → 폐기
+- Squeeze 필터 (BB 밴드폭 하위 20%): 과제한 + 강세장 역편향 → 폐기
+- 시총 1조 확대 / 중형주(2000억~10조): 노이즈·MDD 악화 → 폐기
+- **fix2(3조+, 필터 없음)가 최적 균형점**
 
 ## Phase 1 Step 1b-3 메모
 
