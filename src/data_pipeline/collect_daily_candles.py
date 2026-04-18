@@ -270,9 +270,38 @@ def get_tickers_to_collect(force_resume: bool = False) -> list[tuple]:
         ]
 
 
-def main(force_resume: bool = False) -> None:
+def get_tickers_for_incremental() -> list[tuple]:
+    """증분 모드: 모든 active 종목 + start_date = last_candle_date + 1일.
+
+    candle이 없는 active 종목은 listed_date부터 수집 (신규 상장).
+    """
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT s.ticker, s.listed_date, s.delisted_date,
+                   MAX(c.date) as last_candle_date
+            FROM stocks s
+            LEFT JOIN daily_candles c ON s.ticker = c.ticker
+            WHERE s.delisted_date IS NULL
+            GROUP BY s.ticker
+            ORDER BY s.ticker
+            """
+        )
+        result = []
+        for row in cursor.fetchall():
+            last = row["last_candle_date"]
+            if last:
+                next_start = (date.fromisoformat(last) + timedelta(days=1)).isoformat()
+                result.append((row["ticker"], next_start, row["delisted_date"]))
+            else:
+                result.append((row["ticker"], row["listed_date"], row["delisted_date"]))
+        return result
+
+
+def main(force_resume: bool = False, incremental: bool = False) -> None:
     logger.info("=" * 50)
-    logger.info("Phase 1 Step 2 — Daily Candles (Parallel 3)")
+    mode = "INCREMENTAL" if incremental else ("FORCE_RESUME" if force_resume else "BACKFILL")
+    logger.info(f"Daily Candles — {mode}")
     logger.info("=" * 50)
     logger.info(f"Workers: {MAX_WORKERS}, Rate limit: {RATE_LIMIT_PER_SEC}/sec")
     logger.info(
@@ -283,21 +312,36 @@ def main(force_resume: bool = False) -> None:
     client = FdrClient()
     rate_limiter = RateLimiter(RATE_LIMIT_PER_SEC)
 
-    tickers = get_tickers_to_collect(force_resume)
+    if incremental:
+        tickers = get_tickers_for_incremental()
+        # DB의 최대 거래일 기준으로 skip (장 열린 최신 날짜)
+        with get_connection() as conn:
+            max_db_date = conn.execute(
+                "SELECT MAX(date) FROM daily_candles"
+            ).fetchone()[0]
+        before = len(tickers)
+        tickers = [t for t in tickers
+                   if (t[1] is None) or (t[1] <= max_db_date)]
+        skipped_up_to_date = before - len(tickers)
+        logger.info(
+            f"Incremental: {len(tickers)} to fetch "
+            f"(max_db_date={max_db_date}, skipped up-to-date: {skipped_up_to_date})"
+        )
+    else:
+        tickers = get_tickers_to_collect(force_resume)
+        with get_connection() as conn:
+            skipped = conn.execute(
+                """
+                SELECT COUNT(*) FROM collection_log
+                WHERE data_type = 'daily_candle' AND status = 'SUCCESS'
+                """
+            ).fetchone()[0]
+        logger.info(f"Total to collect: {len(tickers)} (already success: {skipped})")
+
     total = len(tickers)
 
-    with get_connection() as conn:
-        skipped = conn.execute(
-            """
-            SELECT COUNT(*) FROM collection_log
-            WHERE data_type = 'daily_candle' AND status = 'SUCCESS'
-            """
-        ).fetchone()[0]
-
-    logger.info(f"Total to collect: {total} (already success: {skipped})")
-
     if total == 0:
-        logger.info("All tickers already collected. Use --force-resume to re-collect.")
+        logger.info("Nothing to collect.")
         return
 
     stats = {
@@ -378,5 +422,7 @@ def print_report(stats: dict, elapsed: float, total: int) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--force-resume", action="store_true")
+    parser.add_argument("--incremental", action="store_true",
+                        help="증분 모드: active 종목의 last_candle_date+1부터 오늘까지")
     args = parser.parse_args()
-    main(force_resume=args.force_resume)
+    main(force_resume=args.force_resume, incremental=args.incremental)
