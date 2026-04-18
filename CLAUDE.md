@@ -57,9 +57,10 @@ Phase 0 기획에 따라 데이터 파이프라인부터 새로 구축합니다.
 
 - [x] Phase 0: 기획·아키텍처 결정
 - [x] Phase 1: 데이터 파이프라인 ✅
-- [x] Phase 2: TrendFollowing 전략 설계 ✅ (2026-04-18)
-- [ ] Phase 3: Engine 4-레이어 재구축 ← 다음
-- [ ] Phase 4: 페이퍼 트레이딩
+- [x] Phase 2: TrendFollowing v1 설계 ✅ (PF 0.97, 엣지 약함)
+- [x] Phase 3: Engine 4-레이어 재구축 ✅
+- [ ] Phase 2 연장: 진입 방식 재설계 (리테스트/골든크로스 비교) ← 다음
+- [ ] Phase 4: 리스크 관리 + 페이퍼 트레이딩
 - [ ] Phase 5: 보완 전략 추가
 
 ## Phase 2: TrendFollowing 전략 설계 ✅ 완료 (2026-04-18)
@@ -109,6 +110,54 @@ Phase 0 기획에 따라 데이터 파이프라인부터 새로 구축합니다.
 - Phase 3: 엔진 4-레이어 재구축
 - Phase 4: 페이퍼 트레이딩
 - Phase 5: 보완 전략 재검토 (실전 데이터 기반)
+
+
+## Phase 3: 엔진 4-레이어 재구축 ✅ 완료 (2026-04-18)
+
+### 구현 모듈
+
+| 모듈 | 파일 | 역할 |
+|------|------|------|
+| RegimeDetector | src/engine/regime_detector.py | breadth ≥ 0.40 gate |
+| StrategyRouter | src/engine/strategy_router.py | TF v1 단독 라우팅 |
+| PortfolioManager | src/engine/portfolio_manager.py | 포지션 관리 + 청산/진입 |
+| OrderExecutor | src/engine/order_executor.py | paper/live 분기 |
+| Notifier | src/engine/notifier.py | 텔레그램 알림 |
+| Orchestrator | src/engine/orchestrator.py | 4-레이어 순차 실행 |
+
+### 일일 운영
+
+```bash
+# 매일 16:00 이후 실행
+bash scripts/daily_run.sh    # 데이터 갱신 + 시그널 생성
+
+# 폐지 종목 갱신 (월 1회)
+bash scripts/update_delisting.sh
+```
+
+### DB 테이블 (Phase 3 추가)
+
+- positions: 보유 종목 추적 (PENDING→OPEN→CLOSED)
+- signals: 진입/청산 신호 기록
+- daily_portfolio_snapshot: 일별 포트폴리오 상태
+
+### 미완성 항목
+
+- 키움 live 주문: stub (paper만 작동)
+- 리스크 관리: risk/ 모듈 미연결 (MDD 한도, 연속 손절 쿨다운)
+- 장중 실시간 모니터링: 미구현 (EOD만)
+- 전략 엣지 부족: PF 0.97 → 진입 방식 재설계 필요
+
+## 다음 단계 — 전략 엣지 개선 (Phase 2 연장)
+
+### 목표: PF 1.2+ 달성
+
+3가지 진입 방식 비교 백테스트:
+- 전략 A: 돌파 후 리테스트 (Breakout → Pullback reentry)
+- 전략 B: 골든크로스 (MA5/MA20 교차)
+- 전략 C: 현재 v1 (60일 신고가 즉시 진입) — baseline
+
+이후: 최적 조합 → Grid Search → 리스크 관리 연결 → 페이퍼 트레이딩
 
 ## Phase 1 Step 1b-3 메모
 
