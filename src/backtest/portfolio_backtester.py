@@ -202,6 +202,107 @@ def load_backtest_data(params: StrategyParams = None) -> dict:
     }
 
 
+def precompute_daily_signals(
+    trading_dates: list,
+    ticker_data: dict,
+    ticker_date_idx: dict,
+    initial_universe: set,
+    params: StrategyParams = None,
+) -> dict:
+    """SL/Trail/Hold/TP와 무관한 일별 정보를 사전 계산.
+
+    진입 조건(adx_threshold, volume_multiplier, min_trading_value)은 params에 의존.
+    이 값들이 바뀌면 precompute를 재실행해야 함.
+
+    Returns:
+        {
+            'breadth':      {date_str: float},
+            'candidates':   {date_str: [dict]},  # score 내림차순
+            'universe_at':  {date_str: set},
+            'universe_refresh_count': int,
+        }
+    """
+    if params is None:
+        params = StrategyParams()
+
+    breadth_by_date = {}
+    candidates_by_date = {}
+    universe_by_date = {}
+
+    universe = set(initial_universe)
+    last_refresh = 0
+    refresh_count = 1
+
+    for day_idx, date_str in enumerate(trading_dates):
+        ts = pd.Timestamp(date_str)
+        if day_idx - last_refresh >= UNIVERSE_REFRESH_DAYS:
+            with get_connection() as conn:
+                universe = build_universe(date_str, conn)
+            last_refresh = day_idx
+            refresh_count += 1
+
+        universe_by_date[date_str] = set(universe)
+
+        # breadth
+        above = 0
+        total_b = 0
+        for tk in universe:
+            idx_map_b = ticker_date_idx.get(tk, {})
+            bi = idx_map_b.get(ts)
+            if bi is None or bi < 199:
+                continue
+            br_row = ticker_data[tk].iloc[bi]
+            ma200_v = br_row.get('ma200')
+            if pd.isna(ma200_v):
+                continue
+            total_b += 1
+            if br_row['close'] > ma200_v:
+                above += 1
+        breadth_by_date[date_str] = above / total_b if total_b > 0 else 0.5
+
+        # candidates (held_set 제외는 시뮬에서)
+        cands = []
+        for ticker in universe:
+            idx_map = ticker_date_idx.get(ticker)
+            if not idx_map:
+                continue
+            curr_i = idx_map.get(ts)
+            if curr_i is None or curr_i == 0:
+                continue
+            day = ticker_data[ticker].iloc[curr_i]
+            if (pd.isna(day.get('ma5')) or pd.isna(day.get('ma60'))
+                    or pd.isna(day.get('adx')) or pd.isna(day.get('atr'))):
+                continue
+            if day['atr'] <= 0:
+                continue
+            aligned = day['ma5'] > day['ma20'] > day['ma60']
+            trending = day['adx'] >= params.adx_threshold
+            liquid = day.get('avg_trading_value_20', 0) >= params.min_trading_value
+            if not (aligned and trending and liquid):
+                continue
+            prev = ticker_data[ticker].iloc[curr_i - 1]
+            if pd.isna(prev.get('highest_n')):
+                continue
+            breakout = day['close'] > prev['highest_n']
+            vol_confirm = day['volume'] > day['avg_volume_20'] * params.volume_multiplier
+            if breakout and vol_confirm:
+                cands.append({
+                    'ticker': ticker,
+                    'score': float(day['adx']),
+                    'close': float(day['close']),
+                    'atr': float(day['atr']),
+                })
+        cands.sort(key=lambda x: x['score'], reverse=True)
+        candidates_by_date[date_str] = cands
+
+    return {
+        'breadth': breadth_by_date,
+        'candidates': candidates_by_date,
+        'universe_at': universe_by_date,
+        'universe_refresh_count': refresh_count,
+    }
+
+
 def run_portfolio_backtest(
     initial_capital: float = 5_000_000,
     max_positions: int = 4,
@@ -209,6 +310,7 @@ def run_portfolio_backtest(
     cost: CostModel = None,
     min_position_amount: float = 300_000,
     preloaded_data: dict = None,
+    precomputed: dict = None,
 ) -> PortfolioResult:
     """포트폴리오 레벨 백테스트 실행.
 
@@ -242,13 +344,19 @@ def run_portfolio_backtest(
     gate_closed_days = 0
     universe_size_sum = 0
 
+    if precomputed is not None:
+        universe_refresh_count = precomputed.get('universe_refresh_count', 1)
+
     for day_idx, date_str in enumerate(trading_dates):
         ts = pd.Timestamp(date_str)
-        if day_idx - last_universe_refresh >= UNIVERSE_REFRESH_DAYS:
-            with get_connection() as conn:
-                universe = build_universe(date_str, conn)
-            last_universe_refresh = day_idx
-            universe_refresh_count += 1
+        if precomputed is not None:
+            universe = precomputed['universe_at'].get(date_str, universe)
+        else:
+            if day_idx - last_universe_refresh >= UNIVERSE_REFRESH_DAYS:
+                with get_connection() as conn:
+                    universe = build_universe(date_str, conn)
+                last_universe_refresh = day_idx
+                universe_refresh_count += 1
 
         universe_size_sum += len(universe)
 
@@ -353,21 +461,24 @@ def run_portfolio_backtest(
             positions.remove(pos)
 
         # ── 시장 국면 breadth 계산 (MA200 위 비율) ──
-        above = 0
-        total_b = 0
-        for tk in universe:
-            idx_map_b = ticker_date_idx.get(tk, {})
-            bi = idx_map_b.get(ts)
-            if bi is None or bi < 199:
-                continue
-            br_row = ticker_data[tk].iloc[bi]
-            ma200_v = br_row.get('ma200')
-            if pd.isna(ma200_v):
-                continue
-            total_b += 1
-            if br_row['close'] > ma200_v:
-                above += 1
-        breadth = above / total_b if total_b > 0 else 0.5
+        if precomputed is not None:
+            breadth = precomputed['breadth'].get(date_str, 0.5)
+        else:
+            above = 0
+            total_b = 0
+            for tk in universe:
+                idx_map_b = ticker_date_idx.get(tk, {})
+                bi = idx_map_b.get(ts)
+                if bi is None or bi < 199:
+                    continue
+                br_row = ticker_data[tk].iloc[bi]
+                ma200_v = br_row.get('ma200')
+                if pd.isna(ma200_v):
+                    continue
+                total_b += 1
+                if br_row['close'] > ma200_v:
+                    above += 1
+            breadth = above / total_b if total_b > 0 else 0.5
         gate_open = breadth >= BREADTH_GATE_THRESHOLD
         if gate_open:
             gate_open_days += 1
@@ -379,43 +490,47 @@ def run_portfolio_backtest(
 
         if open_slots > 0:
             held_set = {p.ticker for p in positions}
-            candidates = []
 
-            for ticker in universe:
-                if ticker in held_set:
-                    continue
-                day, curr_i = get_day_row(ticker)
-                if day is None or curr_i is None or curr_i == 0:
-                    continue
+            if precomputed is not None:
+                candidates = [c for c in precomputed['candidates'].get(date_str, [])
+                              if c['ticker'] not in held_set]
+            else:
+                candidates = []
+                for ticker in universe:
+                    if ticker in held_set:
+                        continue
+                    day, curr_i = get_day_row(ticker)
+                    if day is None or curr_i is None or curr_i == 0:
+                        continue
 
-                if pd.isna(day.get('ma5')) or pd.isna(day.get('ma60')) or pd.isna(day.get('adx')) or pd.isna(day.get('atr')):
-                    continue
-                if day['atr'] <= 0:
-                    continue
+                    if pd.isna(day.get('ma5')) or pd.isna(day.get('ma60')) or pd.isna(day.get('adx')) or pd.isna(day.get('atr')):
+                        continue
+                    if day['atr'] <= 0:
+                        continue
 
-                aligned = day['ma5'] > day['ma20'] > day['ma60']
-                trending = day['adx'] >= params.adx_threshold
-                liquid = day.get('avg_trading_value_20', 0) >= params.min_trading_value
+                    aligned = day['ma5'] > day['ma20'] > day['ma60']
+                    trending = day['adx'] >= params.adx_threshold
+                    liquid = day.get('avg_trading_value_20', 0) >= params.min_trading_value
 
-                if not (aligned and trending and liquid):
-                    continue
+                    if not (aligned and trending and liquid):
+                        continue
 
-                prev = ticker_data[ticker].iloc[curr_i - 1]
-                if pd.isna(prev.get('highest_n')):
-                    continue
+                    prev = ticker_data[ticker].iloc[curr_i - 1]
+                    if pd.isna(prev.get('highest_n')):
+                        continue
 
-                breakout = day['close'] > prev['highest_n']
-                vol_confirm = day['volume'] > day['avg_volume_20'] * params.volume_multiplier
+                    breakout = day['close'] > prev['highest_n']
+                    vol_confirm = day['volume'] > day['avg_volume_20'] * params.volume_multiplier
 
-                if breakout and vol_confirm:
-                    candidates.append({
-                        'ticker': ticker,
-                        'score': day['adx'],
-                        'close': day['close'],
-                        'atr': day['atr'],
-                    })
+                    if breakout and vol_confirm:
+                        candidates.append({
+                            'ticker': ticker,
+                            'score': day['adx'],
+                            'close': day['close'],
+                            'atr': day['atr'],
+                        })
 
-            candidates.sort(key=lambda x: x['score'], reverse=True)
+                candidates.sort(key=lambda x: x['score'], reverse=True)
 
             for cand in candidates[:open_slots]:
                 next_day_idx = day_idx + 1
