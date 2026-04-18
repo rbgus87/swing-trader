@@ -78,6 +78,36 @@ UNIVERSE_REFRESH_DAYS = 60
 BREADTH_GATE_THRESHOLD = 0.4             # Universe 중 >MA200 비율 40% 이상 시 진입 허용
 
 
+@dataclass
+class RiskParams:
+    """Phase 4-1b 포지션 사이징 기반 리스크 파라미터.
+
+    진입 차단이 아닌 베팅 크기 축소로 DD를 완화한다.
+    DD 레벨별 3단계 alloc: normal 25% / caution 15% / crisis 10%.
+    """
+    # 드로다운 기반 포지션 사이징
+    dd_normal_threshold: float = -0.15    # DD ≤ -15%: caution 진입
+    dd_caution_threshold: float = -0.25   # DD ≤ -25%: crisis 진입
+    dd_recovery_threshold: float = -0.10  # DD > -10%: normal 복귀 (caution에서만)
+    alloc_normal: float = 0.25
+    alloc_caution: float = 0.15
+    alloc_crisis: float = 0.10
+    # 재진입 쿨다운 (STOP_LOSS 후 동일 종목)
+    ticker_sl_cooldown: int = 5
+    # 일일 손실 한도 (전일 equity 대비 당일 실현손익)
+    daily_loss_limit: float = -0.03
+
+    # ATR 역비례 사이징 (종목 특성 기반, DD 기반 사이징과 배타적)
+    atr_sizing_risk_pct: float = 0.02    # 계좌 2% risk
+    atr_sizing_max_pct: float = 0.30     # 한 종목 최대 30%
+
+    # 개별 규칙 on/off (실험용)
+    enable_sizing: bool = True           # DD 기반 3단계 사이징
+    enable_atr_sizing: bool = False      # ATR 역비례 사이징 (enable_sizing과 배타)
+    enable_daily_loss: bool = True
+    enable_ticker_cooldown: bool = True
+
+
 def build_universe(date_str: str, conn) -> set:
     """특정 일자 기준 Universe Pool 구성."""
     cursor = conn.execute("""
@@ -286,12 +316,152 @@ def precompute_daily_signals(
             breakout = day['close'] > prev['highest_n']
             vol_confirm = day['volume'] > day['avg_volume_20'] * params.volume_multiplier
             if breakout and vol_confirm:
+                rsi_v = day.get('rsi14')
+                rsi_v = float(rsi_v) if (rsi_v is not None and pd.notna(rsi_v)) else 50.0
+                atr_ratio = float(day['atr'] / day['close']) if day['close'] > 0 else 0.0
                 cands.append({
                     'ticker': ticker,
                     'score': float(day['adx']),
                     'close': float(day['close']),
                     'atr': float(day['atr']),
+                    'rsi14': rsi_v,
+                    'atr_ratio': atr_ratio,
                 })
+        cands.sort(key=lambda x: x['score'], reverse=True)
+        candidates_by_date[date_str] = cands
+
+    return {
+        'breadth': breadth_by_date,
+        'candidates': candidates_by_date,
+        'universe_at': universe_by_date,
+        'universe_refresh_count': refresh_count,
+    }
+
+
+def precompute_pullback_signals(
+    trading_dates: list,
+    ticker_data: dict,
+    ticker_date_idx: dict,
+    initial_universe: set,
+    params: StrategyParams = None,
+    momentum_period: int = 20,
+    momentum_top_n: int = 50,
+    atr_ratio_min: float = 0.025,
+    atr_ratio_max: float = 0.08,
+    rsi_min: float = 40.0,
+    rsi_max: float = 55.0,
+    bearish_lookback: int = 3,
+    bearish_count_min: int = 2,
+) -> dict:
+    """레퍼런스 눌림목 전략 진입 후보 사전 계산.
+
+    필터: MA20>MA60, ADX≥20, 거래대금 50억+, ATR/close 2.5~8%,
+          20일 수익률 상위 momentum_top_n.
+    진입: close<MA5, RSI rsi_min~rsi_max, 직전 bearish_lookback일 중
+          bearish_count_min 이상 음봉, 당일 양봉 + 거래량 > 전일.
+    """
+    if params is None:
+        params = StrategyParams()
+
+    breadth_by_date = {}
+    candidates_by_date = {}
+    universe_by_date = {}
+
+    universe = set(initial_universe)
+    last_refresh = 0
+    refresh_count = 1
+
+    for day_idx, date_str in enumerate(trading_dates):
+        ts = pd.Timestamp(date_str)
+        if day_idx - last_refresh >= UNIVERSE_REFRESH_DAYS:
+            with get_connection() as conn:
+                universe = build_universe(date_str, conn)
+            last_refresh = day_idx
+            refresh_count += 1
+
+        universe_by_date[date_str] = set(universe)
+
+        # breadth (공용)
+        above = 0
+        total_b = 0
+        for tk in universe:
+            idx_map_b = ticker_date_idx.get(tk, {})
+            bi = idx_map_b.get(ts)
+            if bi is None or bi < 199:
+                continue
+            br_row = ticker_data[tk].iloc[bi]
+            ma200_v = br_row.get('ma200')
+            if pd.isna(ma200_v):
+                continue
+            total_b += 1
+            if br_row['close'] > ma200_v:
+                above += 1
+        breadth_by_date[date_str] = above / total_b if total_b > 0 else 0.5
+
+        # 1차 필터 + 20일 모멘텀 랭킹
+        scored = []
+        for ticker in universe:
+            idx_map = ticker_date_idx.get(ticker)
+            if not idx_map:
+                continue
+            curr_i = idx_map.get(ts)
+            if curr_i is None or curr_i < momentum_period:
+                continue
+            day = ticker_data[ticker].iloc[curr_i]
+            if (pd.isna(day.get('ma5')) or pd.isna(day.get('ma20'))
+                    or pd.isna(day.get('ma60')) or pd.isna(day.get('adx'))
+                    or pd.isna(day.get('atr')) or pd.isna(day.get('rsi14'))):
+                continue
+            if day['atr'] <= 0 or day['close'] <= 0:
+                continue
+            if not (day['ma20'] > day['ma60']):
+                continue
+            if day['adx'] < params.adx_threshold:
+                continue
+            if day.get('avg_trading_value_20', 0) < params.min_trading_value:
+                continue
+            atr_ratio = day['atr'] / day['close']
+            if atr_ratio < atr_ratio_min or atr_ratio > atr_ratio_max:
+                continue
+            prev_n = ticker_data[ticker].iloc[curr_i - momentum_period]['close']
+            if prev_n <= 0:
+                continue
+            mom = (day['close'] / prev_n) - 1
+            scored.append((mom, ticker, day, curr_i, atr_ratio))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_pool = scored[:momentum_top_n]
+
+        # 진입 조건 (눌림 + 반등)
+        cands = []
+        for mom, ticker, day, curr_i, atr_ratio in top_pool:
+            if not (day['close'] < day['ma5']):
+                continue
+            if not (rsi_min <= day['rsi14'] <= rsi_max):
+                continue
+            if curr_i < bearish_lookback:
+                continue
+            bearish_n = 0
+            for k in range(1, bearish_lookback + 1):
+                prev = ticker_data[ticker].iloc[curr_i - k]
+                if prev['close'] < prev['open']:
+                    bearish_n += 1
+            if bearish_n < bearish_count_min:
+                continue
+            if day['close'] <= day['open']:
+                continue
+            prev = ticker_data[ticker].iloc[curr_i - 1]
+            if day['volume'] <= prev['volume']:
+                continue
+
+            cands.append({
+                'ticker': ticker,
+                'score': float(mom),
+                'close': float(day['close']),
+                'atr': float(day['atr']),
+                'rsi14': float(day['rsi14']),
+                'atr_ratio': float(atr_ratio),
+            })
         cands.sort(key=lambda x: x['score'], reverse=True)
         candidates_by_date[date_str] = cands
 
@@ -311,10 +481,12 @@ def run_portfolio_backtest(
     min_position_amount: float = 300_000,
     preloaded_data: dict = None,
     precomputed: dict = None,
+    risk: "RiskParams | None" = None,
 ) -> PortfolioResult:
     """포트폴리오 레벨 백테스트 실행.
 
     preloaded_data: load_backtest_data()의 반환값. 제공 시 데이터 로딩 스킵.
+    risk: RiskParams 객체. None이면 리스크 규칙 미적용 (v2 baseline).
     """
     if params is None:
         params = StrategyParams()
@@ -347,6 +519,19 @@ def run_portfolio_backtest(
     if precomputed is not None:
         universe_refresh_count = precomputed.get('universe_refresh_count', 1)
 
+    # ── 리스크 상태 (포지션 사이징 방식) ──
+    peak_equity = initial_capital
+    prev_eod_equity = initial_capital
+    dd_state = 'normal'             # 'normal' | 'caution' | 'crisis'
+    ticker_cooldown = {}            # {ticker: cooldown_end_day_idx}
+
+    # ── 리스크 발동 통계 ──
+    dd_normal_days = 0
+    dd_caution_days = 0
+    dd_crisis_days = 0
+    daily_loss_trigger_count = 0
+    ticker_cooldown_block_count = 0
+
     for day_idx, date_str in enumerate(trading_dates):
         ts = pd.Timestamp(date_str)
         if precomputed is not None:
@@ -359,6 +544,9 @@ def run_portfolio_backtest(
                 universe_refresh_count += 1
 
         universe_size_sum += len(universe)
+
+        # 당일 실현 PnL (일일 손실 한도용)
+        today_realized_pnl = 0.0
 
         # 현재 일자의 보유 포지션 및 후보군 가격 lookup
         def get_day_row(ticker):
@@ -417,6 +605,7 @@ def run_portfolio_backtest(
                     cash += partial_shares * pos.tp1_price
                     pos.shares -= partial_shares
                     pos.tp1_triggered = True
+                    today_realized_pnl += pnl_amount
                 continue
 
             # 3. 트레일링
@@ -457,7 +646,12 @@ def run_portfolio_backtest(
                     is_partial=pos.tp1_triggered,
                 ))
                 cash += pos.shares * exit_price
+                today_realized_pnl += pnl_amount
                 closed_positions.append(pos)
+
+                # 재진입 쿨다운
+                if risk is not None and risk.enable_ticker_cooldown and exit_reason == 'STOP_LOSS':
+                    ticker_cooldown[pos.ticker] = day_idx + risk.ticker_sl_cooldown
 
         for pos in closed_positions:
             positions.remove(pos)
@@ -487,8 +681,17 @@ def run_portfolio_backtest(
         else:
             gate_closed_days += 1
 
-        # ── 2. 신규 진입 (gate 반영) ──
+        # ── 2. 신규 진입 (gate + 일일한도 반영) ──
+        block_entry_by_risk = False
+        if risk is not None and risk.enable_daily_loss and prev_eod_equity > 0:
+            daily_loss_pct = today_realized_pnl / prev_eod_equity
+            if daily_loss_pct <= risk.daily_loss_limit:
+                block_entry_by_risk = True
+                daily_loss_trigger_count += 1
+
         open_slots = max_positions - len(positions) if gate_open else 0
+        if block_entry_by_risk:
+            open_slots = 0
 
         if open_slots > 0:
             held_set = {p.ticker for p in positions}
@@ -534,7 +737,16 @@ def run_portfolio_backtest(
 
                 candidates.sort(key=lambda x: x['score'], reverse=True)
 
-            for cand in candidates[:open_slots]:
+            filtered_cands = []
+            for c in candidates:
+                if risk is not None and risk.enable_ticker_cooldown:
+                    cd_end = ticker_cooldown.get(c['ticker'])
+                    if cd_end is not None and day_idx < cd_end:
+                        ticker_cooldown_block_count += 1
+                        continue
+                filtered_cands.append(c)
+
+            for cand in filtered_cands[:open_slots]:
                 next_day_idx = day_idx + 1
                 if next_day_idx >= len(trading_dates):
                     break
@@ -553,16 +765,38 @@ def run_portfolio_backtest(
                 if current_open_slots <= 0:
                     break
 
-                max_alloc_pct = 1.0 / max_positions
-                alloc = min(cash * max_alloc_pct, cash)
-                if alloc < min_position_amount:
-                    continue
+                if risk is not None and risk.enable_atr_sizing:
+                    # ATR 역비례 사이징 — 주당 손실 × 주수 = 계좌 리스크 일정
+                    risk_amount = initial_capital * risk.atr_sizing_risk_pct
+                    dollar_risk = cand['atr'] * params.stop_loss_atr
+                    if dollar_risk <= 0:
+                        continue
+                    target_shares = int(risk_amount / dollar_risk)
+                    max_shares_by_cap = int(cash * risk.atr_sizing_max_pct / entry_price)
+                    shares = min(target_shares, max_shares_by_cap)
+                    if shares <= 0:
+                        continue
+                    actual_cost = shares * entry_price
+                    if actual_cost < min_position_amount or actual_cost > cash:
+                        continue
+                else:
+                    if risk is not None and risk.enable_sizing:
+                        if dd_state == 'crisis':
+                            max_alloc_pct = risk.alloc_crisis
+                        elif dd_state == 'caution':
+                            max_alloc_pct = risk.alloc_caution
+                        else:
+                            max_alloc_pct = risk.alloc_normal
+                    else:
+                        max_alloc_pct = 1.0 / max_positions
+                    alloc = min(cash * max_alloc_pct, cash)
+                    if alloc < min_position_amount:
+                        continue
+                    shares = int(alloc / entry_price)
+                    if shares <= 0:
+                        continue
+                    actual_cost = shares * entry_price
 
-                shares = int(alloc / entry_price)
-                if shares <= 0:
-                    continue
-
-                actual_cost = shares * entry_price
                 cash -= actual_cost
 
                 positions.append(Position(
@@ -589,6 +823,34 @@ def run_portfolio_backtest(
                 portfolio_value += pos.shares * pos.entry_price
 
         equity_curve.append((date_str, portfolio_value))
+
+        # ── 드로다운 상태 전이 (EOD) ──
+        if risk is not None and risk.enable_sizing:
+            peak_equity = max(peak_equity, portfolio_value)
+            drawdown = (portfolio_value - peak_equity) / peak_equity if peak_equity > 0 else 0.0
+
+            if dd_state == 'normal':
+                if drawdown <= risk.dd_caution_threshold:
+                    dd_state = 'crisis'
+                elif drawdown <= risk.dd_normal_threshold:
+                    dd_state = 'caution'
+            elif dd_state == 'caution':
+                if drawdown <= risk.dd_caution_threshold:
+                    dd_state = 'crisis'
+                elif drawdown > risk.dd_recovery_threshold:
+                    dd_state = 'normal'
+            elif dd_state == 'crisis':
+                if drawdown > risk.dd_caution_threshold:
+                    dd_state = 'caution'
+
+            if dd_state == 'normal':
+                dd_normal_days += 1
+            elif dd_state == 'caution':
+                dd_caution_days += 1
+            else:
+                dd_crisis_days += 1
+
+        prev_eod_equity = portfolio_value
 
         max_concurrent = max(max_concurrent, len(positions))
         concurrent_sum += len(positions)
@@ -640,6 +902,12 @@ def run_portfolio_backtest(
     result.gate_closed_days = gate_closed_days
     n_days = len(trading_dates) if trading_dates else 1
     result.avg_universe_size = universe_size_sum / n_days
+    # 리스크 발동 통계 (포지션 사이징 방식)
+    result.dd_normal_days = dd_normal_days
+    result.dd_caution_days = dd_caution_days
+    result.dd_crisis_days = dd_crisis_days
+    result.daily_loss_trigger_count = daily_loss_trigger_count
+    result.ticker_cooldown_block_count = ticker_cooldown_block_count
     return result
 
 

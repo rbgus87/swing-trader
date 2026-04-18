@@ -64,6 +64,15 @@ def calculate_indicators(df: pd.DataFrame, params: StrategyParams) -> pd.DataFra
     df['trading_value'] = df['close'] * df['volume']
     df['avg_trading_value_20'] = df['trading_value'].rolling(params.ma_mid).mean()
 
+    # RSI(14) — Wilder's smoothing
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    rs = avg_gain / (avg_loss + 1e-10)
+    df['rsi14'] = 100 - (100 / (1 + rs))
+
     return df
 
 
