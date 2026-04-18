@@ -71,7 +71,7 @@ class EngineWorker(QThread):
 
     async def _run_engine(self):
         """엔진 시작 및 폴링 루프."""
-        from src.engine import TradingEngine
+        from src.engine_legacy import TradingEngine
 
         self._engine = TradingEngine(mode=self._mode)
 
