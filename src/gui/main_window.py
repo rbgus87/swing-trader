@@ -726,6 +726,21 @@ class MainWindow(QMainWindow):
             f"color: {pnl_color}; font-size: 11px; padding: 1px 0;"
         )
 
+        # breadth / gate 반영
+        breadth = status.get("breadth", 0.0) or 0.0
+        gate_open = bool(status.get("gate_open", False))
+        if gate_open:
+            text = f"🟢 OPEN (breadth {breadth:.0%})"
+            color = "#a6e3a1"
+        else:
+            text = f"🔴 CLOSED (breadth {breadth:.0%})"
+            color = "#f38ba8"
+        self._lbl_regime.setText(f"시장: {text}")
+        self._lbl_regime.setStyleSheet(
+            f"color: {color}; font-size: 11px; "
+            f"font-weight: bold; padding: 2px 0;"
+        )
+
     def _on_live_positions(self, positions: list):
         # engine_legacy Position → dashboard 포맷
         pos_dicts = []

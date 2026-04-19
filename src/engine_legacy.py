@@ -263,12 +263,15 @@ class TradingEngine:
         self._scheduler.start()
 
         # watchlist → 후보 등록 (polling 시작 전에 준비)
-        watchlist = config.get("watchlist", [])
-        if watchlist:
-            self._candidates = list(watchlist)
-            logger.info(f"watchlist {len(watchlist)}종목 → 전체 후보 등록")
-        else:
-            logger.info("watchlist 미설정 — 스크리닝 기반 모드")
+        # v2.3: 고정 watchlist 경로 폐기 → 스크리닝으로 Universe 동적 선정
+        self._candidates = []
+        logger.info("v2.3 모드 — 장전 스크리닝으로 후보 동적 선정")
+
+        # 엔진 기동 즉시 v2.3 스크리닝 1회 실행 (스케줄 시각(08:30) 대기 없이 바로 후보 확보)
+        try:
+            await self._pre_market_screening()
+        except Exception as e:
+            logger.warning(f"기동 시 v2.3 스크리닝 실패 (cron에서 재시도됨): {e}")
 
         # 장 시간대이면 즉시 REST polling 시작 (프로그램이 장중에 시작된 경우)
         from src.utils.market_calendar import is_trading_day, now_kst
