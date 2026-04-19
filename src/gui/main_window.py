@@ -40,6 +40,7 @@ from src.gui.widgets.log_tab import LogTab
 from src.gui.widgets.settings_tab import SettingsTab
 from src.gui.widgets.trade_history_tab import TradeHistoryTab
 from src.gui.workers.engine_worker import EngineWorker, LegacyEngineWorker
+from src.gui.workers.daily_run_worker import DailyRunWorker
 
 
 MAX_POSITIONS = 4
@@ -58,6 +59,7 @@ class MainWindow(QMainWindow):
 
         self._worker: EngineWorker | None = None  # orchestrator (EOD)
         self._live: LegacyEngineWorker | None = None  # 실시간 엔진
+        self._daily: DailyRunWorker | None = None  # 일일 실행 (데이터 갱신+시그널)
 
         self._init_ui()
         self._apply_theme()
@@ -535,11 +537,11 @@ class MainWindow(QMainWindow):
     # ── 일일 실행 ──
 
     def _on_daily_run(self):
-        """orchestrator 1회 실행."""
-        if self._worker and self._worker.isRunning():
+        """일일 실행 — 데이터 갱신(신규상장/일봉/시총/지수) + 시그널 생성."""
+        if self._daily and self._daily.isRunning():
             QMessageBox.information(
                 self, "실행 중",
-                "이미 실행 중입니다. 완료를 기다려 주세요."
+                "일일 실행이 진행 중입니다. 완료를 기다려 주세요."
             )
             return
 
@@ -553,46 +555,40 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.Yes:
                 return
 
-        self._worker = EngineWorker()
-        s = self._worker.signals
-        s.started.connect(self._on_engine_started)
-        s.stopped.connect(self._on_engine_stopped)
-        s.error.connect(self._on_engine_error)
+        self._daily = DailyRunWorker()
+        self._daily.log_signal.connect(self._on_daily_log)
+        self._daily.step_signal.connect(self._on_daily_step)
+        self._daily.finished_signal.connect(self._on_daily_finished)
 
         self.btn_daily_run.setEnabled(False)
-        self.btn_daily_run.setText("실행 중...")
-        self._worker.start()
-
-    def _on_engine_started(self):
-        self._lbl_engine_status.setText("실행 중")
+        self.btn_daily_run.setText("⏳ 실행 중…")
+        self._lbl_engine_status.setText("일일 실행 중")
         self._lbl_engine_status.setStyleSheet(
-            "color: #a6e3a1; font-size: 12px; "
+            "color: #f9e2af; font-size: 12px; "
             "font-weight: bold; padding: 4px 0;"
         )
+        self._daily.start()
 
-        mode = self.combo_mode.currentText()
-        if mode == "live":
-            self.lbl_mode_badge.setText("실거래")
-            self.lbl_mode_badge.setStyleSheet(
-                "color: #f38ba8; font-size: 10px; font-weight: bold; "
-                "padding: 2px 0; letter-spacing: 1px;"
-            )
+    def _on_daily_log(self, message: str, level: str):
+        self._dispatch_log(message, level)
+
+    def _on_daily_step(self, current: int, total: int, label: str):
+        self.btn_daily_run.setText(f"⏳ {label}")
+
+    def _on_daily_finished(self, success: bool, summary: str):
+        if success:
+            self._dispatch_log(f"✅ {summary}", "INFO")
         else:
-            self.lbl_mode_badge.setText("모의투자")
-            self.lbl_mode_badge.setStyleSheet(
-                "color: #a6e3a1; font-size: 10px; font-weight: bold; "
-                "padding: 2px 0; letter-spacing: 1px;"
-            )
+            self._dispatch_log(f"❌ {summary}", "ERROR")
+            QMessageBox.critical(self, "일일 실행 실패", summary)
 
-    def _on_engine_stopped(self):
+        self.btn_daily_run.setEnabled(True)
+        self.btn_daily_run.setText("🔄 일일 실행")
         self._lbl_engine_status.setText("대기 중")
         self._lbl_engine_status.setStyleSheet(
             "color: #6c7086; font-size: 12px; padding: 4px 0;"
         )
-        self.btn_daily_run.setEnabled(True)
-        self.btn_daily_run.setText("🔄 일일 실행")
-        self._worker = None
-        # 실행 완료 직후 DB 즉시 재조회
+        self._daily = None
         self._refresh_from_db()
 
     def _on_engine_error(self, error: str):
@@ -748,7 +744,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if (self._worker and self._worker.isRunning()) or \
-           (self._live and self._live.isRunning()):
+           (self._live and self._live.isRunning()) or \
+           (self._daily and self._daily.isRunning()):
             event.ignore()
             self.hide()
             self._tray.show()
@@ -792,6 +789,14 @@ class MainWindow(QMainWindow):
                 self._live.terminate()
                 self._live.wait(2000)
         self._live = None
+
+        if self._daily and self._daily.isRunning():
+            self._daily.cancel()
+            if not self._daily.wait(5000):
+                logger.warning("DailyRunWorker 5초 내 미종료 — 강제 terminate")
+                self._daily.terminate()
+                self._daily.wait(2000)
+        self._daily = None
 
         self._tray.hide()
         QApplication.quit()
