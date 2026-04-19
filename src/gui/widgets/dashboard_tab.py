@@ -59,8 +59,8 @@ class DashboardTab(QWidget):
         self._stat_eval = self._make_stat_card("💰 총 평가", "0원", _TEXT)
         self._stat_avail = self._make_stat_card("💵 가용자금", "0원", _TEXT)
         self._stat_pos = self._make_stat_card("📊 포지션", f"0/{self._max_positions}", _BLUE)
-        self._stat_cand = self._make_stat_card("🔍 후보", "0종목", _SUBTEXT)
-        self._stat_pnl = self._make_stat_card("📈 일일 손익", "+0.00%", _GREEN)
+        self._stat_cand = self._make_stat_card("📋 신호", "0건", _SUBTEXT)
+        self._stat_pnl = self._make_stat_card("📈 누적 손익", "+0.00%", _GREEN)
         self._stat_mdd = self._make_stat_card("📉 MDD", "0.0%", _SUBTEXT)
 
         for card, _, _ in [
@@ -90,7 +90,8 @@ class DashboardTab(QWidget):
         pos_layout.addLayout(pos_header)
 
         self.positions_table = self._make_table(
-            ["종목코드", "종목명", "전략", "보유일", "수량", "매수가", "현재가", "평가금액", "수익률", "손절가"]
+            ["종목코드", "종목명", "전략", "보유일", "수량", "매수가",
+             "현재가", "평가금액", "수익률", "손절가", "TP1", "트레일"]
         )
         pos_layout.addWidget(self.positions_table)
         splitter.addWidget(pos_widget)
@@ -101,17 +102,19 @@ class DashboardTab(QWidget):
         mid_layout.setContentsMargins(12, 4, 12, 4)
         mid_layout.setSpacing(8)
 
-        # 매수 후보
+        # 당일 신호 (EOD 배치)
         cand_widget = QVBoxLayout()
         cand_widget.setSpacing(4)
         cand_header = QHBoxLayout()
-        cand_header.addWidget(self._section_label("매수 후보"))
+        cand_header.addWidget(self._section_label("당일 신호"))
         cand_header.addStretch()
         self._lbl_cand_count = QLabel("0건")
         self._lbl_cand_count.setStyleSheet(f"color: {_SUBTEXT}; font-size: 11px;")
         cand_header.addWidget(self._lbl_cand_count)
         cand_widget.addLayout(cand_header)
-        self.candidates_table = self._make_table(["종목코드", "종목명", "현재가", "등락률", "점수"])
+        self.candidates_table = self._make_table(
+            ["종목코드", "종목명", "가격", "일자", "사유"]
+        )
         cand_widget.addWidget(self.candidates_table)
         mid_layout.addLayout(cand_widget)
 
@@ -276,7 +279,7 @@ class DashboardTab(QWidget):
 
     def update_status(self, status: dict):
         """요약 통계 업데이트."""
-        capital = status.get("capital", 0)
+        capital = int(status.get("capital", 0) or 0)
         candidates = status.get("candidates", 0)
         self._max_positions = status.get("max_positions", self._max_positions)
 
@@ -284,9 +287,9 @@ class DashboardTab(QWidget):
         _, avail_val, _ = self._stat_avail
         avail_val.setText(f"{capital:,}원")
 
-        # 후보 카드
+        # 신호 카드
         _, cand_val, _ = self._stat_cand
-        cand_val.setText(f"{candidates}종목")
+        cand_val.setText(f"{candidates}건")
 
         # 포지션 카드 (positions_update에서도 갱신)
         # 일일 손익 카드
@@ -340,10 +343,10 @@ class DashboardTab(QWidget):
 
         total_eval = 0
         for row, pos in enumerate(positions):
-            entry_price = pos.get("entry_price", 0)
-            current_price = pos.get("current_price", entry_price)
-            qty = pos.get("quantity", 0)
-            eval_amount = current_price * qty
+            entry_price = float(pos.get("entry_price", 0) or 0)
+            current_price = float(pos.get("current_price", entry_price) or entry_price)
+            qty = int(pos.get("quantity", 0) or 0)
+            eval_amount = int(current_price * qty)
             total_eval += eval_amount
 
             if entry_price > 0:
@@ -356,26 +359,51 @@ class DashboardTab(QWidget):
             strat_display = strategy_kr.get(entry_strat, entry_strat)
 
             hold_days = pos.get("hold_days", 0)
+
+            # TP1 표시 (발동 여부)
+            tp1_price = float(pos.get("tp1_price", 0) or 0)
+            tp1_triggered = bool(pos.get("tp1_triggered", 0))
+            if tp1_price > 0:
+                tp1_display = (
+                    f"✅ {int(tp1_price):,}" if tp1_triggered
+                    else f"{int(tp1_price):,}"
+                )
+            else:
+                tp1_display = "-"
+
+            # 트레일 스탑 계산
+            highest = float(pos.get("highest_since_entry", 0) or 0)
+            atr = float(pos.get("atr_at_entry", 0) or 0)
+            if highest > 0 and atr > 0:
+                trail = int(highest - atr * 4.0)
+                trail_display = f"{trail:,}"
+            else:
+                trail_display = "-"
+
             items = [
                 pos.get("code", ""),
                 pos.get("name", ""),
                 strat_display,
                 f"D+{hold_days}",
                 f"{qty:,}",
-                f"{entry_price:,}",
-                f"{current_price:,}",
+                f"{int(entry_price):,}",
+                f"{int(current_price):,}",
                 f"{eval_amount:,}",
                 f"{pnl_pct:+.2f}%",
-                f"{pos.get('stop_price', 0):,}",
+                f"{int(pos.get('stop_price', 0) or 0):,}",
+                tp1_display,
+                trail_display,
             ]
             for col, text in enumerate(items):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter)
-                if col == 8:  # 수익률 (was 7, now 8)
+                if col == 8:  # 수익률
                     color = _GREEN if pnl_pct >= 0 else _RED
                     item.setForeground(QColor(color))
                 if col == 2 and entry_strat == "TF":
                     item.setForeground(QColor(_GREEN))
+                if col == 10 and tp1_triggered:
+                    item.setForeground(QColor(_PEACH))
                 self.positions_table.setItem(row, col, item)
 
         # 스탯 카드 갱신
@@ -406,17 +434,19 @@ class DashboardTab(QWidget):
         """체결 내역 테이블 업데이트."""
         self.trades_table.setRowCount(len(trades))
         for row, trade in enumerate(trades):
-            time_str = trade.get("executed_at", "")[-8:]
-            pnl = trade.get("pnl", 0)
+            time_str = str(trade.get("executed_at", ""))[-10:]
+            pnl = trade.get("pnl", 0) or 0
             side = trade.get("side", "")
             side_kr = "매수" if side == "buy" else "매도"
-            pnl_str = f"{pnl:+,.0f}" if side == "sell" else ""
+            pnl_str = f"{int(pnl):+,}" if side == "sell" and pnl else ""
 
             reason_raw = trade.get("reason", "")
             reason_kr = self._EXIT_REASON_KR.get(reason_raw, reason_raw)
 
+            price = int(trade.get("price", 0) or 0)
+            qty = int(trade.get("quantity", 0) or 0)
             items = [time_str, trade.get("code", ""), trade.get("name", ""), side_kr,
-                     f"{trade.get('quantity', 0):,}", f"{trade.get('price', 0):,}", pnl_str, reason_kr]
+                     f"{qty:,}", f"{price:,}", pnl_str, reason_kr]
 
             for col, text in enumerate(items):
                 item = QTableWidgetItem(text)
@@ -433,25 +463,26 @@ class DashboardTab(QWidget):
         self._lbl_trade_count.setText(f"{len(trades)}건")
 
     def update_candidates(self, candidates: list):
-        """매수 후보 테이블 업데이트."""
+        """당일 신호 테이블 업데이트."""
         self.candidates_table.setRowCount(len(candidates))
         for row, cand in enumerate(candidates):
-            price = cand.get("price", 0)
-            change_pct = cand.get("change_pct", 0)
-            score = cand.get("score", 0)
+            price = int(cand.get("price", 0) or 0)
+            date = str(cand.get("date", "") or "")[-10:]
+            reason = str(cand.get("reason", "") or "")
 
             items = [
                 cand.get("code", ""),
                 cand.get("name", ""),
                 f"{price:,}" if price else "",
-                f"{change_pct:+.2f}%" if change_pct else "",
-                f"{score:.1f}" if score else "",
+                date,
+                reason,
             ]
             for col, text in enumerate(items):
                 item = QTableWidgetItem(text)
-                item.setTextAlignment(Qt.AlignCenter)
-                if col == 3 and change_pct:  # 등락률 — 한국식: 양수 빨강, 음수 파랑
-                    color = _RED if change_pct > 0 else _BLUE
-                    item.setForeground(QColor(color))
+                if col == 4:
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    item.setForeground(QColor(_SUBTEXT))
+                else:
+                    item.setTextAlignment(Qt.AlignCenter)
                 self.candidates_table.setItem(row, col, item)
         self._lbl_cand_count.setText(f"{len(candidates)}건")

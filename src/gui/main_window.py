@@ -107,8 +107,8 @@ class MainWindow(QMainWindow):
         self.lbl_mode_badge.setObjectName("modeBadge")
         self.lbl_mode_badge.setAlignment(Qt.AlignCenter)
         self.lbl_mode_badge.setStyleSheet(
-            "background-color: #40a02b; color: #fff; border-radius: 4px; "
-            "padding: 4px 0; font-size: 11px; font-weight: bold;"
+            "color: #a6e3a1; font-size: 10px; font-weight: bold; "
+            "padding: 2px 0; letter-spacing: 1px;"
         )
         sidebar_layout.addWidget(self.lbl_mode_badge)
 
@@ -365,7 +365,7 @@ class MainWindow(QMainWindow):
             if entry_date:
                 try:
                     ed = datetime.strptime(str(entry_date), "%Y-%m-%d").date()
-                    hold_days = (today - ed).days
+                    hold_days = max(0, (today - ed).days)
                 except Exception:
                     hold_days = 0
             pos_dicts.append({
@@ -377,6 +377,10 @@ class MainWindow(QMainWindow):
                 "entry_price": p.get('entry_price', 0),
                 "current_price": p.get('current_price', 0),
                 "stop_price": p.get('stop_price', 0),
+                "tp1_price": p.get('tp1_price', 0),
+                "tp1_triggered": p.get('tp1_triggered', 0),
+                "atr_at_entry": p.get('atr_at_entry', 0),
+                "highest_since_entry": p.get('highest_since_entry', 0),
             })
         self.dashboard_tab.update_positions(pos_dicts)
 
@@ -467,16 +471,30 @@ class MainWindow(QMainWindow):
     def _update_status_bar(self, snapshot: dict | None):
         mode = self.combo_mode.currentText().upper()
         strategy = "TF v2.3"
+        next_td = self._next_trading_date()
         if snapshot:
             gate = snapshot.get('gate_status') or 'UNKNOWN'
+            breadth = snapshot.get('breadth') or 0.0
             date = snapshot.get('date', '')
+            gate_icon = "🟢" if gate == 'OPEN' else (
+                "🔴" if gate == 'CLOSED' else "⚪"
+            )
             self._lbl_status_left.setText(
-                f"{mode} | {strategy} | 시장 {gate} | {date}"
+                f"{mode} | {strategy} | {gate_icon} {gate} ({breadth:.0%}) | "
+                f"마지막 실행: {date} | 다음: {next_td}"
             )
         else:
             self._lbl_status_left.setText(
-                f"{mode} | {strategy} | 데이터 없음"
+                f"{mode} | {strategy} | 데이터 없음 | 다음: {next_td}"
             )
+
+    def _next_trading_date(self) -> str:
+        """근사 다음 거래일 (주말 건너뛰기). 공휴일은 반영하지 않음."""
+        from datetime import timedelta
+        d = datetime.now().date() + timedelta(days=1)
+        while d.weekday() >= 5:  # 5=토, 6=일
+            d += timedelta(days=1)
+        return d.strftime("%Y-%m-%d")
 
     # ── 일일 실행 ──
 
@@ -520,14 +538,14 @@ class MainWindow(QMainWindow):
         if mode == "live":
             self.lbl_mode_badge.setText("실거래")
             self.lbl_mode_badge.setStyleSheet(
-                "background-color: #d20f39; color: #fff; border-radius: 4px; "
-                "padding: 4px 0; font-size: 11px; font-weight: bold;"
+                "color: #f38ba8; font-size: 10px; font-weight: bold; "
+                "padding: 2px 0; letter-spacing: 1px;"
             )
         else:
             self.lbl_mode_badge.setText("모의투자")
             self.lbl_mode_badge.setStyleSheet(
-                "background-color: #40a02b; color: #fff; border-radius: 4px; "
-                "padding: 4px 0; font-size: 11px; font-weight: bold;"
+                "color: #a6e3a1; font-size: 10px; font-weight: bold; "
+                "padding: 2px 0; letter-spacing: 1px;"
             )
 
     def _on_engine_stopped(self):
