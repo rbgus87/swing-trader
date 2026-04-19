@@ -1156,12 +1156,25 @@ class TradingEngine:
         return atr
 
     def _get_stock_name(self, code: str) -> str:
-        """종목명 조회 (DataProvider 경유, 캐시)."""
+        """종목명 조회 — swing.db의 stocks 테이블 + 메모리 캐시.
+
+        swing_legacy.db에는 stocks가 없으므로 주 DB(swing.db) 경유.
+        """
+        if code in self._poll_stock_names:
+            name = self._poll_stock_names[code]
+            if name and name != code:
+                return name
         try:
-            from data.provider import get_provider
-            return get_provider().get_stock_name(code)
-        except Exception:
-            return code
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT name FROM stocks WHERE ticker = ?", (code,)
+                ).fetchone()
+            if row and row['name']:
+                self._poll_stock_names[code] = row['name']
+                return row['name']
+        except Exception as e:
+            logger.debug(f"stocks 조회 실패 ({code}): {e}")
+        return code
 
     async def _record_buy(self, tick: Tick, qty: int, strategy_name: str = ""):
         """매수 기록 — v2.3 stop/target 직접 계산."""

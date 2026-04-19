@@ -333,40 +333,56 @@ class MainWindow(QMainWindow):
     # ── DB 조회 ──
 
     def _refresh_from_db(self):
-        """DB에서 최신 데이터를 조회해 UI 업데이트."""
+        """DB에서 최신 데이터를 조회해 UI 업데이트. 테이블 미존재/쿼리 오류는 묵살."""
+        positions: list[dict] = []
+        signals_list: list[dict] = []
+        snapshot: dict | None = None
+
         try:
             with get_connection() as conn:
-                positions_rows = conn.execute(
-                    "SELECT p.*, s.name FROM positions p "
-                    "LEFT JOIN stocks s ON s.ticker = p.ticker "
-                    "WHERE p.status IN ('OPEN', 'PENDING') "
-                    "ORDER BY p.entry_date"
-                ).fetchall()
-                positions = [dict(r) for r in positions_rows]
+                # positions
+                try:
+                    rows = conn.execute(
+                        "SELECT p.*, s.name FROM positions p "
+                        "LEFT JOIN stocks s ON s.ticker = p.ticker "
+                        "WHERE p.status IN ('OPEN', 'PENDING') "
+                        "ORDER BY p.entry_date"
+                    ).fetchall()
+                    positions = [dict(r) for r in rows]
+                    for p in positions:
+                        cur = conn.execute(
+                            "SELECT close FROM daily_candles "
+                            "WHERE ticker = ? ORDER BY date DESC LIMIT 1",
+                            (p['ticker'],),
+                        ).fetchone()
+                        p['current_price'] = (
+                            cur['close'] if cur else p.get('entry_price', 0)
+                        )
+                except Exception as e:
+                    logger.debug(f"positions 조회 스킵: {e}")
 
-                # 현재가: 보유 종목별 최근 종가
-                for p in positions:
+                # signals
+                try:
+                    rows = conn.execute(
+                        "SELECT s.*, st.name FROM signals s "
+                        "LEFT JOIN stocks st ON st.ticker = s.ticker "
+                        "ORDER BY s.id DESC LIMIT 50"
+                    ).fetchall()
+                    signals_list = [dict(r) for r in rows]
+                except Exception as e:
+                    logger.debug(f"signals 조회 스킵: {e}")
+
+                # snapshot
+                try:
                     row = conn.execute(
-                        "SELECT close FROM daily_candles "
-                        "WHERE ticker = ? ORDER BY date DESC LIMIT 1",
-                        (p['ticker'],),
+                        "SELECT * FROM daily_portfolio_snapshot "
+                        "ORDER BY date DESC LIMIT 1"
                     ).fetchone()
-                    p['current_price'] = row['close'] if row else p.get('entry_price', 0)
-
-                signals_rows = conn.execute(
-                    "SELECT s.*, st.name FROM signals s "
-                    "LEFT JOIN stocks st ON st.ticker = s.ticker "
-                    "ORDER BY s.id DESC LIMIT 50"
-                ).fetchall()
-                signals_list = [dict(r) for r in signals_rows]
-
-                snapshot_row = conn.execute(
-                    "SELECT * FROM daily_portfolio_snapshot "
-                    "ORDER BY date DESC LIMIT 1"
-                ).fetchone()
-                snapshot = dict(snapshot_row) if snapshot_row else None
+                    snapshot = dict(row) if row else None
+                except Exception as e:
+                    logger.debug(f"snapshot 조회 스킵: {e}")
         except Exception as e:
-            logger.warning(f"DB 조회 실패: {e}")
+            logger.warning(f"DB 연결 실패: {e}")
             return
 
         self._update_dashboard(positions, signals_list, snapshot)
