@@ -688,6 +688,10 @@ class MainWindow(QMainWindow):
             self.btn_stop.setText("중지 중...")
 
     def _on_live_started(self):
+        # 엔진 ON: signal emit(swing_legacy.db)만 사용 → DB 타이머(swing.db) 중지
+        if hasattr(self, "_db_timer") and self._db_timer.isActive():
+            self._db_timer.stop()
+
         self._lbl_engine_status.setText("실시간 실행 중")
         self._lbl_engine_status.setStyleSheet(
             "color: #a6e3a1; font-size: 12px; "
@@ -697,6 +701,11 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(True)
 
     def _on_live_stopped(self):
+        # 엔진 OFF: swing.db 스냅샷 표시로 복귀
+        if hasattr(self, "_db_timer") and not self._db_timer.isActive():
+            self._db_timer.start(10_000)
+        self._refresh_from_db()
+
         self._lbl_engine_status.setText("대기 중")
         self._lbl_engine_status.setStyleSheet(
             "color: #6c7086; font-size: 12px; padding: 4px 0;"
