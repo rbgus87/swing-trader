@@ -1,63 +1,59 @@
-"""일일 실행 Worker — scripts/daily_run.sh의 Python 단계를 순차 실행.
+"""일일 실행 Worker — 수집 스크립트를 직접 import + 함수 호출.
+
+subprocess 방식은 Windows에서 별도 콘솔 창, ACCESS_VIOLATION, 한글 깨짐 이슈가 있어
+같은 프로세스 내 QThread에서 함수 호출로 대체한다.
 
 단계:
-  1. 신규 상장 감지
-  2. 일봉 증분 수집 (--incremental)
-  3. 시총 증분 수집
-  4. 지수 일봉 갱신 (--update-only)
-  5. Orchestrator 시그널 생성
+  1/5 신규 상장 감지       detect_new_listings.main()
+  2/5 일봉 증분           collect_daily_candles.main(incremental=True)
+  3/5 시총 증분           collect_market_cap.main()
+  4/5 지수 갱신           collect_index_daily.main() (sys.argv 임시 치환)
+  5/5 시그널 생성         Orchestrator().run()
+
+로그: 각 단계는 loguru로 로그 → main_window의 GUI sink가 미니 로그/로그탭에 표시.
+Worker는 단계 시작·완료·실패만 신호로 emit.
 """
 
-import subprocess
 import sys
-from pathlib import Path
+from typing import Callable
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from loguru import logger
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
-
 class DailyRunWorker(QThread):
-    """daily_run.sh 상당 작업을 별도 스레드에서 순차 실행."""
+    """수집 스크립트를 직접 호출하는 순차 실행 QThread."""
 
     log_signal = pyqtSignal(str, str)          # (message, level)
     step_signal = pyqtSignal(int, int, str)    # (current, total, label)
     finished_signal = pyqtSignal(bool, str)    # (success, summary)
 
-    STEPS: list[tuple[str, list[str], int]] = [
-        ("1/5 신규 상장 감지",
-         [sys.executable, "src/data_pipeline/detect_new_listings.py"], 120),
-        ("2/5 일봉 증분",
-         [sys.executable, "src/data_pipeline/collect_daily_candles.py",
-          "--incremental"], 900),
-        ("3/5 시총 증분",
-         [sys.executable, "src/data_pipeline/collect_market_cap.py"], 600),
-        ("4/5 지수 갱신",
-         [sys.executable, "-m", "src.data_pipeline.collect_index_daily",
-          "--update-only"], 120),
-        ("5/5 시그널 생성",
-         [sys.executable, "-m", "src.engine.orchestrator"], 300),
-    ]
-
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._proc: subprocess.Popen | None = None
         self._cancelled = False
         self.setTerminationEnabled(True)
 
     def cancel(self):
         self._cancelled = True
-        if self._proc and self._proc.poll() is None:
-            try:
-                self._proc.terminate()
-            except Exception:
-                pass
+
+    @property
+    def _steps(self) -> list[tuple[str, Callable[[], None], bool]]:
+        """(label, run_fn, warn_only) 튜플 목록.
+
+        warn_only=True: 예외 발생 시 WARNING만 남기고 다음 단계 진행.
+        """
+        return [
+            ("1/5 신규 상장 감지", self._step_detect_new_listings, False),
+            ("2/5 일봉 증분",     self._step_daily_candles,        True),
+            ("3/5 시총 증분",     self._step_market_cap,           True),
+            ("4/5 지수 갱신",     self._step_index_daily,          False),
+            ("5/5 시그널 생성",   self._step_orchestrator,         False),
+        ]
 
     def run(self):
-        total = len(self.STEPS)
-        for i, (label, cmd, timeout) in enumerate(self.STEPS, start=1):
+        steps = self._steps
+        total = len(steps)
+        for i, (label, fn, warn_only) in enumerate(steps, start=1):
             if self._cancelled:
                 self.finished_signal.emit(False, "사용자 취소")
                 return
@@ -66,85 +62,57 @@ class DailyRunWorker(QThread):
             self.log_signal.emit(f"📦 {label} 시작", "INFO")
 
             try:
-                rc = self._stream_process(cmd, timeout)
-            except subprocess.TimeoutExpired:
-                self.log_signal.emit(f"⏱ {label} 타임아웃({timeout}s)", "ERROR")
-                self.finished_signal.emit(False, f"{label} 타임아웃")
-                return
+                fn()
+            except SystemExit as e:
+                code = int(getattr(e, "code", 0) or 0)
+                if code != 0:
+                    msg = f"{label} SystemExit rc={code}"
+                    if warn_only:
+                        self.log_signal.emit(f"⚠ {msg}", "WARNING")
+                    else:
+                        self.log_signal.emit(f"❌ {msg}", "ERROR")
+                        self.finished_signal.emit(False, msg)
+                        return
             except Exception as e:
-                self.log_signal.emit(f"❌ {label} 오류: {e}", "ERROR")
-                self.finished_signal.emit(False, f"{label} 실패: {e}")
-                return
-
-            if rc != 0:
-                # 일봉 증분은 일부 종목 FAILED여도 전체 파이프라인은 성공으로 취급
-                level = "WARNING" if i == 2 else "ERROR"
-                self.log_signal.emit(
-                    f"{'⚠' if level=='WARNING' else '❌'} {label} rc={rc}",
-                    level,
-                )
-                if level == "ERROR":
-                    self.finished_signal.emit(False, f"{label} exit code {rc}")
+                msg = f"{label} 실패: {type(e).__name__}: {e}"
+                if warn_only:
+                    self.log_signal.emit(f"⚠ {msg}", "WARNING")
+                    logger.opt(exception=True).warning(msg)
+                else:
+                    self.log_signal.emit(f"❌ {msg}", "ERROR")
+                    logger.opt(exception=True).error(msg)
+                    self.finished_signal.emit(False, msg)
                     return
             else:
                 self.log_signal.emit(f"✅ {label} 완료", "INFO")
 
         self.finished_signal.emit(True, "일일 실행 완료")
 
-    def _stream_process(self, cmd: list[str], timeout: int) -> int:
-        """subprocess.Popen으로 실행하고 stdout을 라인 단위로 log_signal emit."""
-        env_py = dict(**__import__("os").environ)
-        env_py.setdefault("PYTHONIOENCODING", "utf-8")
-        env_py.setdefault("PYTHONUTF8", "1")
+    # ── 단계별 실행 ──
 
-        self._proc = subprocess.Popen(
-            cmd,
-            cwd=str(PROJECT_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env_py,
-            bufsize=1,
-        )
+    def _step_detect_new_listings(self):
+        from src.data_pipeline import detect_new_listings as m
+        m.main()
+
+    def _step_daily_candles(self):
+        from src.data_pipeline import collect_daily_candles as m
+        m.main(force_resume=False, incremental=True)
+
+    def _step_market_cap(self):
+        from src.data_pipeline import collect_market_cap as m
+        m.main()
+
+    def _step_index_daily(self):
+        # argparse 스크립트 — sys.argv 임시 치환
+        from src.data_pipeline import collect_index_daily as m
+        orig_argv = sys.argv
+        sys.argv = [sys.argv[0], "--update-only"]
         try:
-            assert self._proc.stdout is not None
-            for line in self._proc.stdout:
-                if self._cancelled:
-                    self._proc.terminate()
-                    break
-                line = line.rstrip()
-                if not line:
-                    continue
-                # loguru 포맷(예: [32m2026-04-20 ...)에서 색 코드 제거
-                stripped = self._strip_ansi(line)
-                level = self._infer_level(stripped)
-                # 긴 라인은 말미만
-                if len(stripped) > 240:
-                    stripped = stripped[:200] + " … " + stripped[-30:]
-                self.log_signal.emit(stripped, level)
-            self._proc.wait(timeout=timeout)
-            return self._proc.returncode
+            m.main()
         finally:
-            proc = self._proc
-            self._proc = None
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+            sys.argv = orig_argv
 
-    @staticmethod
-    def _strip_ansi(s: str) -> str:
-        import re
-        return re.sub(r"\x1b\[[0-9;]*m", "", s)
-
-    @staticmethod
-    def _infer_level(line: str) -> str:
-        up = line.upper()
-        if "ERROR" in up or "FAILED" in up or "EXCEPTION" in up:
-            return "ERROR"
-        if "WARNING" in up or " WARN " in up:
-            return "WARNING"
-        return "INFO"
+    def _step_orchestrator(self):
+        from src.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.run()
