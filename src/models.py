@@ -92,6 +92,7 @@ class ExitReason(Enum):
     FLOW_EXIT = "flow_exit"
     DISPARITY_EXIT = "disparity_exit"
     MAX_HOLD = "max_hold"
+    TREND_EXIT = "trend_exit"  # v2.3: MA5 < MA20 EOD 전환
 
 
 @dataclass

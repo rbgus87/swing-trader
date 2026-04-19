@@ -37,29 +37,28 @@ class _InterceptHandler(logging.Handler):
 from src.broker.kiwoom_api import KiwoomAPI
 from src.broker.order_manager import OrderManager
 from src.broker.tr_codes import ORDER_BUY, ORDER_SELL, PRICE_LIMIT, PRICE_MARKET
+from src.data_pipeline.db import get_connection
 from src.datastore import DataStore
 from src.models import ExitReason, Position, Signal, Tick, TradeRecord
 from src.notification.telegram_bot import TelegramBot
 from src.risk.position_sizer import PositionSizer
 from src.risk.risk_manager import RiskManager
 from src.risk.stop_manager import StopManager
-# Phase 1: 전략 레이어 무력화 — Phase 3에서 4-레이어 재구축
-# from src.strategy import get_strategy
-# from src.strategy.screener import Screener
-from src.strategy.market_regime import MarketRegime
-
-
-def get_strategy(*args, **kwargs):  # noqa: ARG001
-    raise NotImplementedError("Phase 1: strategy layer disabled")
-
-
-class Screener:  # noqa: D401
-    """Phase 1 stub — 호출 시 NotImplementedError."""
-
-    def __init__(self, *args, **kwargs):  # noqa: ARG002
-        raise NotImplementedError("Phase 1: Screener disabled")
+from src.strategy.trend_following_v2 import (
+    StrategyParams,
+    calculate_indicators as calc_v23_indicators,
+)
 from src.utils.config import config
 from src.utils.market_calendar import is_market_open
+
+
+# v2.3 Universe 파라미터
+V23_MCAP_THRESHOLD = 3_000_000_000_000
+V23_EXCLUDED_TYPES = ('SPAC', 'REIT', 'FOREIGN', 'PREFERRED')
+V23_BREADTH_GATE = 0.40
+V23_MAX_POSITIONS = 4
+V23_MIN_POSITION_AMOUNT = 300_000
+V23_POSITION_RATIO = 0.25
 
 
 class TradingEngine:
@@ -102,40 +101,38 @@ class TradingEngine:
         )
         self._poll_stock_names: dict[str, str] = {}  # 폴링에서 수집한 종목명
 
-        self._screener = Screener(config.data, datastore=self._ds)
+        # v2.3 전략 파라미터 (단일 전략)
+        self._params = StrategyParams()
+
         self._risk_mgr = RiskManager(self._ds, config.data)
         self._sizer = PositionSizer()
+        # StopManager는 v2.3 규칙으로 초기화:
+        #   SL = entry - ATR×2.0, Trail = highest - ATR×4.0
+        #   trailing_activate_pct=0 → 즉시 활성 (후퇴 금지 룰로 초기 SL 유지)
         self._stop_mgr = StopManager(
-            stop_atr_mult=config.get("risk.stop_atr_multiplier", 1.5),
-            max_stop_pct=config.get("risk.max_stop_pct", 0.07),
-            trailing_atr_mult=config.get("risk.trailing_atr_multiplier", 2.0),
-            trailing_activate_pct=config.get("risk.trailing_activate_pct", 0.10),
+            stop_atr_mult=self._params.stop_loss_atr,
+            max_stop_pct=config.get("risk.max_stop_pct", 0.10),
+            trailing_atr_mult=self._params.trailing_atr,
+            trailing_activate_pct=0.0,
         )
         self._telegram = TelegramBot()
 
-        # 전략 인스턴스 (멀티전략 지원)
-        self._strategy_config = config.data.get("strategy", {})
-        self._strategy_type = self._strategy_config.get("type", "adaptive")
-        self._is_adaptive = self._strategy_type == "adaptive"
+        # 단일 전략 모드 (v2.3)
+        self._strategy_type = "TF_v2.3"
+        self._is_adaptive = False
+        self._strategies = []
+        self._strategy = None
+        logger.info("전략 로드: TrendFollowing v2.3")
 
-        if self._is_adaptive:
-            # adaptive 모드: 기본 전략 리스트로 초기화, 장전 스크리닝에서 전환
-            regime_map = self._strategy_config.get("regime_strategy", {})
-            default_names = regime_map.get("sideways", "disparity_reversion")
-            if isinstance(default_names, str):
-                default_names = [default_names]
-            self._strategies = [
-                get_strategy(n, self._strategy_config) for n in default_names
-            ]
-            self._strategy = self._strategies[0]  # 하위 호환
-            names = ", ".join(s.name for s in self._strategies)
-            logger.info(f"전략 로드: adaptive (기본 [{names}])")
-        else:
-            self._strategy = get_strategy(self._strategy_type, self._strategy_config)
-            self._strategies = [self._strategy]
-            logger.info(f"전략 로드: {self._strategy_type}")
+        # breadth 가드레일 캐시 (장전에 갱신)
+        self._breadth_ok: bool = True
+        self._breadth_value: float = 0.0
 
-        # 시장 국면 판단기
+        # v2.3 진입 후보 캐시 (스크리닝에서 사전 계산)
+        self._v23_entry_cache: dict = {}
+
+        # 시장 국면 판단기 (breadth로 대체되지만 레거시 호환 유지)
+        from src.strategy.market_regime import MarketRegime
         self._market_regime = MarketRegime()
 
         # 상태
@@ -309,131 +306,19 @@ class TradingEngine:
     # ── 장전 ──
 
     async def _pre_market_screening(self, _retry: int = 0):
-        """장전 스크리닝 (08:30).
-
-        watchlist 있음: OHLCV 캐시 갱신 + ATR 사전계산 (데이터 프리로드)
-        watchlist 없음: 전체 시장 스캔 → 후보 선정 → WebSocket 구독
-        """
+        """장전 스크리닝 — v2.3 상태 기반 추세추종 후보 생성 (08:30)."""
         max_retries = 3
 
-        # 토큰 갱신 (밤새 만료 방어)
+        # 토큰 갱신
         try:
             await self._ensure_connection()
         except Exception as e:
             logger.warning(f"스크리닝 전 토큰 갱신 실패: {e}")
 
-        # ── watchlist 결정 (DB 로드 vs 고정) ──
-        watchlist_mode = config.get("watchlist_mode", "fixed")
-
-        if watchlist_mode == "condition":
-            # DB에서 오늘 날짜 watchlist 로드 (어제 저녁 저장된 것)
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            saved_stocks = self._ds.load_daily_watchlist(today_str)
-
-            if saved_stocks:
-                logger.info(
-                    f"watchlist 모드: DB 로드 (어제 저녁 저장) — {len(saved_stocks)}종목"
-                )
-                watchlist = [s["code"] for s in saved_stocks]
-                self._candidates = set(watchlist)
-
-                # 종목명 캐시 미리 채움 (polling 시점부터 종목명 사용 가능)
-                for s in saved_stocks:
-                    code = s.get("code", "")
-                    name = s.get("name", "")
-                    if code and name:
-                        self._poll_stock_names[code] = name
-
-                # 텔레그램 알림 (종목명 포함)
-                sample_lines = []
-                for s in saved_stocks[:5]:
-                    name = s.get("name") or "?"
-                    code = s.get("code", "")
-                    sample_lines.append(f"  {name} ({code})")
-                more = f"\n  ... 외 {len(saved_stocks) - 5}종목" if len(saved_stocks) > 5 else ""
-                sample_text = "\n".join(sample_lines)
-
-                try:
-                    self._telegram.send(
-                        f"📋 watchlist 로드 완료\n"
-                        f"소스: 어제 저녁 조건검색\n"
-                        f"종목: {len(watchlist)}개\n\n"
-                        f"{sample_text}{more}"
-                    )
-                except Exception:
-                    pass
-            else:
-                # DB에 없으면 폴백
-                logger.warning(
-                    f"오늘 날짜({today_str}) watchlist가 DB에 없음 "
-                    "(첫 운영일 또는 저녁 스크리닝 실패)"
-                )
-                cs_config = config.get("condition_search", {})
-                if cs_config.get("fallback_to_fixed", True):
-                    watchlist = config.get("watchlist", [])
-                    self._candidates = set(watchlist)
-                    logger.info(f"고정 watchlist 폴백: {len(watchlist)}종목")
-                    try:
-                        self._telegram.send(
-                            f"⚠️ DB watchlist 없음 → 고정 {len(watchlist)}종목 사용"
-                        )
-                    except Exception:
-                        pass
-                else:
-                    logger.error("폴백 비활성 → 스크리닝 중단")
-                    return
-        else:
-            # 기존 동작: 고정 watchlist
-            watchlist = config.get("watchlist", [])
-            self._candidates = set(watchlist)
-            logger.info(f"고정 watchlist: {len(watchlist)}종목")
-
         try:
-            today = datetime.now().strftime("%Y%m%d")
-
-            # 시장 국면 판단 (장전 갱신)
-            is_bullish = self._market_regime.check(today)
-            if not is_bullish:
-                logger.info("시장 방어 모드 — 스크리닝 수행하지만 장중 매수는 차단됨")
-                reason = self._market_regime.block_reason or "조건 미충족"
-                self._telegram.send(f"시장 방어 모드: {reason}")
-
-            # adaptive 모드: 국면별 전략 전환
-            if self._is_adaptive and is_bullish:
-                self._switch_strategy_by_regime()
-
-            if watchlist:
-                # 모드 A: watchlist 전체가 후보, OHLCV 캐시만 갱신
-                await asyncio.to_thread(
-                    self._screener.preload_ohlcv, watchlist, today
-                )
-                self._candidates = list(watchlist)
-                # ATR 캐시 리프레시
-                self._atr_cache.clear()
-                for code in watchlist:
-                    self._get_atr(code)
-                logger.info(
-                    f"장전 데이터 프리로드 완료: {len(watchlist)}종목 OHLCV + ATR 갱신"
-                )
-            else:
-                # 모드 B: pre-screening + screening 2단계 선별
-                regime = self._market_regime.regime_type  # trending/sideways/bearish
-                if regime == "bearish":
-                    regime = None  # bearish면 스크리닝 스킵 가능하지만 방어적으로 진행
-                self._candidates = await asyncio.to_thread(
-                    self._screener.run_daily_screening, today, regime
-                )
-                # polling 루프가 후보+보유 종목 가격을 자동으로 조회함
-                logger.info(
-                    f"스크리닝 완료: {len(self._candidates)}종목 후보 선정"
-                    f" (국면: {self._market_regime.regime_type})"
-                )
-
-            self._telegram.send(
-                f"📊 당일 매수 후보: {len(self._candidates)}종목"
-            )
+            await asyncio.to_thread(self._v23_screen_universe)
         except Exception as e:
-            logger.error(f"스크리닝 실패 (시도 {_retry + 1}/{max_retries + 1}): {e}")
+            logger.error(f"v2.3 스크리닝 실패 (시도 {_retry + 1}/{max_retries + 1}): {e}")
             if _retry < max_retries:
                 delay = 60 * (_retry + 1)
                 logger.info(f"스크리닝 재시도 예약: {delay}초 후")
@@ -441,9 +326,205 @@ class TradingEngine:
                 await self._pre_market_screening(_retry=_retry + 1)
             else:
                 self._telegram.send_system_error(
-                    str(e), "screener.run_daily_screening",
-                    f"최대 재시도({max_retries}회) 초과"
+                    str(e), "engine._v23_screen_universe",
+                    f"최대 재시도({max_retries}회) 초과",
                 )
+        return
+
+    def _v23_screen_universe(self):
+        """v2.3 진입 조건으로 Universe를 스캔 → self._candidates + self._v23_entry_cache 갱신."""
+        import pandas as pd
+        from datetime import timedelta
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        params = self._params
+
+        # 1. KOSPI 20일 수익률 (상대강도용)
+        kospi_ret_n = None
+        try:
+            with get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT date, close FROM index_daily "
+                    "WHERE index_code = 'KOSPI' AND date <= ? "
+                    "ORDER BY date DESC LIMIT ?",
+                    (today, params.relative_strength_period + 5),
+                ).fetchall()
+            if len(rows) >= params.relative_strength_period + 1:
+                kospi_ret_n = (
+                    rows[0]['close']
+                    / rows[params.relative_strength_period]['close']
+                ) - 1.0
+                logger.info(f"KOSPI 20d return: {kospi_ret_n:+.2%}")
+        except Exception as e:
+            logger.warning(f"KOSPI index_daily 조회 실패: {e}")
+
+        # 2. 가드레일: breadth (MA200 위 종목 비율)
+        breadth = self._compute_breadth(today)
+        self._breadth_value = breadth
+        self._breadth_ok = breadth >= V23_BREADTH_GATE
+        logger.info(
+            f"breadth={breadth:.1%} "
+            f"gate={'OPEN' if self._breadth_ok else 'CLOSED'} "
+            f"(>= {V23_BREADTH_GATE:.0%})"
+        )
+
+        # 3. Universe 구축 (어제 기준 — 스크리닝 시점에는 당일 시총 미확정)
+        with get_connection() as conn:
+            universe_row = conn.execute(
+                """
+                SELECT DISTINCT m.ticker, s.name
+                FROM market_cap_history m
+                JOIN stocks s ON m.ticker = s.ticker
+                WHERE m.date = (
+                    SELECT MAX(date) FROM market_cap_history WHERE date < ?
+                )
+                  AND m.market_cap >= ?
+                  AND s.stock_type NOT IN (?, ?, ?, ?)
+                  AND (s.delisted_date IS NULL OR s.delisted_date > ?)
+                """,
+                (today, V23_MCAP_THRESHOLD, *V23_EXCLUDED_TYPES, today),
+            ).fetchall()
+        universe = [(r['ticker'], r['name']) for r in universe_row]
+        logger.info(f"v2.3 Universe: {len(universe)}종목")
+
+        # 4. 각 종목 일봉 로드 + 조건 체크
+        candidates = {}
+        with get_connection() as conn:
+            for ticker, name in universe:
+                rows = conn.execute(
+                    "SELECT date, open, high, low, close, volume "
+                    "FROM daily_candles WHERE ticker = ? AND date <= ? "
+                    "ORDER BY date DESC LIMIT 150",
+                    (ticker, today),
+                ).fetchall()
+                if len(rows) < params.ma_long + 5:
+                    continue
+
+                df = pd.DataFrame([dict(r) for r in reversed(rows)])
+                df['date'] = pd.to_datetime(df['date'])
+                df = calc_v23_indicators(df, params)
+                if df.empty:
+                    continue
+                t = df.iloc[-1]
+
+                req = ['ma20', 'ma60', 'ma120', 'ma60_slope', 'ma60_dist',
+                       'atr', 'adx', 'macd_hist', 'avg_volume_5',
+                       'avg_volume_20', 'avg_trading_value_20', 'stock_ret_n']
+                if any(pd.isna(t.get(k)) for k in req):
+                    continue
+                if t['atr'] <= 0 or t['close'] <= 0:
+                    continue
+                if not (t['close'] > t['ma20'] > t['ma60'] > t['ma120']):
+                    continue
+                if t['ma60_slope'] <= 0:
+                    continue
+                if not (params.ma60_position_min <= t['ma60_dist']
+                        <= params.ma60_position_max):
+                    continue
+                if t['macd_hist'] <= 0:
+                    continue
+                if t['avg_volume_5'] <= t['avg_volume_20']:
+                    continue
+                if t['adx'] < params.adx_threshold:
+                    continue
+                if t['avg_trading_value_20'] < params.min_trading_value:
+                    continue
+                atr_ratio = t['atr'] / t['close']
+                if not (params.atr_price_min <= atr_ratio
+                        <= params.atr_price_max):
+                    continue
+                if kospi_ret_n is not None:
+                    rs = t['stock_ret_n'] - kospi_ret_n
+                    if rs < params.relative_strength_threshold:
+                        continue
+
+                candidates[ticker] = {
+                    'atr': float(t['atr']),
+                    'adx': float(t['adx']),
+                    'ma60_dist': float(t['ma60_dist']),
+                    'macd_hist': float(t['macd_hist']),
+                    'close': float(t['close']),
+                    'entry_ready': True,
+                    'name': name,
+                }
+                self._poll_stock_names[ticker] = name or ticker
+
+        # 5. 상태 갱신
+        self._candidates = list(candidates.keys())
+        self._v23_entry_cache = candidates
+        self._atr_cache.clear()
+        for tkr, c in candidates.items():
+            self._atr_cache[tkr] = c['atr']
+
+        logger.info(
+            f"v2.3 후보 확정: {len(candidates)}종목 "
+            f"(breadth={breadth:.0%})"
+        )
+
+        # 텔레그램 알림
+        try:
+            sample_lines = []
+            for tkr in list(candidates.keys())[:5]:
+                c = candidates[tkr]
+                sample_lines.append(
+                    f"  {c.get('name', tkr)} ({tkr}) ADX={c['adx']:.1f}"
+                )
+            more = (
+                f"\n  ... 외 {len(candidates) - 5}종목"
+                if len(candidates) > 5 else ""
+            )
+            sample_text = "\n".join(sample_lines) if sample_lines else "  (없음)"
+            gate_mark = "🟢 OPEN" if self._breadth_ok else "🔴 CLOSED"
+            self._telegram.send(
+                f"📋 v2.3 후보 {len(candidates)}종목\n"
+                f"시장: {gate_mark} (breadth {breadth:.0%})\n\n"
+                f"{sample_text}{more}"
+            )
+        except Exception:
+            pass
+
+    def _compute_breadth(self, today: str) -> float:
+        """Universe에서 MA200 위 종목 비율(breadth) 계산."""
+        import pandas as pd
+        try:
+            with get_connection() as conn:
+                tickers = [
+                    r['ticker'] for r in conn.execute(
+                        """
+                        SELECT DISTINCT m.ticker
+                        FROM market_cap_history m
+                        JOIN stocks s ON m.ticker = s.ticker
+                        WHERE m.date = (
+                            SELECT MAX(date) FROM market_cap_history WHERE date < ?
+                        )
+                          AND m.market_cap >= ?
+                          AND s.stock_type NOT IN (?, ?, ?, ?)
+                          AND (s.delisted_date IS NULL OR s.delisted_date > ?)
+                        """,
+                        (today, V23_MCAP_THRESHOLD, *V23_EXCLUDED_TYPES, today),
+                    ).fetchall()
+                ]
+                above = 0
+                total = 0
+                for t in tickers:
+                    rows = conn.execute(
+                        "SELECT close FROM daily_candles WHERE ticker = ? "
+                        "AND date <= ? ORDER BY date DESC LIMIT 200",
+                        (t, today),
+                    ).fetchall()
+                    if len(rows) < 200:
+                        continue
+                    closes = [r['close'] for r in rows]
+                    ma200 = sum(closes) / 200.0
+                    last = closes[0]
+                    total += 1
+                    if last > ma200:
+                        above += 1
+                return above / total if total > 0 else 0.0
+        except Exception as e:
+            logger.warning(f"breadth 계산 실패: {e}")
+            return 0.0
 
     # ── 장중 실시간 ──
 
@@ -470,13 +551,12 @@ class TradingEngine:
         self._update_daily_pnl(tick)
 
         # 3. 후보 종목 진입 조건 체크
-        # 시장 국면 게이트: 방어 모드이면 매수 차단
-        if not self._market_regime.is_bullish:
+        # v2.3 가드레일: breadth < 0.40이면 매수 전체 차단
+        if not self._breadth_ok:
             if not getattr(self, "_regime_block_logged", False):
                 logger.info(
-                    f"진입 게이트: 시장 방어 모드 — 매수 전체 차단 "
-                    f"(국면={self._market_regime.regime_type}, "
-                    f"사유={self._market_regime.block_reason})"
+                    f"진입 게이트: breadth {self._breadth_value:.0%} "
+                    f"< {V23_BREADTH_GATE:.0%} — 매수 전체 차단"
                 )
                 self._regime_block_logged = True
             return
@@ -526,46 +606,40 @@ class TradingEngine:
                 await self._execute_sell(pos, tick.price, exit_reason)
 
     def _evaluate_exit(self, pos: Position, current_price: int) -> ExitReason | None:
-        """종합 청산 판단 — 공통 청산 + 전략별 exit 분기."""
-        max_hold = config.get("strategy.max_hold_days", 10)
+        """v2.3 통합 청산 판단 (틱마다 호출).
 
-        # 1. 손절가 이탈 (공통 — 모든 전략)
+        실시간: SL / TP1 분할(30%) / Trail
+        EOD: 추세이탈(MA5<MA20) / Hold 20일
+        """
+        # 1. 손절 (SL ATR×2.0)
         if self._stop_mgr.is_stopped(pos, current_price):
             return ExitReason.STOP_LOSS
 
-        # 2a. 부분 매도 (공통)
-        partial_enabled = config.get("strategy.partial_sell_enabled", False)
+        # 2. TP1 분할 매도 (ATR×2.0, 30% 매도)
         if (
-            partial_enabled
-            and not getattr(pos, "partial_sold", False)
+            not getattr(pos, "partial_sold", False)
             and pos.target_price > 0
+            and current_price >= pos.target_price
         ):
-            partial_pct = config.get("strategy.partial_target_pct", 0.5)
-            target_return_val = (pos.target_price - pos.entry_price) / pos.entry_price
-            partial_trigger = pos.entry_price * (1 + target_return_val * partial_pct)
-            if current_price >= partial_trigger:
-                return ExitReason.PARTIAL_TARGET
+            return ExitReason.PARTIAL_TARGET
 
-        # 2b. 목표가 도달 (공통)
-        if pos.target_price > 0 and current_price >= pos.target_price:
-            return ExitReason.TARGET_REACHED
+        # 3. 트레일링 — StopManager가 high_since_entry 갱신 + stop_price 상향
+        #    _check_exit_conditions에서 update_trailing_stop 호출 후 is_stopped 체크로
+        #    자연히 처리됨. 여기서 별도 처리 불필요.
 
-        # 3. 전략별 exit 조건
-        strategy_exit = self._check_strategy_exit(pos, current_price)
-        if strategy_exit:
-            return strategy_exit
-
-        # 4. 최대 보유기간 초과 (공통)
-        if pos.hold_days >= max_hold:
+        # 4. 시간 청산 (Hold 20일)
+        if pos.hold_days >= self._params.max_hold_days:
             return ExitReason.MAX_HOLD
 
+        # 5. 추세 이탈 (MA5 < MA20)은 EOD _post_market_cleanup에서 체크
         return None
 
     def _check_strategy_exit(self, pos: Position, current_price: int) -> ExitReason | None:
-        """전략별 고유 청산 조건 체크.
+        """v2.3: 전략별 분기 제거 — _evaluate_exit에 통합. 호환성 위해 no-op."""
+        return None
 
-        entry_strategy에 따라 분기. 미등록 전략은 MACD 데드크로스 폴백.
-        """
+    def _check_strategy_exit_legacy_unused(self, pos: Position, current_price: int) -> ExitReason | None:
+        """레거시 전략별 청산 — v2.3 전환 후 미사용."""
         strategy = pos.entry_strategy
 
         # golden_cross: 데드크로스 + RSI 과열
@@ -654,7 +728,72 @@ class TradingEngine:
         return None
 
     async def _check_entry_conditions(self, tick: Tick):
-        """후보 종목 진입 조건 체크 — 멀티전략 + 카테고리별 게이트."""
+        """v2.3 진입 — 스크리닝에서 확정된 후보만 시가 매수."""
+        name = self._poll_stock_names.get(tick.code, tick.code)
+
+        cache = self._v23_entry_cache.get(tick.code)
+        if not cache or not cache.get('entry_ready'):
+            return
+
+        # 리스크 사전 체크
+        signal = Signal(
+            code=tick.code, name=name, signal_type="buy",
+            price=tick.price, score=cache.get('adx', 0.0),
+        )
+        risk_result = self._risk_mgr.pre_check(signal)
+        if not risk_result.approved:
+            reason_key = f"리스크:{risk_result.reason}"
+            if self._entry_logged.get(tick.code) != reason_key:
+                logger.info(f"진입 차단 ({name}): 리스크 — {risk_result.reason}")
+                self._entry_logged[tick.code] = reason_key
+            return
+
+        # 이미 보유 중인지 확인
+        held = {p['code'] for p in self._get_cached_positions()}
+        if tick.code in held:
+            return
+
+        # 포지션 사이징: 가용자본 × 25%
+        capital = self._get_available_capital()
+        alloc = int(capital * V23_POSITION_RATIO)
+        if alloc < V23_MIN_POSITION_AMOUNT:
+            reason_key = "자본부족"
+            if self._entry_logged.get(tick.code) != reason_key:
+                logger.info(
+                    f"진입 차단 ({name}): 자본 부족 "
+                    f"(alloc={alloc:,} < {V23_MIN_POSITION_AMOUNT:,})"
+                )
+                self._entry_logged[tick.code] = reason_key
+            return
+
+        qty = alloc // max(1, tick.price)
+        if qty <= 0:
+            return
+
+        # 주문 실행
+        if self.mode == "live":
+            hoga = self._get_hoga_type()
+            order_price = tick.price if hoga == PRICE_LIMIT else 0
+            result = await self._order_mgr.execute_order(
+                tick.code, qty, order_price, ORDER_BUY, hoga
+            )
+            if result.success:
+                await self._record_buy(tick, qty, "TF_v2.3")
+        elif self.mode == "paper":
+            await self._record_buy(tick, qty, "TF_v2.3")
+
+        # 중복 매수 방지
+        self._v23_entry_cache.pop(tick.code, None)
+        if tick.code in self._candidates:
+            try:
+                self._candidates.remove(tick.code)
+            except ValueError:
+                pass
+        self._entry_logged.pop(tick.code, None)
+        return
+
+    async def _check_entry_conditions_legacy_unused(self, tick: Tick):
+        """레거시 멀티전략 진입 로직 — v2.3 전환 후 미사용."""
         from src.strategy.signals import (
             calculate_indicators,
             calculate_signal_score,
@@ -828,10 +967,10 @@ class TradingEngine:
 
     async def _execute_sell(self, position: Position, price: int, reason: ExitReason):
         """매도 실행. 부분 매도(PARTIAL_TARGET) 시 절반만 매도하고 포지션 유지."""
-        # 부분 매도 수량 결정
+        # 부분 매도 수량 결정 (v2.3: tp1_sell_ratio=0.3)
         is_partial = reason == ExitReason.PARTIAL_TARGET
         if is_partial:
-            sell_ratio = config.get("strategy.partial_sell_ratio", 0.5)
+            sell_ratio = self._params.tp1_sell_ratio
             sell_qty = max(1, int(position.quantity * sell_ratio))
             # 잔여 수량이 0이 되면 전량 매도로 전환
             if sell_qty >= position.quantity:
@@ -1025,11 +1164,17 @@ class TradingEngine:
             return code
 
     async def _record_buy(self, tick: Tick, qty: int, strategy_name: str = ""):
-        """매수 기록."""
-        atr = self._get_atr(tick.code, tick.price)
-        stop_price = self._stop_mgr.get_initial_stop(tick.price, atr)
-        target_return = config.get("strategy.target_return", 0.08)
-        target_price = int(tick.price * (1 + target_return))
+        """매수 기록 — v2.3 stop/target 직접 계산."""
+        # ATR: 스크리닝 캐시 우선, 없으면 _get_atr 폴백
+        cache = self._v23_entry_cache.get(tick.code)
+        if cache and cache.get('atr'):
+            atr = cache['atr']
+        else:
+            atr = self._get_atr(tick.code, tick.price)
+
+        # v2.3: SL = entry - ATR×2.0, TP1 = entry + ATR×2.0
+        stop_price = int(tick.price - atr * self._params.stop_loss_atr)
+        target_price = int(tick.price + atr * self._params.take_profit_atr)
         name = self._get_stock_name(tick.code)
 
         pos = Position(
@@ -1116,13 +1261,17 @@ class TradingEngine:
             self.halt()
 
     def _switch_strategy_by_regime(self):
-        """시장 국면에 따라 전략 인스턴스 전환 (adaptive 모드, 멀티전략 지원)."""
+        """v2.3: 단일 전략 모드 — no-op (레거시 호출 호환)."""
+        return
+
+    def _switch_strategy_by_regime_legacy_unused(self):
+        """레거시 국면별 전략 전환 — v2.3 전환 후 미사용."""
         regime = self._market_regime.regime_type
-        regime_map = self._strategy_config.get("regime_strategy", {})
+        regime_map = getattr(self, '_strategy_config', {}).get("regime_strategy", {})
         new_names = regime_map.get(regime)
 
         if not new_names:
-            return  # 매핑 없으면 현재 전략 유지
+            return
 
         # str → list 하위 호환
         if isinstance(new_names, str):
@@ -1355,36 +1504,43 @@ class TradingEngine:
             logger.error(f"watchlist DB 저장 실패: {e}", exc_info=True)
 
     async def _post_market_cleanup(self):
-        """장 마감 후 미체결 주문 정리 (15:35 스케줄).
+        """장 마감 후 정리 (15:35).
 
-        1. 미체결 주문 전량 취소
-        2. "selling" 상태인데 체결 안 된 포지션을 "open"으로 복원
+        1. (live) 미체결 주문 전량 취소 + selling 포지션 복원
+        2. v2.3 추세 이탈 체크 (MA5 < MA20) — 일봉 확정 후
         """
-        if self.mode != "live":
-            return
+        logger.info("장마감 정리 시작")
 
-        logger.info("장마감 미체결 정리 시작")
-
-        # 1. 미체결 주문 전량 취소
-        cancel_results = await self._order_mgr.cancel_all_pending()
-
-        # 2. "selling" 상태 포지션 복원 (체결 안 된 매도 주문)
+        cancel_results = {}
+        selling_positions = []
         restored_count = 0
+
+        if self.mode == "live":
+            # 1. 미체결 주문 전량 취소
+            cancel_results = await self._order_mgr.cancel_all_pending()
+
+            # 2. "selling" 상태 포지션 복원 (체결 안 된 매도 주문)
+            try:
+                selling_positions = self._ds.get_positions_by_status("selling")
+                for pos_dict in selling_positions:
+                    self._ds.update_position(pos_dict["id"], status="open")
+                    restored_count += 1
+                    logger.warning(
+                        f"미체결 매도 포지션 복원: {pos_dict['code']} "
+                        f"(id={pos_dict['id']})"
+                    )
+            except Exception as e:
+                logger.error(f"selling 포지션 복원 실패: {e}")
+
+            if selling_positions:
+                self._invalidate_positions_cache()
+                self._sell_retry_counts.clear()
+
+        # 3. v2.3 추세 이탈 체크 (MA5 < MA20 EOD)
         try:
-            selling_positions = self._ds.get_positions_by_status("selling")
-
-            for pos_dict in selling_positions:
-                self._ds.update_position(pos_dict["id"], status="open")
-                restored_count += 1
-                logger.warning(
-                    f"미체결 매도 포지션 복원: {pos_dict['code']} (id={pos_dict['id']})"
-                )
+            await self._v23_check_trend_exit()
         except Exception as e:
-            logger.error(f"selling 포지션 복원 실패: {e}")
-
-        if selling_positions:
-            self._invalidate_positions_cache()
-            self._sell_retry_counts.clear()
+            logger.error(f"추세 이탈 체크 실패: {e}")
 
         # 텔레그램 알림
         cancelled = sum(1 for v in cancel_results.values() if v)
@@ -1400,8 +1556,54 @@ class TradingEngine:
             self._telegram.send(f"🔄 장마감 정리: {', '.join(msg_parts)}")
 
         logger.info(
-            f"장마감 미체결 정리 완료: 취소 {cancelled}건, 복원 {restored_count}건"
+            f"장마감 정리 완료: 취소 {cancelled}건, 복원 {restored_count}건"
         )
+
+    async def _v23_check_trend_exit(self):
+        """MA5 < MA20 교차 시 전량 청산 (EOD 일봉 확정 후)."""
+        import pandas as pd
+        from datetime import timedelta
+
+        positions = self._ds.get_open_positions()
+        if not positions:
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        to_close: list[tuple[Position, int]] = []
+
+        for pos_dict in positions:
+            if pos_dict.get("status") != "open":
+                continue
+            code = pos_dict["code"]
+            try:
+                with get_connection() as conn:
+                    rows = conn.execute(
+                        "SELECT date, close FROM daily_candles "
+                        "WHERE ticker = ? AND date <= ? "
+                        "ORDER BY date DESC LIMIT 25",
+                        (code, today),
+                    ).fetchall()
+                if len(rows) < 21:
+                    continue
+                closes = [r['close'] for r in reversed(rows)]
+                ma5 = sum(closes[-5:]) / 5
+                ma20 = sum(closes[-20:]) / 20
+                prev_ma5 = sum(closes[-6:-1]) / 5
+                prev_ma20 = sum(closes[-21:-1]) / 20
+                if prev_ma5 >= prev_ma20 and ma5 < ma20:
+                    pos = self._dict_to_position(pos_dict)
+                    last_close = int(closes[-1])
+                    to_close.append((pos, last_close))
+            except Exception as e:
+                logger.warning(f"추세 체크 실패 ({code}): {e}")
+
+        if not to_close:
+            logger.info("v2.3 추세 이탈 청산 대상 없음")
+            return
+
+        logger.info(f"v2.3 추세 이탈 청산: {len(to_close)}건")
+        for pos, last_close in to_close:
+            await self._execute_sell(pos, last_close, ExitReason.TREND_EXIT)
 
     def _daily_report(self):
         """일간 리포트 (16:00)."""

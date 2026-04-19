@@ -24,10 +24,10 @@ class DataStore:
     """SQLite 기반 데이터 저장소.
 
     Args:
-        db_path: SQLite 파일 경로. 기본값은 "swing.db".
+        db_path: SQLite 파일 경로. 기본값은 "swing_legacy.db" (v2.3 orchestrator의 swing.db와 분리).
     """
 
-    def __init__(self, db_path: str = "swing.db"):
+    def __init__(self, db_path: str = "swing_legacy.db"):
         # exe 환경: 실행 파일 기준 디렉토리에 DB 생성
         if not Path(db_path).is_absolute():
             from src.utils.config import _get_app_dir

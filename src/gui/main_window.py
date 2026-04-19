@@ -39,7 +39,7 @@ from src.gui.widgets.dashboard_tab import DashboardTab
 from src.gui.widgets.log_tab import LogTab
 from src.gui.widgets.settings_tab import SettingsTab
 from src.gui.widgets.trade_history_tab import TradeHistoryTab
-from src.gui.workers.engine_worker import EngineWorker
+from src.gui.workers.engine_worker import EngineWorker, LegacyEngineWorker
 
 
 MAX_POSITIONS = 4
@@ -56,7 +56,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 720)
         self.resize(1280, 800)
 
-        self._worker: EngineWorker | None = None
+        self._worker: EngineWorker | None = None  # orchestrator (EOD)
+        self._live: LegacyEngineWorker | None = None  # 실시간 엔진
 
         self._init_ui()
         self._apply_theme()
@@ -155,11 +156,28 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self._lbl_sidebar_pnl)
 
         # ── 제어 버튼 ──
+        # 실시간 엔진 (engine_legacy)
+        btn_live_row = QHBoxLayout()
+        btn_live_row.setSpacing(8)
+        self.btn_start = QPushButton("▶ 시작")
+        self.btn_start.setObjectName("startBtn")
+        self.btn_start.setCursor(Qt.PointingHandCursor)
+        self.btn_start.setToolTip("실시간 엔진 시작 (engine_legacy + v2.3 전략)")
+        btn_live_row.addWidget(self.btn_start)
+
+        self.btn_stop = QPushButton("■ 중지")
+        self.btn_stop.setObjectName("stopBtn")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setCursor(Qt.PointingHandCursor)
+        btn_live_row.addWidget(self.btn_stop)
+        sidebar_layout.addLayout(btn_live_row)
+
+        # EOD 배치 + 수동 DB 조회
         btn_row1 = QHBoxLayout()
         btn_row1.setSpacing(8)
 
         self.btn_daily_run = QPushButton("🔄 일일 실행")
-        self.btn_daily_run.setObjectName("startBtn")
+        self.btn_daily_run.setObjectName("manualBtn")
         self.btn_daily_run.setCursor(Qt.PointingHandCursor)
         self.btn_daily_run.setToolTip("orchestrator를 1회 실행 (EOD 배치)")
         btn_row1.addWidget(self.btn_daily_run)
@@ -231,6 +249,8 @@ class MainWindow(QMainWindow):
         # ── 시그널 연결 ──
         self.btn_daily_run.clicked.connect(self._on_daily_run)
         self.btn_refresh.clicked.connect(self._refresh_from_db)
+        self.btn_start.clicked.connect(self._on_live_start)
+        self.btn_stop.clicked.connect(self._on_live_stop)
 
     # ── 사이드바 헬퍼 ──
 
@@ -562,6 +582,103 @@ class MainWindow(QMainWindow):
     def _on_engine_error(self, error: str):
         QMessageBox.critical(self, "엔진 오류", error)
 
+    # ── 실시간 엔진 (engine_legacy) ──
+
+    def _on_live_start(self):
+        if self._live and self._live.isRunning():
+            QMessageBox.information(self, "실행 중", "실시간 엔진이 이미 실행 중입니다.")
+            return
+
+        mode = self.combo_mode.currentText()
+        if mode == "live":
+            reply = QMessageBox.warning(
+                self, "실거래 모드",
+                "실거래 모드는 실제 주문이 실행됩니다.\n계속하시겠습니까?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        self._live = LegacyEngineWorker(mode=mode)
+        s = self._live.signals
+        s.started.connect(self._on_live_started)
+        s.stopped.connect(self._on_live_stopped)
+        s.error.connect(self._on_engine_error)
+        s.status_updated.connect(self._on_live_status)
+        s.positions_updated.connect(self._on_live_positions)
+        s.trades_updated.connect(self._on_live_trades)
+        s.candidates_updated.connect(self._on_live_candidates)
+
+        self.btn_start.setEnabled(False)
+        self.btn_start.setText("시작 중...")
+        self.combo_mode.setEnabled(False)
+        self._live.start()
+
+    def _on_live_stop(self):
+        if self._live:
+            self._live.signals.request_stop.emit()
+            self.btn_stop.setEnabled(False)
+            self.btn_stop.setText("중지 중...")
+
+    def _on_live_started(self):
+        self._lbl_engine_status.setText("실시간 실행 중")
+        self._lbl_engine_status.setStyleSheet(
+            "color: #a6e3a1; font-size: 12px; "
+            "font-weight: bold; padding: 4px 0;"
+        )
+        self.btn_start.setText("▶ 시작")
+        self.btn_stop.setEnabled(True)
+
+    def _on_live_stopped(self):
+        self._lbl_engine_status.setText("대기 중")
+        self._lbl_engine_status.setStyleSheet(
+            "color: #6c7086; font-size: 12px; padding: 4px 0;"
+        )
+        self.btn_start.setEnabled(True)
+        self.btn_start.setText("▶ 시작")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setText("■ 중지")
+        self.combo_mode.setEnabled(True)
+        self._live = None
+
+    def _on_live_status(self, status: dict):
+        self.dashboard_tab.update_status(status)
+        pnl = status.get("daily_pnl_pct", 0.0) * 100
+        pnl_color = "#a6e3a1" if pnl >= 0 else "#f38ba8"
+        self._lbl_sidebar_pnl.setText(f"수익률: {pnl:+.2f}%")
+        self._lbl_sidebar_pnl.setStyleSheet(
+            f"color: {pnl_color}; font-size: 11px; padding: 1px 0;"
+        )
+
+    def _on_live_positions(self, positions: list):
+        # engine_legacy Position → dashboard 포맷
+        pos_dicts = []
+        for p in positions:
+            pos_dicts.append({
+                "code": p.get("code", ""),
+                "name": p.get("name", "") or p.get("code", ""),
+                "entry_strategy": p.get("entry_strategy", "TF"),
+                "hold_days": p.get("hold_days", 0),
+                "quantity": p.get("quantity", 0),
+                "entry_price": p.get("entry_price", 0),
+                "current_price": p.get("current_price", 0),
+                "stop_price": p.get("stop_price", 0),
+                "tp1_price": p.get("tp1_price", 0),
+                "tp1_triggered": p.get("tp1_triggered", 0),
+                "atr_at_entry": p.get("atr_at_entry", 0),
+                "highest_since_entry": p.get("highest_since_entry", 0),
+            })
+        self.dashboard_tab.update_positions(pos_dicts)
+        self._lbl_sidebar_pos.setText(
+            f"포지션: {len(positions)}/{MAX_POSITIONS}"
+        )
+
+    def _on_live_trades(self, trades: list):
+        self.dashboard_tab.update_trades(trades)
+
+    def _on_live_candidates(self, candidates: list):
+        self.dashboard_tab.update_candidates(candidates)
+
     # ── 시스템 트레이 ──
 
     def _make_tray_icon(self) -> QIcon:
@@ -614,7 +731,8 @@ class MainWindow(QMainWindow):
             self._tray_show()
 
     def closeEvent(self, event):
-        if self._worker and self._worker.isRunning():
+        if (self._worker and self._worker.isRunning()) or \
+           (self._live and self._live.isRunning()):
             event.ignore()
             self.hide()
             self._tray.show()
@@ -650,6 +768,14 @@ class MainWindow(QMainWindow):
                 self._worker.terminate()
                 self._worker.wait(2000)
         self._worker = None
+
+        if self._live and self._live.isRunning():
+            self._live.signals.request_stop.emit()
+            if not self._live.wait(5000):
+                logger.warning("LegacyEngineWorker 5초 내 미종료 — 강제 terminate")
+                self._live.terminate()
+                self._live.wait(2000)
+        self._live = None
 
         self._tray.hide()
         QApplication.quit()
