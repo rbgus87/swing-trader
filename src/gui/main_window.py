@@ -1,8 +1,9 @@
 """메인 윈도우 — 좌측 사이드바 + 우측 탭 레이아웃.
 
-KoreanQuant 스타일 참고:
-- 좌측: 전략 설정 + 엔진 제어
-- 우측: 대시보드(포트폴리오) / 설정 탭
+4-레이어 엔진(orchestrator) 연결 버전:
+  - 일일 실행: orchestrator.run() 1회 트리거
+  - 10초 타이머로 DB에서 positions/signals/snapshot 직접 조회
+  - 실시간 폴링 없음 (EOD 배치 구조)
 """
 
 import ctypes
@@ -33,11 +34,15 @@ from PyQt5.QtWidgets import (
 
 from loguru import logger
 
+from src.data_pipeline.db import get_connection
 from src.gui.widgets.dashboard_tab import DashboardTab
 from src.gui.widgets.log_tab import LogTab
 from src.gui.widgets.settings_tab import SettingsTab
 from src.gui.widgets.trade_history_tab import TradeHistoryTab
 from src.gui.workers.engine_worker import EngineWorker
+
+
+MAX_POSITIONS = 4
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +64,8 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._setup_loguru_sink()
         self._setup_refresh_timer()
+        # 초기 DB 로드
+        self._refresh_from_db()
 
     def _init_ui(self):
         central = QWidget()
@@ -82,8 +89,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("appTitle")
         sidebar_layout.addWidget(title)
 
-        # 버전 표시
-        ver_label = QLabel("v2.1.0")
+        ver_label = QLabel("v2.3")
         ver_label.setStyleSheet(
             "color: #45475a; font-size: 10px; margin-top: -8px; padding: 0;"
         )
@@ -106,7 +112,7 @@ class MainWindow(QMainWindow):
         )
         sidebar_layout.addWidget(self.lbl_mode_badge)
 
-        # ── 스케줄러 / 엔진 상태 ──
+        # ── 엔진 상태 ──
         sidebar_layout.addWidget(self._sidebar_section("엔진"))
 
         self._lbl_engine_status = QLabel("대기 중")
@@ -116,32 +122,32 @@ class MainWindow(QMainWindow):
         )
         sidebar_layout.addWidget(self._lbl_engine_status)
 
-        self._lbl_schedule_info = QLabel("")
-        self._lbl_schedule_info.setStyleSheet(
+        self._lbl_last_run = QLabel("")
+        self._lbl_last_run.setStyleSheet(
             "color: #45475a; font-size: 10px; padding: 0;"
         )
-        self._lbl_schedule_info.setWordWrap(True)
-        sidebar_layout.addWidget(self._lbl_schedule_info)
+        self._lbl_last_run.setWordWrap(True)
+        sidebar_layout.addWidget(self._lbl_last_run)
 
-        # ── 전략 요약 패널 ──
+        # ── 전략 요약 ──
         sidebar_layout.addWidget(self._sidebar_section("전략"))
 
-        self._lbl_strategy_name = QLabel("golden_cross")
+        self._lbl_strategy_name = QLabel("TF v2.3")
         self._lbl_strategy_name.setObjectName("strategyName")
         sidebar_layout.addWidget(self._lbl_strategy_name)
 
-        self._lbl_regime = QLabel("국면: -")
+        self._lbl_regime = QLabel("시장: -")
         self._lbl_regime.setObjectName("sidebarInfo")
         sidebar_layout.addWidget(self._lbl_regime)
 
-        self._lbl_sidebar_pos = QLabel("포지션: 0/4")
+        self._lbl_sidebar_pos = QLabel(f"포지션: 0/{MAX_POSITIONS}")
         self._lbl_sidebar_pos.setObjectName("sidebarInfo")
         self._lbl_sidebar_pos.setStyleSheet(
             "color: #89b4fa; font-size: 11px; padding: 1px 0;"
         )
         sidebar_layout.addWidget(self._lbl_sidebar_pos)
 
-        self._lbl_sidebar_pnl = QLabel("손익: +0.00%")
+        self._lbl_sidebar_pnl = QLabel("수익률: +0.00%")
         self._lbl_sidebar_pnl.setObjectName("sidebarInfo")
         self._lbl_sidebar_pnl.setStyleSheet(
             "color: #a6e3a1; font-size: 11px; padding: 1px 0;"
@@ -152,102 +158,40 @@ class MainWindow(QMainWindow):
         btn_row1 = QHBoxLayout()
         btn_row1.setSpacing(8)
 
-        self.btn_start = QPushButton("시작")
-        self.btn_start.setObjectName("startBtn")
-        self.btn_start.setCursor(Qt.PointingHandCursor)
-        btn_row1.addWidget(self.btn_start)
-
-        self.btn_stop = QPushButton("중지")
-        self.btn_stop.setObjectName("stopBtn")
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.setCursor(Qt.PointingHandCursor)
-        btn_row1.addWidget(self.btn_stop)
+        self.btn_daily_run = QPushButton("🔄 일일 실행")
+        self.btn_daily_run.setObjectName("startBtn")
+        self.btn_daily_run.setCursor(Qt.PointingHandCursor)
+        self.btn_daily_run.setToolTip("orchestrator를 1회 실행 (EOD 배치)")
+        btn_row1.addWidget(self.btn_daily_run)
 
         sidebar_layout.addLayout(btn_row1)
 
         btn_row2 = QHBoxLayout()
         btn_row2.setSpacing(8)
 
-        self.btn_halt = QPushButton("매매 중단")
-        self.btn_halt.setObjectName("haltBtn")
-        self.btn_halt.setEnabled(False)
-        self.btn_halt.setCursor(Qt.PointingHandCursor)
-        btn_row2.addWidget(self.btn_halt)
+        self.btn_refresh = QPushButton("🔃 새로고침")
+        self.btn_refresh.setObjectName("manualBtn")
+        self.btn_refresh.setCursor(Qt.PointingHandCursor)
+        self.btn_refresh.setToolTip("DB에서 최신 데이터 재조회")
+        btn_row2.addWidget(self.btn_refresh)
 
         sidebar_layout.addLayout(btn_row2)
 
         # 구분선
         sidebar_layout.addWidget(self._hline())
 
-        # ── 수동 실행 ──
-        sidebar_layout.addWidget(self._sidebar_section("수동 실행"))
+        # ── 파라미터 요약 ──
+        sidebar_layout.addWidget(self._sidebar_section("파라미터"))
 
-        btn_manual_row1 = QHBoxLayout()
-        btn_manual_row1.setSpacing(8)
-
-        self.btn_reconnect = QPushButton("연결확인")
-        self.btn_reconnect.setObjectName("manualBtn")
-        self.btn_reconnect.setEnabled(False)
-        self.btn_reconnect.setCursor(Qt.PointingHandCursor)
-        self.btn_reconnect.setToolTip("키움 API 연결 확인/재연결")
-        btn_manual_row1.addWidget(self.btn_reconnect)
-
-        self.btn_daily_reset = QPushButton("일일리셋")
-        self.btn_daily_reset.setObjectName("manualBtn")
-        self.btn_daily_reset.setEnabled(False)
-        self.btn_daily_reset.setCursor(Qt.PointingHandCursor)
-        self.btn_daily_reset.setToolTip("PnL 초기화, ATR캐시 클리어, hold_days 갱신")
-        btn_manual_row1.addWidget(self.btn_daily_reset)
-
-        sidebar_layout.addLayout(btn_manual_row1)
-
-        btn_manual_row2 = QHBoxLayout()
-        btn_manual_row2.setSpacing(8)
-
-        self.btn_screening = QPushButton("스크리닝")
-        self.btn_screening.setObjectName("manualBtn")
-        self.btn_screening.setEnabled(False)
-        self.btn_screening.setCursor(Qt.PointingHandCursor)
-        self.btn_screening.setToolTip("즉시 장전 스크리닝 실행")
-        btn_manual_row2.addWidget(self.btn_screening)
-
-        self.btn_report = QPushButton("리포트")
-        self.btn_report.setObjectName("manualBtn")
-        self.btn_report.setEnabled(False)
-        self.btn_report.setCursor(Qt.PointingHandCursor)
-        self.btn_report.setToolTip("즉시 일간 리포트 발송")
-        btn_manual_row2.addWidget(self.btn_report)
-
-        sidebar_layout.addLayout(btn_manual_row2)
-
-        btn_manual_row3 = QHBoxLayout()
-        btn_manual_row3.setSpacing(8)
-
-        self.btn_refresh_watchlist = QPushButton("WL갱신")
-        self.btn_refresh_watchlist.setObjectName("manualBtn")
-        self.btn_refresh_watchlist.setEnabled(False)
-        self.btn_refresh_watchlist.setCursor(Qt.PointingHandCursor)
-        self.btn_refresh_watchlist.setToolTip(
-            "watchlist 수동 갱신 (시가총액 5조+, 거래대금 100억+)"
+        self._lbl_params = QLabel(
+            "SL ATR×2.0\nTP1 ATR×2.0 (30%)\nTrail ATR×4.0\nHold 20일"
         )
-        btn_manual_row3.addWidget(self.btn_refresh_watchlist)
-
-        sidebar_layout.addLayout(btn_manual_row3)
-
-        # 구분선
-        sidebar_layout.addWidget(self._hline())
-
-        # ── 연결 상태 ──
-        conn_layout = QHBoxLayout()
-        conn_layout.setSpacing(6)
-        self._lbl_conn_dot = QLabel("\u25cf")
-        self._lbl_conn_dot.setStyleSheet("color: #f38ba8; font-size: 10px;")
-        conn_layout.addWidget(self._lbl_conn_dot)
-        self._lbl_conn_text = QLabel("미연결")
-        self._lbl_conn_text.setStyleSheet("color: #6c7086; font-size: 11px;")
-        conn_layout.addWidget(self._lbl_conn_text)
-        conn_layout.addStretch()
-        sidebar_layout.addLayout(conn_layout)
+        self._lbl_params.setStyleSheet(
+            "color: #a6adc8; font-size: 10px; padding: 0; "
+            "line-height: 1.4;"
+        )
+        self._lbl_params.setWordWrap(True)
+        sidebar_layout.addWidget(self._lbl_params)
 
         sidebar_layout.addStretch()
 
@@ -285,64 +229,10 @@ class MainWindow(QMainWindow):
         root.addLayout(right, stretch=1)
 
         # ── 시그널 연결 ──
-        self.btn_start.clicked.connect(self._on_start)
-        self.btn_stop.clicked.connect(self._on_stop)
-        self.btn_halt.clicked.connect(self._on_halt)
-        self.btn_screening.clicked.connect(self._on_screening)
-        self.btn_report.clicked.connect(self._on_report)
-        self.btn_reconnect.clicked.connect(self._on_reconnect)
-        self.btn_daily_reset.clicked.connect(self._on_daily_reset)
-        self.btn_refresh_watchlist.clicked.connect(self._on_refresh_watchlist)
+        self.btn_daily_run.clicked.connect(self._on_daily_run)
+        self.btn_refresh.clicked.connect(self._refresh_from_db)
 
     # ── 사이드바 헬퍼 ──
-
-    def update_regime_display(self, regime: str):
-        """사이드바 국면 표시 업데이트."""
-        regime_map = {
-            "trending": ("추세장 (golden_cross)", "#a6e3a1"),
-            "sideways": ("횡보장 (disparity)", "#f9e2af"),
-            "bearish": ("약세장 (매수 차단)", "#f38ba8"),
-            "unknown": ("판단 중...", "#6c7086"),
-        }
-        text, color = regime_map.get(regime, regime_map["unknown"])
-        self._lbl_regime.setText(f"국면: {text}")
-        self._lbl_regime.setStyleSheet(
-            f"color: {color}; font-size: 11px; font-weight: bold; padding: 2px 0;"
-        )
-
-    def update_sidebar_summary(self, positions: list, pnl: float = 0.0):
-        """사이드바 전략 요약 패널 갱신."""
-        from src.utils.config import config
-        max_pos = config.get("trading.max_positions", 4)
-        self._lbl_sidebar_pos.setText(f"포지션: {len(positions)}/{max_pos}")
-        pnl_color = "#a6e3a1" if pnl >= 0 else "#f38ba8"
-        self._lbl_sidebar_pnl.setText(f"손익: {pnl:+.2f}%")
-        self._lbl_sidebar_pnl.setStyleSheet(
-            f"color: {pnl_color}; font-size: 11px; padding: 1px 0;"
-        )
-        strategy_name = config.get("strategy.type", "golden_cross")
-        self._lbl_strategy_name.setText(strategy_name)
-
-    def _update_status_bar(self):
-        """상태바에 모드/전략/국면/종목수 표시."""
-        from src.utils.config import config
-        mode = self.combo_mode.currentText().upper()
-        strategy = config.get("strategy.type", "golden_cross")
-        watchlist = config.get("watchlist", [])
-        regime_text = self._lbl_regime.text().replace("국면: ", "")
-        self._lbl_status_left.setText(
-            f"{mode} | {strategy} | {regime_text} | {len(watchlist)}종목"
-        )
-
-    def _on_refresh_watchlist(self):
-        """수동 watchlist 갱신."""
-        reply = QMessageBox.question(
-            self, "watchlist 갱신",
-            "시가총액/거래대금 기준으로 watchlist를 갱신합니다.\n계속하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes and self._worker:
-            self._worker.run_watchlist_refresh()
 
     def _sidebar_section(self, text: str) -> QLabel:
         label = QLabel(text.upper())
@@ -363,7 +253,6 @@ class MainWindow(QMainWindow):
     # ── 테마 ──
 
     def _apply_theme(self):
-        # PyInstaller exe: _MEIPASS 내부 또는 소스 기준 탐색
         if getattr(sys, "frozen", False):
             base = Path(sys._MEIPASS)
         else:
@@ -376,7 +265,6 @@ class MainWindow(QMainWindow):
                 self.setStyleSheet(f.read())
 
     def _apply_dark_titlebar(self):
-        """Windows 타이틀바를 다크 모드로 변경."""
         try:
             hwnd = int(self.winId())
             DWMWA_USE_IMMERSIVE_DARK_MODE = 20
@@ -386,7 +274,7 @@ class MainWindow(QMainWindow):
                 ctypes.byref(value), ctypes.sizeof(value),
             )
         except Exception:
-            pass  # Windows 10 이전 버전 등에서는 무시
+            pass
 
     # ── 로그 ──
 
@@ -403,26 +291,205 @@ class MainWindow(QMainWindow):
         self._loguru_sink_id = logger.add(gui_sink, level="DEBUG", format="{message}")
 
     def _dispatch_log(self, text: str, level: str):
-        """로그를 대시보드 + 로그탭 양쪽에 전달."""
         self.dashboard_tab.append_log(text, level)
         self.log_tab.append_log(text, level)
 
     # ── 타이머 ──
 
     def _setup_refresh_timer(self):
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._refresh_status_bar)
-        self._timer.start(1000)
+        """1초 타이머: 상태바 시계 | 10초 타이머: DB 재조회."""
+        self._clock_timer = QTimer(self)
+        self._clock_timer.timeout.connect(self._refresh_status_bar)
+        self._clock_timer.start(1000)
+
+        self._db_timer = QTimer(self)
+        self._db_timer.timeout.connect(self._refresh_from_db)
+        self._db_timer.start(10_000)
 
     def _refresh_status_bar(self):
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._lbl_status_time.setText(f"  {now}  ")
 
-    # ── 엔진 제어 ──
+    # ── DB 조회 ──
 
-    def _on_start(self):
+    def _refresh_from_db(self):
+        """DB에서 최신 데이터를 조회해 UI 업데이트."""
+        try:
+            with get_connection() as conn:
+                positions_rows = conn.execute(
+                    "SELECT p.*, s.name FROM positions p "
+                    "LEFT JOIN stocks s ON s.ticker = p.ticker "
+                    "WHERE p.status IN ('OPEN', 'PENDING') "
+                    "ORDER BY p.entry_date"
+                ).fetchall()
+                positions = [dict(r) for r in positions_rows]
+
+                # 현재가: 보유 종목별 최근 종가
+                for p in positions:
+                    row = conn.execute(
+                        "SELECT close FROM daily_candles "
+                        "WHERE ticker = ? ORDER BY date DESC LIMIT 1",
+                        (p['ticker'],),
+                    ).fetchone()
+                    p['current_price'] = row['close'] if row else p.get('entry_price', 0)
+
+                signals_rows = conn.execute(
+                    "SELECT s.*, st.name FROM signals s "
+                    "LEFT JOIN stocks st ON st.ticker = s.ticker "
+                    "ORDER BY s.id DESC LIMIT 50"
+                ).fetchall()
+                signals_list = [dict(r) for r in signals_rows]
+
+                snapshot_row = conn.execute(
+                    "SELECT * FROM daily_portfolio_snapshot "
+                    "ORDER BY date DESC LIMIT 1"
+                ).fetchone()
+                snapshot = dict(snapshot_row) if snapshot_row else None
+        except Exception as e:
+            logger.warning(f"DB 조회 실패: {e}")
+            return
+
+        self._update_dashboard(positions, signals_list, snapshot)
+        self._update_sidebar(positions, snapshot)
+        self._update_status_bar(snapshot)
+
+    def _update_dashboard(self, positions: list, signals_list: list,
+                          snapshot: dict | None):
+        """DashboardTab 데이터 주입."""
+        # 포지션 → 대시보드 포맷
+        pos_dicts = []
+        today = datetime.now().date()
+        for p in positions:
+            entry_date = p.get('entry_date')
+            hold_days = 0
+            if entry_date:
+                try:
+                    ed = datetime.strptime(str(entry_date), "%Y-%m-%d").date()
+                    hold_days = (today - ed).days
+                except Exception:
+                    hold_days = 0
+            pos_dicts.append({
+                "code": p.get('ticker', ''),
+                "name": p.get('name') or p.get('ticker', ''),
+                "entry_strategy": p.get('strategy', 'TF'),
+                "hold_days": hold_days,
+                "quantity": p.get('shares', 0),
+                "entry_price": p.get('entry_price', 0),
+                "current_price": p.get('current_price', 0),
+                "stop_price": p.get('stop_price', 0),
+            })
+        self.dashboard_tab.update_positions(pos_dicts)
+
+        # 당일 ENTRY 신호 → 후보로 표시
+        entry_signals = [s for s in signals_list if s.get('signal_type') == 'ENTRY']
+        cand_dicts = []
+        for s in entry_signals[:20]:
+            cand_dicts.append({
+                "code": s.get('ticker', ''),
+                "name": s.get('name') or s.get('ticker', ''),
+                "price": s.get('price', 0),
+                "change_pct": 0,
+                "score": 0,
+                "reason": s.get('reason', ''),
+                "date": s.get('date', ''),
+            })
+        self.dashboard_tab.update_candidates(cand_dicts)
+
+        # 당일 EXIT 신호 → 체결 영역에 간단 표시
+        exit_signals = [s for s in signals_list if s.get('signal_type') == 'EXIT']
+        trade_dicts = []
+        for s in exit_signals[:20]:
+            trade_dicts.append({
+                "executed_at": s.get('date', ''),
+                "code": s.get('ticker', ''),
+                "name": s.get('name') or s.get('ticker', ''),
+                "side": "sell",
+                "quantity": 0,
+                "price": s.get('price', 0),
+                "pnl": 0,
+                "reason": s.get('reason', ''),
+            })
+        self.dashboard_tab.update_trades(trade_dicts)
+
+        # 상태 카드
+        cash = snapshot['cash'] if snapshot else 0
+        pv = snapshot['portfolio_value'] if snapshot else 0
+        initial = 5_000_000
+        pnl_pct = ((pv - initial) / initial * 100) if pv and initial else 0.0
+        self.dashboard_tab.update_status({
+            "capital": int(cash or 0),
+            "candidates": len(entry_signals),
+            "max_positions": MAX_POSITIONS,
+            "daily_pnl_pct": pnl_pct,
+            "mdd": 0.0,
+            "portfolio_value": int(pv or 0),
+        })
+
+    def _update_sidebar(self, positions: list, snapshot: dict | None):
+        """사이드바 요약 정보 업데이트."""
+        self._lbl_sidebar_pos.setText(
+            f"포지션: {len(positions)}/{MAX_POSITIONS}"
+        )
+
+        if snapshot:
+            gate = snapshot.get('gate_status') or 'UNKNOWN'
+            breadth = snapshot.get('breadth') or 0.0
+            if gate == 'OPEN':
+                text = f"🟢 OPEN (breadth {breadth:.0%})"
+                color = "#a6e3a1"
+            elif gate == 'CLOSED':
+                text = f"🔴 CLOSED (breadth {breadth:.0%})"
+                color = "#f38ba8"
+            else:
+                text = f"⚪ {gate}"
+                color = "#6c7086"
+            self._lbl_regime.setText(f"시장: {text}")
+            self._lbl_regime.setStyleSheet(
+                f"color: {color}; font-size: 11px; "
+                f"font-weight: bold; padding: 2px 0;"
+            )
+
+            # 누적 수익률
+            pv = snapshot.get('portfolio_value') or 0
+            initial = 5_000_000
+            pnl = ((pv - initial) / initial * 100) if pv and initial else 0.0
+            pnl_color = "#a6e3a1" if pnl >= 0 else "#f38ba8"
+            self._lbl_sidebar_pnl.setText(f"수익률: {pnl:+.2f}%")
+            self._lbl_sidebar_pnl.setStyleSheet(
+                f"color: {pnl_color}; font-size: 11px; padding: 1px 0;"
+            )
+
+            # 최근 실행
+            last_date = snapshot.get('date', '')
+            if last_date:
+                self._lbl_last_run.setText(f"마지막 실행: {last_date}")
+
+    def _update_status_bar(self, snapshot: dict | None):
+        mode = self.combo_mode.currentText().upper()
+        strategy = "TF v2.3"
+        if snapshot:
+            gate = snapshot.get('gate_status') or 'UNKNOWN'
+            date = snapshot.get('date', '')
+            self._lbl_status_left.setText(
+                f"{mode} | {strategy} | 시장 {gate} | {date}"
+            )
+        else:
+            self._lbl_status_left.setText(
+                f"{mode} | {strategy} | 데이터 없음"
+            )
+
+    # ── 일일 실행 ──
+
+    def _on_daily_run(self):
+        """orchestrator 1회 실행."""
+        if self._worker and self._worker.isRunning():
+            QMessageBox.information(
+                self, "실행 중",
+                "이미 실행 중입니다. 완료를 기다려 주세요."
+            )
+            return
+
         mode = self.combo_mode.currentText()
-
         if mode == "live":
             reply = QMessageBox.warning(
                 self, "실거래 모드",
@@ -432,65 +499,23 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.Yes:
                 return
 
-        self._worker = EngineWorker(mode=mode)
-        self._connect_worker_signals()
-
-        self._worker.start()
-        self.btn_start.setEnabled(False)
-        self.btn_start.setText("시작 중...")
-        self.combo_mode.setEnabled(False)
-
-    def _connect_worker_signals(self):
+        self._worker = EngineWorker()
         s = self._worker.signals
         s.started.connect(self._on_engine_started)
         s.stopped.connect(self._on_engine_stopped)
         s.error.connect(self._on_engine_error)
-        s.status_updated.connect(self._on_status_updated)
-        s.positions_updated.connect(self._on_positions_updated)
-        s.trades_updated.connect(self._on_trades_updated)
-        s.candidates_updated.connect(self._on_candidates_updated)
 
-    def _on_stop(self):
-        if self._worker:
-            self._worker.signals.request_stop.emit()
-            self.btn_stop.setEnabled(False)
-            self.btn_stop.setText("중지 중...")
-
-    def _on_halt(self):
-        if not self._worker:
-            return
-        if self.btn_halt.text() == "매매 중단":
-            self._worker.signals.request_halt.emit()
-        else:
-            self._worker.signals.request_resume.emit()
-
-    def _on_screening(self):
-        if self._worker:
-            self._worker.signals.request_screening.emit()
-            logger.info("수동 스크리닝 요청")
-
-    def _on_report(self):
-        if self._worker:
-            self._worker.signals.request_report.emit()
-            logger.info("수동 리포트 요청")
-
-    def _on_reconnect(self):
-        if self._worker:
-            self._worker.signals.request_reconnect.emit()
-            logger.info("수동 연결 확인 요청")
-
-    def _on_daily_reset(self):
-        if self._worker:
-            self._worker.signals.request_daily_reset.emit()
-            logger.info("수동 일일 리셋 요청")
+        self.btn_daily_run.setEnabled(False)
+        self.btn_daily_run.setText("실행 중...")
+        self._worker.start()
 
     def _on_engine_started(self):
-        # 연결 상태
-        self._lbl_conn_dot.setStyleSheet("color: #a6e3a1; font-size: 10px;")
-        self._lbl_conn_text.setText("연결됨")
-        self._lbl_conn_text.setStyleSheet("color: #a6e3a1; font-size: 11px;")
+        self._lbl_engine_status.setText("실행 중")
+        self._lbl_engine_status.setStyleSheet(
+            "color: #a6e3a1; font-size: 12px; "
+            "font-weight: bold; padding: 4px 0;"
+        )
 
-        # 모드 배지
         mode = self.combo_mode.currentText()
         if mode == "live":
             self.lbl_mode_badge.setText("실거래")
@@ -505,141 +530,41 @@ class MainWindow(QMainWindow):
                 "padding: 4px 0; font-size: 11px; font-weight: bold;"
             )
 
-        # 엔진 상태
-        self._lbl_engine_status.setText("실행 중")
-        self._lbl_engine_status.setStyleSheet(
-            "color: #a6e3a1; font-size: 12px; font-weight: bold; padding: 4px 0;"
-        )
-
-        # 스케줄 정보
-        from src.utils.config import config
-        st = config.get("schedule.screening_time", "08:30")
-        rt = config.get("schedule.daily_report_time", "16:00")
-        self._lbl_schedule_info.setText(
-            f"{st} 스크리닝 | {rt} 리포트"
-        )
-
-        # 버튼
-        self.btn_start.setText("시작")
-        self.btn_stop.setEnabled(True)
-        self.btn_halt.setEnabled(True)
-        self.btn_screening.setEnabled(True)
-        self.btn_report.setEnabled(True)
-        self.btn_reconnect.setEnabled(True)
-        self.btn_daily_reset.setEnabled(True)
-        self.btn_refresh_watchlist.setEnabled(True)
-
-        # 사이드바 전략 요약
-        strategy_name = config.get("strategy.type", "golden_cross")
-        self._lbl_strategy_name.setText(strategy_name)
-        self._update_status_bar()
-
     def _on_engine_stopped(self):
-        self._lbl_conn_dot.setStyleSheet("color: #f38ba8; font-size: 10px;")
-        self._lbl_conn_text.setText("미연결")
-        self._lbl_conn_text.setStyleSheet("color: #6c7086; font-size: 11px;")
-
-        self.lbl_mode_badge.setText("중지됨")
-        self.lbl_mode_badge.setStyleSheet(
-            "background-color: #45475a; color: #6c7086; border-radius: 4px; "
-            "padding: 4px 0; font-size: 11px; font-weight: bold;"
-        )
-
         self._lbl_engine_status.setText("대기 중")
         self._lbl_engine_status.setStyleSheet(
             "color: #6c7086; font-size: 12px; padding: 4px 0;"
         )
-        self._lbl_schedule_info.setText("")
-
-        self.btn_start.setEnabled(True)
-        self.btn_start.setText("시작")
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.setText("중지")
-        self.btn_halt.setEnabled(False)
-        self.btn_halt.setText("매매 중단")
-        self.btn_screening.setEnabled(False)
-        self.btn_report.setEnabled(False)
-        self.btn_reconnect.setEnabled(False)
-        self.btn_daily_reset.setEnabled(False)
-        self.btn_refresh_watchlist.setEnabled(False)
-        self.combo_mode.setEnabled(True)
-        self._lbl_status_left.setText("스케줄러: 중지")
+        self.btn_daily_run.setEnabled(True)
+        self.btn_daily_run.setText("🔄 일일 실행")
         self._worker = None
+        # 실행 완료 직후 DB 즉시 재조회
+        self._refresh_from_db()
 
     def _on_engine_error(self, error: str):
         QMessageBox.critical(self, "엔진 오류", error)
 
-    def _on_status_updated(self, status: dict):
-        self.dashboard_tab.update_status(status)
-
-        # 사이드바 엔진 상태 동기화
-        halted = status.get("halted", False)
-        running = status.get("running", False)
-
-        if halted:
-            self._lbl_engine_status.setText("매매 중단됨")
-            self._lbl_engine_status.setStyleSheet(
-                "color: #f9e2af; font-size: 12px; font-weight: bold; padding: 4px 0;"
-            )
-            self.btn_halt.setText("매매 재개")
-        elif running:
-            self._lbl_engine_status.setText("실행 중")
-            self._lbl_engine_status.setStyleSheet(
-                "color: #a6e3a1; font-size: 12px; font-weight: bold; padding: 4px 0;"
-            )
-            self.btn_halt.setText("매매 중단")
-
-        self.btn_halt.setEnabled(running)
-
-        # 사이드바 손익 갱신
-        pnl = status.get("daily_pnl_pct", 0.0)
-        pnl_color = "#a6e3a1" if pnl >= 0 else "#f38ba8"
-        self._lbl_sidebar_pnl.setText(f"손익: {pnl:+.2f}%")
-        self._lbl_sidebar_pnl.setStyleSheet(
-            f"color: {pnl_color}; font-size: 11px; padding: 1px 0;"
-        )
-        self._update_status_bar()
-
-    def _on_positions_updated(self, positions: list):
-        self.dashboard_tab.update_positions(positions)
-        # 사이드바 포지션 갱신
-        from src.utils.config import config
-        max_pos = config.get("trading.max_positions", 4)
-        self._lbl_sidebar_pos.setText(f"포지션: {len(positions)}/{max_pos}")
-
-    def _on_trades_updated(self, trades: list):
-        self.dashboard_tab.update_trades(trades)
-
-    def _on_candidates_updated(self, candidates: list):
-        self.dashboard_tab.update_candidates(candidates)
-
     # ── 시스템 트레이 ──
 
     def _make_tray_icon(self) -> QIcon:
-        """트레이용 아이콘 생성 (RT 텍스트)."""
         size = 64
         pixmap = QPixmap(size, size)
         pixmap.fill(QColor(0, 0, 0, 0))
 
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
-
-        # 배경 원
         painter.setBrush(QColor("#89b4fa"))
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(2, 2, size - 4, size - 4)
 
-        # RT 텍스트
         painter.setPen(QColor("#11111b"))
         font = QFont("Segoe UI", 22, QFont.Bold)
         painter.setFont(font)
         painter.drawText(pixmap.rect(), Qt.AlignCenter, "ST")
-
         painter.end()
         return QIcon(pixmap)
 
     def _setup_tray(self):
-        """시스템 트레이 아이콘 설정."""
         tray_icon = self._make_tray_icon()
 
         self._tray = QSystemTrayIcon(self)
@@ -647,15 +572,11 @@ class MainWindow(QMainWindow):
         self._tray.setToolTip("Swing Trader")
         self.setWindowIcon(tray_icon)
 
-        # 트레이 메뉴
         tray_menu = QMenu()
-
         action_show = QAction("열기", self)
         action_show.triggered.connect(self._tray_show)
         tray_menu.addAction(action_show)
-
         tray_menu.addSeparator()
-
         action_quit = QAction("종료", self)
         action_quit.triggered.connect(self._tray_quit)
         tray_menu.addAction(action_quit)
@@ -664,69 +585,55 @@ class MainWindow(QMainWindow):
         self._tray.activated.connect(self._on_tray_activated)
 
     def _tray_show(self):
-        """트레이에서 창 복원."""
         self.showNormal()
         self.activateWindow()
 
     def _tray_quit(self):
-        """트레이에서 완전 종료."""
         self._cleanup_and_quit()
 
     def _on_tray_activated(self, reason):
-        """트레이 아이콘 더블클릭 시 창 복원."""
         if reason == QSystemTrayIcon.DoubleClick:
             self._tray_show()
 
     def closeEvent(self, event):
-        """닫기 버튼 동작:
-        - 엔진 구동 중: 트레이로 최소화
-        - 엔진 미구동: 프로그램 종료
-        """
         if self._worker and self._worker.isRunning():
-            # 트레이로 최소화
             event.ignore()
             self.hide()
             self._tray.show()
             self._tray.showMessage(
                 "Swing Trader",
-                "엔진이 구동 중입니다. 트레이에서 실행됩니다.",
+                "엔진 실행 중입니다. 트레이에서 실행됩니다.",
                 QSystemTrayIcon.Information,
                 2000,
             )
         else:
-            # 프로그램 종료
             event.accept()
             self._cleanup_and_quit()
 
     def _cleanup_and_quit(self):
-        """종료 시 모든 리소스 정리 + QApplication 종료."""
         if getattr(self, "_cleanup_done", False):
             return
         self._cleanup_done = True
 
-        # 타이머 중지
-        self._timer.stop()
+        if hasattr(self, "_clock_timer"):
+            self._clock_timer.stop()
+        if hasattr(self, "_db_timer"):
+            self._db_timer.stop()
 
-        # loguru GUI sink 제거 (참조 해제)
         if hasattr(self, "_loguru_sink_id"):
             try:
                 logger.remove(self._loguru_sink_id)
             except ValueError:
                 pass
 
-        # 워커 스레드 정리
         if self._worker and self._worker.isRunning():
-            self._worker.signals.request_stop.emit()
             if not self._worker.wait(5000):
                 logger.warning("EngineWorker 5초 내 미종료 — 강제 terminate")
                 self._worker.terminate()
                 self._worker.wait(2000)
         self._worker = None
 
-        # 트레이 숨김
         self._tray.hide()
-
-        # QApplication 이벤트 루프 종료
         QApplication.quit()
 
 
@@ -734,7 +641,6 @@ def run_gui():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
-    # aboutToQuit 시그널로 정리 보장
     window = MainWindow()
     app.aboutToQuit.connect(window._cleanup_and_quit)
 

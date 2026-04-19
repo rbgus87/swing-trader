@@ -29,24 +29,18 @@ _BASE = "#1e1e2e"
 _MANTLE = "#181825"
 _CRUST = "#11111b"
 
-# 청산사유 한글 매핑
+# 청산사유 한글 매핑 (v2.3)
 _EXIT_REASON_KR = {
-    "stop_loss": "손절",
-    "trailing_stop": "트레일링",
-    "target_reached": "목표가",
-    "partial_target": "부분매도",
-    "macd_dead": "데드크로스",
-    "max_hold": "보유초과",
-    "flow_exit": "수급이탈",
-    "disparity_exit": "이격도청산",
-    "signal": "매수",
+    "STOP_LOSS": "손절",
+    "TAKE_PROFIT_1": "TP1 분할(30%)",
+    "TRAILING": "트레일링",
+    "TREND_EXIT": "추세이탈",
+    "TIME_EXIT": "시간청산",
+    "FINAL_CLOSE": "강제청산",
 }
 
-# 전략 한글 매핑
-_STRATEGY_KR = {
-    "golden_cross": "골든크로스",
-    "disparity_reversion": "이격도",
-}
+# 전략 한글 매핑 (v2.3)
+_STRATEGY_KR = {"TF": "추세추종 v2.3"}
 
 
 class TradeHistoryTab(QWidget):
@@ -79,7 +73,7 @@ class TradeHistoryTab(QWidget):
 
         filter_layout.addWidget(QLabel("전략:"))
         self._combo_strategy = QComboBox()
-        self._combo_strategy.addItems(["전체", "golden_cross", "disparity_reversion"])
+        self._combo_strategy.addItems(["전체", "TF"])
         self._combo_strategy.currentTextChanged.connect(self._on_filter_changed)
         filter_layout.addWidget(self._combo_strategy)
 
@@ -173,17 +167,41 @@ class TradeHistoryTab(QWidget):
     # ── 데이터 ──
 
     def _load_data(self):
-        """swing.db에서 매매 기록 조회."""
+        """positions 테이블(CLOSED) → 매매 기록 형태로 변환."""
         try:
-            from src.datastore import DataStore
+            from src.data_pipeline.db import get_connection
 
-            ds = DataStore()
-            cursor = ds.conn.execute(
-                "SELECT * FROM trades ORDER BY executed_at DESC LIMIT 500"
-            )
-            rows = cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-            self._trades = [dict(zip(columns, row)) for row in rows]
+            trades = []
+            with get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT p.*, s.name FROM positions p "
+                    "LEFT JOIN stocks s ON s.ticker = p.ticker "
+                    "WHERE p.status = 'CLOSED' "
+                    "ORDER BY p.exit_date DESC, p.id DESC LIMIT 500"
+                ).fetchall()
+                for r in rows:
+                    d = dict(r)
+                    entry_price = d.get('entry_price') or 0
+                    exit_price = d.get('exit_price') or 0
+                    shares = d.get('initial_shares') or d.get('shares') or 0
+                    pnl = d.get('pnl_amount') or 0
+                    pnl_pct = (
+                        (exit_price - entry_price) / entry_price
+                        if entry_price else 0
+                    )
+                    trades.append({
+                        "executed_at": str(d.get('exit_date') or ''),
+                        "code": d.get('ticker', ''),
+                        "name": d.get('name') or d.get('ticker', ''),
+                        "side": "sell",
+                        "quantity": shares,
+                        "price": exit_price,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "entry_strategy": d.get('strategy', 'TF'),
+                        "reason": d.get('exit_reason', ''),
+                    })
+            self._trades = trades
         except Exception:
             self._trades = []
         self._apply_filters()

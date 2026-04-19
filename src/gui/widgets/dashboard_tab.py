@@ -41,8 +41,7 @@ class DashboardTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        from src.utils.config import config
-        self._max_positions = config.get("trading.max_positions", 8)
+        self._max_positions = 4  # v2.3 고정
         self._init_ui()
 
     def _init_ui(self):
@@ -352,10 +351,7 @@ class DashboardTab(QWidget):
             else:
                 pnl_pct = 0.0
 
-            strategy_kr = {
-                "golden_cross": "골든크로스",
-                "disparity_reversion": "이격도",
-            }
+            strategy_kr = {"TF": "추세추종 v2.3"}
             entry_strat = pos.get("entry_strategy", "")
             strat_display = strategy_kr.get(entry_strat, entry_strat)
 
@@ -378,11 +374,8 @@ class DashboardTab(QWidget):
                 if col == 8:  # 수익률 (was 7, now 8)
                     color = _GREEN if pnl_pct >= 0 else _RED
                     item.setForeground(QColor(color))
-                if col == 2:  # 전략 컬럼 색상
-                    if entry_strat == "golden_cross":
-                        item.setForeground(QColor(_GREEN))
-                    elif entry_strat == "disparity_reversion":
-                        item.setForeground(QColor(_YELLOW))
+                if col == 2 and entry_strat == "TF":
+                    item.setForeground(QColor(_GREEN))
                 self.positions_table.setItem(row, col, item)
 
         # 스탯 카드 갱신
@@ -399,17 +392,14 @@ class DashboardTab(QWidget):
         # 카운트 라벨
         self._lbl_pos_count.setText(f"{len(positions)}종목")
 
-    # 청산사유 한글 매핑
+    # 청산사유 한글 매핑 (v2.3)
     _EXIT_REASON_KR = {
-        "stop_loss": "손절",
-        "trailing_stop": "트레일링",
-        "target_reached": "목표가",
-        "partial_target": "부분매도",
-        "macd_dead": "데드크로스",
-        "max_hold": "보유초과",
-        "flow_exit": "수급이탈",
-        "disparity_exit": "이격도청산",
-        "signal": "매수",
+        "STOP_LOSS": "손절",
+        "TAKE_PROFIT_1": "TP1 분할(30%)",
+        "TRAILING": "트레일링",
+        "TREND_EXIT": "추세이탈",
+        "TIME_EXIT": "시간청산",
+        "FINAL_CLOSE": "강제청산",
     }
 
     def update_trades(self, trades: list):
@@ -436,7 +426,7 @@ class DashboardTab(QWidget):
                     item.setForeground(QColor(color))
                 if col == 6 and pnl != 0:  # 손익
                     item.setForeground(QColor(_GREEN if pnl > 0 else _RED))
-                if col == 7 and reason_raw == "partial_target":  # 사유
+                if col == 7 and reason_raw == "TAKE_PROFIT_1":  # 사유
                     item.setForeground(QColor(_PEACH))
                 self.trades_table.setItem(row, col, item)
 
