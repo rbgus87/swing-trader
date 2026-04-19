@@ -115,7 +115,7 @@ class PortfolioManager:
                     exit_reason = 'STOP_LOSS'
                     exit_price = pos['stop_price']
                 elif not pos['tp1_triggered'] and day_high >= pos['tp1_price']:
-                    partial_shares = pos['shares'] // 2
+                    partial_shares = int(pos['shares'] * self.params.tp1_sell_ratio)
                     if partial_shares > 0:
                         exit_signals.append(SignalResult(
                             ticker=ticker,
@@ -171,7 +171,7 @@ class PortfolioManager:
         return exit_signals
 
     def scan_entries(self, date_str: str, active_strategies: list) -> list:
-        """TF v1 진입 후보 스캔."""
+        """TF v2.3 상태 기반 추세추종 스캔."""
         if 'TF' not in active_strategies:
             return []
 
@@ -190,8 +190,31 @@ class PortfolioManager:
 
         held_tickers = {p['ticker'] for p in open_positions}
         candidates = []
+        rs_period = self.params.relative_strength_period
 
         with get_connection() as conn:
+            # KOSPI 20일 수익률 (상대강도용)
+            cursor = conn.execute(
+                "SELECT date, close FROM index_daily "
+                "WHERE index_code = 'KOSPI' AND date <= ? "
+                "ORDER BY date DESC LIMIT ?",
+                (date_str, rs_period + 5),
+            )
+            kospi_rows = cursor.fetchall()
+            kospi_ret_n = None
+            if len(kospi_rows) >= rs_period + 1:
+                kospi_ret_n = (
+                    kospi_rows[0]['close'] / kospi_rows[rs_period]['close']
+                ) - 1.0
+                logger.info(
+                    f"KOSPI {rs_period}d return: {kospi_ret_n:+.2%}"
+                )
+            else:
+                logger.warning(
+                    f"index_daily(KOSPI) insufficient "
+                    f"(got {len(kospi_rows)} rows) — relative strength disabled"
+                )
+
             cursor = conn.execute(
                 """
                 SELECT DISTINCT m.ticker
@@ -213,11 +236,11 @@ class PortfolioManager:
                 cursor = conn.execute(
                     "SELECT date, open, high, low, close, volume "
                     "FROM daily_candles WHERE ticker = ? AND date <= ? "
-                    "ORDER BY date DESC LIMIT 70",
+                    "ORDER BY date DESC LIMIT 150",
                     (ticker, date_str),
                 )
                 rows = cursor.fetchall()
-                if len(rows) < 65:
+                if len(rows) < self.params.ma_long + 5:
                     continue
 
                 df = pd.DataFrame([dict(r) for r in reversed(rows)])
@@ -227,55 +250,73 @@ class PortfolioManager:
                     continue
 
                 today = df.iloc[-1]
-                if (pd.isna(today.get('ma60')) or pd.isna(today.get('adx'))
-                        or pd.isna(today.get('atr'))):
+
+                req = ['ma20', 'ma60', 'ma120', 'ma60_slope', 'ma60_dist',
+                       'atr', 'adx', 'macd_hist', 'avg_volume_5',
+                       'avg_volume_20', 'avg_trading_value_20', 'stock_ret_n']
+                if any(pd.isna(today.get(k)) for k in req):
                     continue
-                if today['atr'] <= 0:
+                if today['atr'] <= 0 or today['close'] <= 0:
                     continue
 
-                aligned = today['ma5'] > today['ma20'] > today['ma60']
-                trending = today['adx'] >= self.params.adx_threshold
-                liquid = (
-                    today.get('avg_trading_value_20', 0)
-                    >= self.params.min_trading_value
-                )
-                if not (aligned and trending and liquid):
+                # 완전 정배열 close > MA20 > MA60 > MA120
+                if not (today['close'] > today['ma20']
+                        > today['ma60'] > today['ma120']):
                     continue
-
-                if len(df) < 2:
+                # MA60 기울기 (+)
+                if today['ma60_slope'] <= 0:
                     continue
-                yesterday = df.iloc[-2]
-                if pd.isna(yesterday.get('highest_n')):
+                # MA60 대비 위치 +5~20%
+                if not (self.params.ma60_position_min
+                        <= today['ma60_dist']
+                        <= self.params.ma60_position_max):
                     continue
-
-                breakout = today['close'] > yesterday['highest_n']
-                vol_confirm = (
-                    today['volume']
-                    > today['avg_volume_20'] * self.params.volume_multiplier
-                )
-
-                if breakout and vol_confirm:
-                    shares = int(alloc / today['close'])
-                    if shares <= 0:
+                # MACD histogram > 0
+                if today['macd_hist'] <= 0:
+                    continue
+                # 거래량: 5일 평균 > 20일 평균
+                if today['avg_volume_5'] <= today['avg_volume_20']:
+                    continue
+                # ADX / 거래대금
+                if today['adx'] < self.params.adx_threshold:
+                    continue
+                if today['avg_trading_value_20'] < self.params.min_trading_value:
+                    continue
+                # ATR 밴드
+                atr_ratio = today['atr'] / today['close']
+                if not (self.params.atr_price_min <= atr_ratio
+                        <= self.params.atr_price_max):
+                    continue
+                # 상대강도 (KOSPI 대비)
+                if kospi_ret_n is not None:
+                    rs = today['stock_ret_n'] - kospi_ret_n
+                    if rs < self.params.relative_strength_threshold:
                         continue
-                    candidates.append(SignalResult(
-                        ticker=ticker,
-                        name=self._get_name(ticker),
-                        signal_type='ENTRY',
-                        strategy='TF',
-                        price=float(today['close']),
-                        shares=shares,
-                        reason=f"60d breakout, ADX={today['adx']:.1f}",
-                        atr=float(today['atr']),
-                        stop_price=float(today['close']
-                                         - today['atr'] * self.params.stop_loss_atr),
-                        tp1_price=float(today['close']
-                                        + today['atr'] * self.params.take_profit_atr),
-                    ))
+
+                shares = int(alloc / today['close'])
+                if shares <= 0:
+                    continue
+                candidates.append(SignalResult(
+                    ticker=ticker,
+                    name=self._get_name(ticker),
+                    signal_type='ENTRY',
+                    strategy='TF',
+                    price=float(today['close']),
+                    shares=shares,
+                    reason=(f"trend state: MA aligned, "
+                            f"ADX={today['adx']:.1f}, "
+                            f"MA60_dist={today['ma60_dist']:+.1%}, "
+                            f"MACD_hist={today['macd_hist']:+.3f}"),
+                    atr=float(today['atr']),
+                    stop_price=float(today['close']
+                                     - today['atr'] * self.params.stop_loss_atr),
+                    tp1_price=float(today['close']
+                                    + today['atr'] * self.params.take_profit_atr),
+                ))
 
         def _score(sig):
             try:
-                return float(sig.reason.split('ADX=')[1])
+                return float(sig.reason.split('ADX=')[1].split(',')[0])
             except (IndexError, ValueError):
                 return 0.0
 
