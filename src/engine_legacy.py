@@ -1421,12 +1421,18 @@ class TradingEngine:
             logger.error(f"config.yaml 업데이트 실패: {e}")
 
     async def _evening_watchlist_screening(self):
-        """장마감 후 조건검색 실행 → 다음 거래일 watchlist를 DB에 저장.
+        """장마감 후 HTS 조건검색 — v2.3 모드에서는 불필요하여 스킵.
 
-        실행 시점: 15:40 (장마감 10분 후, 데이터 확정)
-        대상 키: 다음 영업일 날짜 (주말 건너뜀)
-        조건검색 실패 시 저장 스킵 → 다음날 고정 watchlist 폴백.
+        v2.3은 장전 _v23_screen_universe()로 Universe 기반 후보를 동적 생성하므로
+        전날 저녁 조건검색 결과를 DB에 적재할 필요 없음.
         """
+        logger.info(
+            "v2.3 모드 — 저녁 HTS 조건검색 스킵 (장전 스크리닝으로 대체)"
+        )
+        return
+
+    async def _evening_watchlist_screening_legacy_unused(self):
+        """레거시 저녁 조건검색 — v2.3 전환 후 미사용."""
         logger.info("저녁 조건검색 시작 (다음 거래일 watchlist 생성)")
 
         watchlist_mode = config.get("watchlist_mode", "fixed")

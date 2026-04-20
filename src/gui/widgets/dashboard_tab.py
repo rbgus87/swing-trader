@@ -314,27 +314,27 @@ class DashboardTab(QWidget):
         self._capital = capital
         self._candidates_count = candidates
 
-        # 차트 데이터 업데이트
-        if self._has_chart and pnl != 0.0:
+        # 차트 데이터 업데이트 — pnl은 이미 "현재까지 누적 손익%"이므로 그대로 시계열 추가.
+        if self._has_chart and abs(pnl) <= 50:
             self._equity_data.append(pnl)
             self._update_chart()
 
+    def reset_equity(self):
+        """수익 곡선 데이터 초기화 (엔진 시작 시 호출)."""
+        self._equity_data = []
+        if self._has_chart and self._equity_curve is not None:
+            self._equity_curve.setData([], [])
+
     def _update_chart(self):
-        """수익 곡선 차트 업데이트."""
+        """수익 곡선 차트 업데이트 — equity_data는 이미 누적값."""
         if not self._has_chart or not self._equity_data:
             return
         import pyqtgraph as pg
 
-        # 누적 수익률
-        cumulative = []
-        total = 0.0
-        for d in self._equity_data:
-            total += d
-            cumulative.append(total)
-
+        xs = list(range(len(self._equity_data)))
         self._equity_curve.setData(
-            list(range(len(cumulative))), cumulative,
-            pen=pg.mkPen(color=_BLUE, width=2)
+            xs, self._equity_data,
+            pen=pg.mkPen(color=_BLUE, width=2),
         )
 
     def update_positions(self, positions: list):
@@ -420,14 +420,25 @@ class DashboardTab(QWidget):
         # 카운트 라벨
         self._lbl_pos_count.setText(f"{len(positions)}종목")
 
-    # 청산사유 한글 매핑 (v2.3)
+    # 사유 한글 매핑 (v2.3 + legacy)
     _EXIT_REASON_KR = {
+        # v2.3 orchestrator (대문자)
         "STOP_LOSS": "손절",
         "TAKE_PROFIT_1": "TP1 분할(30%)",
         "TRAILING": "트레일링",
         "TREND_EXIT": "추세이탈",
         "TIME_EXIT": "시간청산",
         "FINAL_CLOSE": "강제청산",
+        # engine_legacy (소문자 — ExitReason.value)
+        "stop_loss": "손절",
+        "partial_target": "TP1 분할(30%)",
+        "target_reached": "목표가",
+        "trailing_stop": "트레일링",
+        "trend_exit": "추세이탈",
+        "max_hold": "시간청산",
+        "macd_dead": "데드크로스",
+        # 매수 사유
+        "signal": "매수신호",
     }
 
     def update_trades(self, trades: list):

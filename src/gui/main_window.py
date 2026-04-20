@@ -107,15 +107,6 @@ class MainWindow(QMainWindow):
         self.combo_mode.setCurrentText("paper")
         sidebar_layout.addWidget(self.combo_mode)
 
-        self.lbl_mode_badge = QLabel("모의투자")
-        self.lbl_mode_badge.setObjectName("modeBadge")
-        self.lbl_mode_badge.setAlignment(Qt.AlignCenter)
-        self.lbl_mode_badge.setStyleSheet(
-            "color: #a6e3a1; font-size: 10px; font-weight: bold; "
-            "padding: 2px 0; letter-spacing: 1px;"
-        )
-        sidebar_layout.addWidget(self.lbl_mode_badge)
-
         # ── 엔진 상태 ──
         sidebar_layout.addWidget(self._sidebar_section("엔진"))
 
@@ -691,6 +682,10 @@ class MainWindow(QMainWindow):
         # 엔진 ON: signal emit(swing_legacy.db)만 사용 → DB 타이머(swing.db) 중지
         if hasattr(self, "_db_timer") and self._db_timer.isActive():
             self._db_timer.stop()
+
+        # 수익 곡선 세션 리셋
+        if hasattr(self.dashboard_tab, "reset_equity"):
+            self.dashboard_tab.reset_equity()
 
         self._lbl_engine_status.setText("실시간 실행 중")
         self._lbl_engine_status.setStyleSheet(

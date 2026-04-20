@@ -29,7 +29,7 @@ _BASE = "#1e1e2e"
 _MANTLE = "#181825"
 _CRUST = "#11111b"
 
-# 청산사유 한글 매핑 (v2.3)
+# 사유 한글 매핑 (v2.3 + legacy)
 _EXIT_REASON_KR = {
     "STOP_LOSS": "손절",
     "TAKE_PROFIT_1": "TP1 분할(30%)",
@@ -37,6 +37,14 @@ _EXIT_REASON_KR = {
     "TREND_EXIT": "추세이탈",
     "TIME_EXIT": "시간청산",
     "FINAL_CLOSE": "강제청산",
+    "stop_loss": "손절",
+    "partial_target": "TP1 분할(30%)",
+    "target_reached": "목표가",
+    "trailing_stop": "트레일링",
+    "trend_exit": "추세이탈",
+    "max_hold": "시간청산",
+    "macd_dead": "데드크로스",
+    "signal": "매수신호",
 }
 
 # 전략 한글 매핑 (v2.3)
