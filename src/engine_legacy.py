@@ -1711,7 +1711,13 @@ class TradingEngine:
         )
 
     async def _daily_data_update(self):
-        """17:00 자동 실행 — 일봉/시총/지수 수집 + 시그널 생성.
+        """17:00 자동 실행 — 일봉/시총/지수 수집 (데이터 레이어만).
+
+        시그널 생성(Orchestrator)은 제외한다. 익일 후보는 08:30
+        _pre_market_screening에서 v2.3 스크리닝이 담당하며, Orchestrator
+        결과물(swing.db)은 engine_legacy가 사용하지 않기 때문. GUI의
+        DailyRunWorker는 5단계를 그대로 유지 — 수동 실행 시 즉시 신호
+        확인이 유용한 별도 경로.
 
         원천 타이밍:
           - FDR(Naver): 15:40~16:00 종가 반영
@@ -1735,11 +1741,10 @@ class TradingEngine:
 
         logger.info("일일 데이터 갱신 시작 (17:00 스케줄)")
         steps = [
-            ("1/5 신규 상장 감지", self._run_detect_new_listings),
-            ("2/5 일봉 증분",      self._run_collect_candles),
-            ("3/5 시총 증분",      self._run_collect_market_cap),
-            ("4/5 지수 갱신",      self._run_collect_index),
-            ("5/5 시그널 생성",    self._run_orchestrator),
+            ("1/4 신규 상장 감지", self._run_detect_new_listings),
+            ("2/4 일봉 증분",      self._run_collect_candles),
+            ("3/4 시총 증분",      self._run_collect_market_cap),
+            ("4/4 지수 갱신",      self._run_collect_index),
         ]
 
         failed: list[str] = []
@@ -1756,10 +1761,10 @@ class TradingEngine:
             self._data_update_running = False
 
         if failed:
-            msg = f"⚠ 일일 데이터 갱신 완료 (실패 {len(failed)}/5): {', '.join(failed)}"
+            msg = f"⚠ 일일 데이터 갱신 완료 (실패 {len(failed)}/4): {', '.join(failed)}"
             logger.warning(msg)
         else:
-            msg = "📦 일일 데이터 갱신 완료 (5/5)"
+            msg = "📦 일일 데이터 갱신 완료 (4/4)"
             logger.info(msg)
 
         try:
@@ -1767,7 +1772,7 @@ class TradingEngine:
         except Exception as e:
             logger.warning(f"일일 데이터 갱신 알림 실패 (무시): {e}")
 
-    # ── _daily_data_update 단계별 실행기 (DailyRunWorker와 동일 시맨틱) ──
+    # ── _daily_data_update 단계별 실행기 ──
 
     def _run_detect_new_listings(self):
         from src.data_pipeline import detect_new_listings as m
@@ -1790,11 +1795,6 @@ class TradingEngine:
             m.main()
         finally:
             sys.argv = orig_argv
-
-    def _run_orchestrator(self):
-        from src.engine.orchestrator import Orchestrator
-        orch = Orchestrator()
-        orch.run()
 
     def _daily_reset(self):
         """일일 리셋 (09:00)."""
