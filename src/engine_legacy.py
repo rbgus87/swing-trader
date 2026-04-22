@@ -128,6 +128,9 @@ class TradingEngine:
         self._breadth_ok: bool = True
         self._breadth_value: float = 0.0
 
+        # 17:00 일일 데이터 갱신 중복 실행 방지
+        self._data_update_running: bool = False
+
         # v2.3 진입 후보 캐시 (스크리닝에서 사전 계산)
         self._v23_entry_cache: dict = {}
 
@@ -205,6 +208,16 @@ class TradingEngine:
         h, m = report_time.split(":")
         self._scheduler.add_job(
             self._make_safe_job(self._daily_report, "일간리포트"),
+            "cron", hour=int(h), minute=int(m),
+            misfire_grace_time=_grace,
+        )
+
+        # 17:00 일일 데이터 갱신 (일봉/시총/지수 수집 + 시그널 생성)
+        # 모든 원천(FDR/KRX/Yahoo)이 종가/마감 데이터를 반영한 뒤 실행.
+        data_update_time = config.get("schedule.data_update_time", "17:00")
+        h, m = data_update_time.split(":")
+        self._scheduler.add_job(
+            self._make_safe_job(self._daily_data_update, "일일데이터갱신"),
             "cron", hour=int(h), minute=int(m),
             misfire_grace_time=_grace,
         )
@@ -1696,6 +1709,92 @@ class TradingEngine:
         logger.info(
             f"일간 리포트 발송: 매수{buy_count}/매도{sell_count}/PnL{int(realized_pnl):+,}"
         )
+
+    async def _daily_data_update(self):
+        """17:00 자동 실행 — 일봉/시총/지수 수집 + 시그널 생성.
+
+        원천 타이밍:
+          - FDR(Naver): 15:40~16:00 종가 반영
+          - KRX OpenAPI(시총): 16:00~16:30
+          - Yahoo(지수): 16:00~17:00
+        17:00이면 세 소스 모두 안전하게 반영 완료된 시점.
+
+        각 step은 실패해도 다음 step 계속 — 부분 성공 허용 (견고성 우선).
+        """
+        from src.utils.market_calendar import is_trading_day
+
+        today = datetime.now()
+        if not is_trading_day(today.date()):
+            logger.info("비거래일 — 일일 데이터 갱신 스킵")
+            return
+
+        if self._data_update_running:
+            logger.info("일일 데이터 갱신 이미 실행 중 — 스킵")
+            return
+        self._data_update_running = True
+
+        logger.info("일일 데이터 갱신 시작 (17:00 스케줄)")
+        steps = [
+            ("1/5 신규 상장 감지", self._run_detect_new_listings),
+            ("2/5 일봉 증분",      self._run_collect_candles),
+            ("3/5 시총 증분",      self._run_collect_market_cap),
+            ("4/5 지수 갱신",      self._run_collect_index),
+            ("5/5 시그널 생성",    self._run_orchestrator),
+        ]
+
+        failed: list[str] = []
+        try:
+            for label, func in steps:
+                try:
+                    logger.info(f"📦 {label} 시작")
+                    await asyncio.to_thread(func)
+                    logger.info(f"✅ {label} 완료")
+                except Exception as e:
+                    logger.opt(exception=True).warning(f"⚠ {label} 실패: {e}")
+                    failed.append(label)
+        finally:
+            self._data_update_running = False
+
+        if failed:
+            msg = f"⚠ 일일 데이터 갱신 완료 (실패 {len(failed)}/5): {', '.join(failed)}"
+            logger.warning(msg)
+        else:
+            msg = "📦 일일 데이터 갱신 완료 (5/5)"
+            logger.info(msg)
+
+        try:
+            self._telegram.send(msg)
+        except Exception as e:
+            logger.warning(f"일일 데이터 갱신 알림 실패 (무시): {e}")
+
+    # ── _daily_data_update 단계별 실행기 (DailyRunWorker와 동일 시맨틱) ──
+
+    def _run_detect_new_listings(self):
+        from src.data_pipeline import detect_new_listings as m
+        m.main()
+
+    def _run_collect_candles(self):
+        from src.data_pipeline import collect_daily_candles as m
+        m.main(force_resume=False, incremental=True)
+
+    def _run_collect_market_cap(self):
+        from src.data_pipeline import collect_market_cap as m
+        m.main()
+
+    def _run_collect_index(self):
+        import sys
+        from src.data_pipeline import collect_index_daily as m
+        orig_argv = sys.argv
+        sys.argv = [sys.argv[0], "--update-only"]
+        try:
+            m.main()
+        finally:
+            sys.argv = orig_argv
+
+    def _run_orchestrator(self):
+        from src.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.run()
 
     def _daily_reset(self):
         """일일 리셋 (09:00)."""
