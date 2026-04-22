@@ -5,6 +5,7 @@ python-telegram-bot 라이브러리는 사용하지 않는다.
 """
 
 import os
+import time
 from datetime import datetime
 
 import requests
@@ -34,13 +35,22 @@ class TelegramBot:
         self._base = f"https://api.telegram.org/bot{self._token}"
         self._cooldowns: dict[str, datetime] = {}
 
-    def send(self, message: str, parse_mode: str = "HTML", retries: int = 1) -> bool:
-        """메시지 전송. timeout=10초.
+    def send(
+        self,
+        message: str,
+        parse_mode: str = "HTML",
+        retries: int = 2,
+        retry_sleep_sec: int = 30,
+    ) -> bool:
+        """메시지 전송. timeout=30초, 실패 시 지정 간격으로 재시도.
+
+        실패해도 매매는 계속 진행하므로 로그 레벨은 WARNING.
 
         Args:
             message: 전송할 메시지 텍스트.
             parse_mode: 파싱 모드. 기본값 "HTML".
-            retries: 재시도 횟수 (기본 1=재시도 없음, 3=2회 재시도).
+            retries: 총 시도 횟수 (기본 2 = 최초 1회 + 30초 후 재시도 1회).
+            retry_sleep_sec: 재시도 전 대기 시간(초).
 
         Returns:
             전송 성공 여부.
@@ -54,12 +64,22 @@ class TelegramBot:
                         "text": message,
                         "parse_mode": parse_mode,
                     },
-                    timeout=10,
+                    timeout=30,
                 )
                 if resp.status_code == 200:
                     return True
+                last_err = f"status={resp.status_code}"
             except Exception as e:
-                logger.error(f"텔레그램 전송 실패 ({attempt + 1}/{retries}): {e}")
+                last_err = str(e)
+
+            is_last = attempt == retries - 1
+            if is_last:
+                logger.warning(f"텔레그램 전송 최종 실패 (무시): {last_err}")
+            else:
+                logger.warning(
+                    f"텔레그램 전송 실패, {retry_sleep_sec}초 후 재시도: {last_err}"
+                )
+                time.sleep(retry_sleep_sec)
         return False
 
     def send_with_cooldown(self, key: str, message: str, cooldown_sec: int) -> bool:

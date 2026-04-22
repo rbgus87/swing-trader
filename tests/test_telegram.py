@@ -19,8 +19,9 @@ def bot():
 
 @pytest.fixture
 def mock_post():
-    """requests.post 모킹."""
-    with patch("src.notification.telegram_bot.requests.post") as mock:
+    """requests.post 모킹. time.sleep도 같이 무력화해 재시도 지연을 제거한다."""
+    with patch("src.notification.telegram_bot.requests.post") as mock, \
+            patch("src.notification.telegram_bot.time.sleep"):
         mock.return_value = MagicMock(status_code=200)
         yield mock
 
@@ -43,7 +44,7 @@ class TestSend:
                 "text": "테스트 메시지",
                 "parse_mode": "HTML",
             },
-            timeout=10,
+            timeout=30,
         )
 
     def test_send_failure_status(self, bot, mock_post):

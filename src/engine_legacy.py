@@ -597,10 +597,19 @@ class TradingEngine:
             pos = self._dict_to_position(pos_dict)
 
             # 트레일링스탑 업데이트 (OHLCV 캐시 기반 ATR)
+            # StopManager.update_trailing_stop은 pos.high_since_entry를 in-memory로만
+            # 갱신하므로, 여기서 DB와 캐시에 persist해야 재시작 후에도 최고가가 유지된다.
             atr = self._get_atr(tick.code, pos.entry_price)
+            old_high = pos.high_since_entry
             new_stop = self._stop_mgr.update_trailing_stop(pos, tick.price, atr)
+            if pos.high_since_entry > old_high:
+                self._ds.update_position(
+                    pos.id, high_since_entry=pos.high_since_entry
+                )
+                pos_dict["high_since_entry"] = pos.high_since_entry
             if new_stop != pos.stop_price:
                 self._ds.update_position(pos.id, stop_price=new_stop)
+                pos_dict["stop_price"] = new_stop
                 pos.stop_price = new_stop
 
             # OHLCV 기반 종합 청산 판단
@@ -1637,11 +1646,21 @@ class TradingEngine:
         sell_count = sum(1 for t in trades if t["side"] == "sell")
         realized_pnl = sum(t.get("pnl", 0) for t in trades if t["side"] == "sell")
 
-        # 미실현 손익 (보유 포지션 기준 — 종가 미반영, 매입가 기준)
-        unrealized_pnl = 0  # 장마감 시 실시간 가격 없으므로 0
+        # 미실현 손익 (보유 포지션 × 최신가). 폴링 중 _latest_prices에 마감 근접 가격이
+        # 남아있으므로 장마감(15:35) 이후 리포트(16:00) 시점에 사실상 종가 기준이 된다.
+        # 가격 캐시에 없는 종목은 daily_candles의 최신 종가로 폴백, 그래도 없으면 매입가.
+        unrealized_pnl = 0
+        for pos in positions:
+            code = pos["code"]
+            entry_price = pos["entry_price"]
+            qty = pos["quantity"]
+            current = self._latest_prices.get(code)
+            if current is None:
+                current = self._get_latest_close(code) or entry_price
+            unrealized_pnl += (current - entry_price) * qty
 
         pnl_pct = realized_pnl / self._initial_capital * 100 if self._initial_capital > 0 else 0.0
-        current_capital = self._initial_capital + int(realized_pnl)
+        current_capital = self._initial_capital + int(realized_pnl) + int(unrealized_pnl)
 
         self._telegram.send_daily_report(
             date=today,
@@ -1702,6 +1721,21 @@ class TradingEngine:
                 pass
 
         logger.info("일일 리셋 완료")
+
+    def _get_latest_close(self, code: str) -> int | None:
+        """daily_candles 최신 종가 조회 (일일 리포트 미실현 손익 폴백용)."""
+        try:
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT close FROM daily_candles "
+                    "WHERE ticker = ? ORDER BY date DESC LIMIT 1",
+                    (code,),
+                ).fetchone()
+            if row and row["close"]:
+                return int(row["close"])
+        except Exception as e:
+            logger.debug(f"최신 종가 조회 실패 ({code}): {e}")
+        return None
 
     async def _refresh_minute_ohlcv(self):
         """60분봉 캐시 갱신 (장중 매시 정각+1분).
