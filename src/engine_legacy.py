@@ -267,6 +267,12 @@ class TradingEngine:
         self._candidates = []
         logger.info("v2.3 모드 — 장전 스크리닝으로 후보 동적 선정")
 
+        # 재시작 시 보유 포지션 high_since_entry 복구 (일봉 기반)
+        try:
+            self._sync_high_since_entry()
+        except Exception as e:
+            logger.warning(f"기동 시 high_since_entry 보정 실패: {e}")
+
         # 엔진 기동 즉시 v2.3 스크리닝 1회 실행 (스케줄 시각(08:30) 대기 없이 바로 후보 확보)
         try:
             await self._pre_market_screening()
@@ -1720,6 +1726,12 @@ class TradingEngine:
             except (ValueError, KeyError):
                 pass
 
+        # 전일 일봉 확정분 반영: high_since_entry 재동기화
+        try:
+            self._sync_high_since_entry()
+        except Exception as e:
+            logger.warning(f"일일 리셋 시 high_since_entry 보정 실패: {e}")
+
         logger.info("일일 리셋 완료")
 
     def _get_latest_close(self, code: str) -> int | None:
@@ -1736,6 +1748,46 @@ class TradingEngine:
         except Exception as e:
             logger.debug(f"최신 종가 조회 실패 ({code}): {e}")
         return None
+
+    def _sync_high_since_entry(self):
+        """보유 포지션의 high_since_entry를 daily_candles 기준으로 보정.
+
+        폴링 누락·프로세스 재시작으로 장중 고가를 놓쳤을 때,
+        진입일 이후 일봉 고가의 max로 DB를 동기화한다.
+        엔진 기동 시 및 매 거래일 09:00 일일 리셋에서 호출.
+        """
+        positions = self._ds.get_open_positions()
+        if not positions:
+            return
+
+        for pos_dict in positions:
+            code = pos_dict["code"]
+            entry_date = pos_dict["entry_date"]
+            current_high = int(
+                pos_dict.get("high_since_entry") or pos_dict["entry_price"]
+            )
+            try:
+                with get_connection() as conn:
+                    row = conn.execute(
+                        "SELECT MAX(high) AS max_high FROM daily_candles "
+                        "WHERE ticker = ? AND date >= ?",
+                        (code, entry_date),
+                    ).fetchone()
+                if not row or not row["max_high"]:
+                    continue
+                max_high = int(row["max_high"])
+                if max_high > current_high:
+                    self._ds.update_position(
+                        pos_dict["id"], high_since_entry=max_high
+                    )
+                    logger.info(
+                        f"high_since_entry 보정: {code} "
+                        f"{current_high:,} → {max_high:,}"
+                    )
+            except Exception as e:
+                logger.warning(f"high_since_entry 보정 실패 ({code}): {e}")
+
+        self._invalidate_positions_cache()
 
     async def _refresh_minute_ohlcv(self):
         """60분봉 캐시 갱신 (장중 매시 정각+1분).
