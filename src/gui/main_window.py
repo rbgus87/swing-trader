@@ -817,21 +817,36 @@ class MainWindow(QMainWindow):
             self._tray_show()
 
     def closeEvent(self, event):
-        if (self._worker and self._worker.isRunning()) or \
-           (self._live and self._live.isRunning()) or \
-           (self._daily and self._daily.isRunning()):
+        engine_running = (
+            (self._worker is not None and self._worker.isRunning())
+            or (self._live is not None and self._live.isRunning())
+            or (self._daily is not None and self._daily.isRunning())
+        )
+
+        if engine_running:
             event.ignore()
             self.hide()
             self._tray.show()
             self._tray.showMessage(
                 "Swing Trader",
-                "엔진 실행 중입니다. 트레이에서 실행됩니다.",
+                "엔진이 구동 중입니다. 트레이에서 실행됩니다.",
                 QSystemTrayIcon.Information,
                 2000,
             )
-        else:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "종료 확인",
+            "프로그램을 종료하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
             event.accept()
             self._cleanup_and_quit()
+        else:
+            event.ignore()
 
     def _cleanup_and_quit(self):
         if getattr(self, "_cleanup_done", False):
