@@ -314,18 +314,22 @@ def main(force_resume: bool = False, incremental: bool = False) -> None:
 
     if incremental:
         tickers = get_tickers_for_incremental()
-        # DB의 최대 거래일 기준으로 skip (장 열린 최신 날짜)
+        # next_start가 오늘 이하인 종목만 수집 (미래 요청 방지)
+        # 이전에는 max_db_date 기준으로 필터하여 모든 종목이 스킵되는 버그 있음
+        # (next_start = last+1 은 항상 max_db_date 보다 크므로 전부 제외됨)
         with get_connection() as conn:
             max_db_date = conn.execute(
                 "SELECT MAX(date) FROM daily_candles"
             ).fetchone()[0]
+        today_str = date.today().isoformat()
         before = len(tickers)
         tickers = [t for t in tickers
-                   if (t[1] is None) or (t[1] <= max_db_date)]
+                   if (t[1] is None) or (t[1] <= today_str)]
         skipped_up_to_date = before - len(tickers)
         logger.info(
             f"Incremental: {len(tickers)} to fetch "
-            f"(max_db_date={max_db_date}, skipped up-to-date: {skipped_up_to_date})"
+            f"(max_db_date={max_db_date}, today={today_str}, "
+            f"skipped up-to-date: {skipped_up_to_date})"
         )
     else:
         tickers = get_tickers_to_collect(force_resume)
