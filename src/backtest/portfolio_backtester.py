@@ -176,20 +176,32 @@ def load_all_candles(tickers: set, params: StrategyParams = None) -> dict:
     return result
 
 
-def load_kospi_ret_map(period: int) -> dict:
-    """KOSPI 지수의 N일 수익률 맵 {pd.Timestamp: float} 로드."""
+def _load_index_ret_map(index_code: str, period: int) -> dict:
+    """index_daily의 N일 수익률 맵 {pd.Timestamp: float} 로드."""
     with get_connection() as conn:
-        rows = conn.execute("""
-            SELECT date, close FROM index_daily
-            WHERE index_code = 'KOSPI' ORDER BY date
-        """).fetchall()
+        rows = conn.execute(
+            "SELECT date, close FROM index_daily WHERE index_code = ? ORDER BY date",
+            (index_code,),
+        ).fetchall()
     if not rows:
-        logger.warning("index_daily(KOSPI) empty — relative strength disabled")
+        logger.warning(f"index_daily({index_code}) empty — relative strength disabled")
         return {}
     df = pd.DataFrame([dict(r) for r in rows])
     df['date'] = pd.to_datetime(df['date'])
     df['ret_n'] = df['close'].pct_change(period)
     return dict(zip(df['date'], df['ret_n']))
+
+
+def load_kospi_ret_map(period: int) -> dict:
+    """하위 호환 — `_load_index_ret_map('KOSPI', period)`."""
+    return _load_index_ret_map('KOSPI', period)
+
+
+def load_ticker_market_map() -> dict:
+    """{ticker: market} 매핑 (KOSPI/KOSDAQ/UNKNOWN)."""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT ticker, market FROM stocks").fetchall()
+    return {r['ticker']: r['market'] for r in rows}
 
 
 def load_backtest_data(params: StrategyParams = None) -> dict:
@@ -243,9 +255,16 @@ def load_backtest_data(params: StrategyParams = None) -> dict:
         cursor = conn.execute("SELECT ticker, name FROM stocks")
         ticker_names = {row['ticker']: row['name'] for row in cursor.fetchall()}
 
-    logger.info("Loading KOSPI relative strength map...")
-    kospi_ret_map = load_kospi_ret_map(params.relative_strength_period)
-    logger.info(f"KOSPI ret map entries: {len(kospi_ret_map)}")
+    logger.info("Loading KOSPI/KOSDAQ relative strength maps...")
+    kospi_ret_map = _load_index_ret_map('KOSPI', params.relative_strength_period)
+    kosdaq_ret_map = _load_index_ret_map('KOSDAQ', params.relative_strength_period)
+    logger.info(
+        f"KOSPI ret map: {len(kospi_ret_map)} entries, "
+        f"KOSDAQ ret map: {len(kosdaq_ret_map)} entries"
+    )
+
+    ticker_market = load_ticker_market_map()
+    logger.info(f"Ticker→market map: {len(ticker_market)} entries")
 
     return {
         'trading_dates': trading_dates,
@@ -255,6 +274,8 @@ def load_backtest_data(params: StrategyParams = None) -> dict:
         'ticker_date_idx': ticker_date_idx,
         'ticker_names': ticker_names,
         'kospi_ret_map': kospi_ret_map,
+        'kosdaq_ret_map': kosdaq_ret_map,
+        'ticker_market': ticker_market,
     }
 
 
@@ -265,8 +286,10 @@ def precompute_daily_signals(
     initial_universe: set,
     params: StrategyParams = None,
     kospi_ret_map: dict = None,
+    kosdaq_ret_map: dict = None,
+    ticker_market: dict = None,
 ) -> dict:
-    """v2.2 상태 기반 추세추종 진입 후보 사전 계산.
+    """v2.4 상태 기반 추세추종 진입 후보 사전 계산.
 
     조건 (모두 AND):
       완전 정배열 (close > MA20 > MA60 > MA120)
@@ -276,8 +299,9 @@ def precompute_daily_signals(
       거래량 avg_volume_5 > avg_volume_20
       ADX ≥ adx_threshold / 거래대금 ≥ min_trading_value
       ATR/close 밴드 atr_price_min ~ atr_price_max
-      상대강도 stock_ret_n - KOSPI_ret_n ≥ relative_strength_threshold
-        (kospi_ret_map 제공 시에만)
+      상대강도 stock_ret_n - benchmark_ret_n ≥ relative_strength_threshold
+        — v2.4: KOSDAQ 종목은 KOSDAQ, 그 외 KOSPI 대비
+        — kosdaq_ret_map/ticker_market 미제공 시 KOSPI 통일 (v2.3 동작)
 
     Returns:
         {
@@ -289,6 +313,8 @@ def precompute_daily_signals(
     """
     if params is None:
         params = StrategyParams()
+
+    market_aware = kosdaq_ret_map is not None and ticker_market is not None
 
     breadth_by_date = {}
     candidates_by_date = {}
@@ -326,6 +352,7 @@ def precompute_daily_signals(
         breadth_by_date[date_str] = above / total_b if total_b > 0 else 0.5
 
         kospi_ret = kospi_ret_map.get(ts) if kospi_ret_map else None
+        kosdaq_ret = kosdaq_ret_map.get(ts) if kosdaq_ret_map else None
 
         cands = []
         for ticker in universe:
@@ -362,10 +389,20 @@ def precompute_daily_signals(
             atr_ratio = day['atr'] / day['close']
             if not (params.atr_price_min <= atr_ratio <= params.atr_price_max):
                 continue
-            if kospi_ret_map is not None:
-                if kospi_ret is None or pd.isna(kospi_ret):
+
+            # 상대강도 (v2.4 시장별 분기)
+            if market_aware:
+                mkt = ticker_market.get(ticker, 'KOSPI')
+                bench_ret = kosdaq_ret if mkt == 'KOSDAQ' else kospi_ret
+            elif kospi_ret_map is not None:
+                bench_ret = kospi_ret
+            else:
+                bench_ret = None
+
+            if kospi_ret_map is not None or market_aware:
+                if bench_ret is None or pd.isna(bench_ret):
                     continue
-                if (day['stock_ret_n'] - float(kospi_ret)) < params.relative_strength_threshold:
+                if (day['stock_ret_n'] - float(bench_ret)) < params.relative_strength_threshold:
                     continue
 
             cands.append({

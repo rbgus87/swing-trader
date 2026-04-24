@@ -362,24 +362,31 @@ class TradingEngine:
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         params = self._params
 
-        # 1. KOSPI 20일 수익률 (상대강도용)
-        kospi_ret_n = None
-        try:
-            with get_connection() as conn:
-                rows = conn.execute(
-                    "SELECT date, close FROM index_daily "
-                    "WHERE index_code = 'KOSPI' AND date <= ? "
-                    "ORDER BY date DESC LIMIT ?",
-                    (today, params.relative_strength_period + 5),
-                ).fetchall()
-            if len(rows) >= params.relative_strength_period + 1:
-                kospi_ret_n = (
-                    rows[0]['close']
-                    / rows[params.relative_strength_period]['close']
-                ) - 1.0
-                logger.info(f"KOSPI 20d return: {kospi_ret_n:+.2%}")
-        except Exception as e:
-            logger.warning(f"KOSPI index_daily 조회 실패: {e}")
+        # 1. KOSPI / KOSDAQ 20일 수익률 (v2.4 시장별 상대강도용)
+        def _fetch_index_ret(index_code: str) -> float | None:
+            try:
+                with get_connection() as conn:
+                    idx_rows = conn.execute(
+                        "SELECT date, close FROM index_daily "
+                        "WHERE index_code = ? AND date <= ? "
+                        "ORDER BY date DESC LIMIT ?",
+                        (index_code, today, params.relative_strength_period + 5),
+                    ).fetchall()
+                if len(idx_rows) >= params.relative_strength_period + 1:
+                    return (
+                        idx_rows[0]['close']
+                        / idx_rows[params.relative_strength_period]['close']
+                    ) - 1.0
+            except Exception as e:
+                logger.warning(f"{index_code} index_daily 조회 실패: {e}")
+            return None
+
+        kospi_ret_n = _fetch_index_ret('KOSPI')
+        kosdaq_ret_n = _fetch_index_ret('KOSDAQ')
+        if kospi_ret_n is not None:
+            logger.info(f"KOSPI 20d return: {kospi_ret_n:+.2%}")
+        if kosdaq_ret_n is not None:
+            logger.info(f"KOSDAQ 20d return: {kosdaq_ret_n:+.2%}")
 
         # 2. 가드레일: breadth (MA200 위 종목 비율)
         breadth = self._compute_breadth(today)
@@ -395,7 +402,7 @@ class TradingEngine:
         with get_connection() as conn:
             universe_row = conn.execute(
                 """
-                SELECT DISTINCT m.ticker, s.name
+                SELECT DISTINCT m.ticker, s.name, s.market
                 FROM market_cap_history m
                 JOIN stocks s ON m.ticker = s.ticker
                 WHERE m.date = (
@@ -407,13 +414,13 @@ class TradingEngine:
                 """,
                 (today, V23_MCAP_THRESHOLD, *V23_EXCLUDED_TYPES, today),
             ).fetchall()
-        universe = [(r['ticker'], r['name']) for r in universe_row]
+        universe = [(r['ticker'], r['name'], r['market']) for r in universe_row]
         logger.info(f"v2.3 Universe: {len(universe)}종목")
 
         # 4. 각 종목 일봉 로드 + 조건 체크
         candidates = {}
         with get_connection() as conn:
-            for ticker, name in universe:
+            for ticker, name, market in universe:
                 rows = conn.execute(
                     "SELECT date, open, high, low, close, volume "
                     "FROM daily_candles WHERE ticker = ? AND date <= ? "
@@ -456,8 +463,10 @@ class TradingEngine:
                 if not (params.atr_price_min <= atr_ratio
                         <= params.atr_price_max):
                     continue
-                if kospi_ret_n is not None:
-                    rs = t['stock_ret_n'] - kospi_ret_n
+                # 상대강도 (v2.4 시장별 분기): KOSDAQ→KOSDAQ, 그 외→KOSPI
+                bench_ret = kosdaq_ret_n if market == 'KOSDAQ' else kospi_ret_n
+                if bench_ret is not None:
+                    rs = t['stock_ret_n'] - bench_ret
                     if rs < params.relative_strength_threshold:
                         continue
 
