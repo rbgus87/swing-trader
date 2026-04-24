@@ -1710,6 +1710,46 @@ class TradingEngine:
             f"일간 리포트 발송: 매수{buy_count}/매도{sell_count}/PnL{int(realized_pnl):+,}"
         )
 
+        try:
+            self._update_swing_db_snapshot()
+        except Exception as e:
+            logger.warning(f"swing.db snapshot 갱신 실패: {e}")
+
+    def _update_swing_db_snapshot(self):
+        """swing.db daily_portfolio_snapshot 갱신 — GUI 표시용."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        positions = self._ds.get_open_positions()
+
+        cash = self._get_available_capital()
+        portfolio_value = float(cash)
+        for pos in positions:
+            code = pos.get("code", "")
+            entry_price = pos.get("entry_price", 0)
+            qty = pos.get("quantity", 0)
+            price = self._latest_prices.get(code)
+            if price is None:
+                price = self._get_latest_close(code) or entry_price
+            portfolio_value += float(price) * qty
+
+        gate_status = "OPEN" if self._breadth_ok else "CLOSED"
+
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO daily_portfolio_snapshot
+                (date, cash, portfolio_value, positions_count, breadth, gate_status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    today,
+                    float(cash),
+                    portfolio_value,
+                    len(positions),
+                    float(self._breadth_value),
+                    gate_status,
+                ),
+            )
+
     async def _daily_data_update(self):
         """17:00 자동 실행 — 일봉/시총/지수 수집 (데이터 레이어만).
 
