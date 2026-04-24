@@ -141,37 +141,39 @@ schedule:
 # Phase 3 엔진 재구축 시 일괄 제거 예정.
 # ============================================================================
 
-# --- [LEGACY] 종목 리스트 (Phase 2는 동적 Universe Pool 사용) ---
-watchlist:
-  - '005930'
-  - '000660'
-  - '005380'
-  - '000270'
-  - '068270'
-  - '035420'
-  - '035720'
-  - '105560'
-  - '055550'
-  - '066570'
-  - '006400'
-  - '003670'
-  - '012330'
-  - '028260'
-  - '096770'
-  - '003550'
-  - '034730'
-  - '032830'
-  - '030200'
-  - '017670'
-
-# --- [LEGACY] watchlist 갱신 ---
-watchlist_refresh:
-  enabled: true
-  min_market_cap: 5_000_000_000_000
-  min_daily_amount: 10_000_000_000
-  min_atr_pct: 0.02
-  max_atr_pct: 0.05
-  top_n: 20
+# ── [LEGACY] v1 설정 (v2.3에서 사용하지 않음) ──
+# v2.3은 장전 Universe Pool 스크리닝으로 후보를 동적 생성한다.
+# 아래 키들은 참조 보존 목적으로만 주석화. 필요 시 git 이력에서 복원.
+#
+# watchlist:
+#   - '005930'
+#   - '000660'
+#   - '005380'
+#   - '000270'
+#   - '068270'
+#   - '035420'
+#   - '035720'
+#   - '105560'
+#   - '055550'
+#   - '066570'
+#   - '006400'
+#   - '003670'
+#   - '012330'
+#   - '028260'
+#   - '096770'
+#   - '003550'
+#   - '034730'
+#   - '032830'
+#   - '030200'
+#   - '017670'
+#
+# watchlist_refresh:
+#   enabled: true
+#   min_market_cap: 5_000_000_000_000
+#   min_daily_amount: 10_000_000_000
+#   min_atr_pct: 0.02
+#   max_atr_pct: 0.05
+#   top_n: 20
 
 # --- [LEGACY] Pre-Screening ---
 pre_screening:
@@ -244,10 +246,12 @@ strategy:
   partial_target_pct: 0.5
   partial_sell_ratio: 0.5
 
-# --- [LEGACY] 조건검색 ---
-watchlist_mode: "condition"
-condition_search:
-  enabled: true
-  condition_name: "swing_pre_cross"
-  fallback_to_fixed: true
-  max_stocks: 30
+# ── [LEGACY] HTS 조건검색 (v2.3 저녁 스크리닝 스킵됨) ──
+# v2.3은 장전 Universe 스크리닝 하나로 진입 후보를 뽑는다.
+#
+# watchlist_mode: "condition"
+# condition_search:
+#   enabled: true
+#   condition_name: "swing_pre_cross"
+#   fallback_to_fixed: true
+#   max_stocks: 30
