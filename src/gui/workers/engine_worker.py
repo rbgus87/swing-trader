@@ -1,6 +1,6 @@
 """Worker 스레드 모음.
 
-- EngineWorker: v2.3 Orchestrator(EOD 배치) 1회 실행.
+- EngineWorker: v2.4 Orchestrator(EOD 배치) 1회 실행.
 - LegacyEngineWorker: engine_legacy.TradingEngine(실시간 asyncio 루프) 구동.
 """
 

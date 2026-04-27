@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("appTitle")
         sidebar_layout.addWidget(title)
 
-        ver_label = QLabel("v2.3")
+        ver_label = QLabel("v2.4")
         ver_label.setStyleSheet(
             "color: #45475a; font-size: 10px; margin-top: -8px; padding: 0;"
         )
@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         # ── 전략 요약 ──
         sidebar_layout.addWidget(self._sidebar_section("전략"))
 
-        self._lbl_strategy_name = QLabel("TF v2.3")
+        self._lbl_strategy_name = QLabel("TF v2.4")
         self._lbl_strategy_name.setObjectName("strategyName")
         sidebar_layout.addWidget(self._lbl_strategy_name)
 
@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("▶ 시작")
         self.btn_start.setObjectName("startBtn")
         self.btn_start.setCursor(Qt.PointingHandCursor)
-        self.btn_start.setToolTip("실시간 엔진 시작 (engine_legacy + v2.3 전략)")
+        self.btn_start.setToolTip("실시간 엔진 시작 (engine_legacy + v2.4 전략)")
         btn_live_row.addWidget(self.btn_start)
 
         self.btn_stop = QPushButton("■ 중지")
@@ -499,16 +499,16 @@ class MainWindow(QMainWindow):
             })
         self.dashboard_tab.update_trades(trade_dicts)
 
-        # 상태 카드
+        # 상태 카드 (daily_pnl_pct/mdd는 비율 — dashboard_tab에서 ×100 표시)
         cash = snapshot['cash'] if snapshot else 0
         pv = snapshot['portfolio_value'] if snapshot else 0
         initial = 5_000_000
-        pnl_pct = ((pv - initial) / initial * 100) if pv and initial else 0.0
+        pnl_ratio = ((pv - initial) / initial) if pv and initial else 0.0
         self.dashboard_tab.update_status({
             "capital": int(cash or 0),
             "candidates": len(entry_signals),
             "max_positions": MAX_POSITIONS,
-            "daily_pnl_pct": pnl_pct,
+            "daily_pnl_pct": pnl_ratio,
             "mdd": 0.0,
             "portfolio_value": int(pv or 0),
         })
@@ -554,7 +554,7 @@ class MainWindow(QMainWindow):
 
     def _update_status_bar(self, snapshot: dict | None):
         mode = self.combo_mode.currentText().upper()
-        strategy = "TF v2.3"
+        strategy = "TF v2.4"
         next_td = self._next_trading_date()
         if snapshot:
             gate = snapshot.get('gate_status') or 'UNKNOWN'

@@ -29,7 +29,7 @@ _BASE = "#1e1e2e"
 _MANTLE = "#181825"
 _CRUST = "#11111b"
 
-# 사유 한글 매핑 (v2.3 + legacy)
+# 사유 한글 매핑 (v2.4 + legacy)
 _EXIT_REASON_KR = {
     "STOP_LOSS": "손절",
     "TAKE_PROFIT_1": "TP1 분할(30%)",
@@ -47,8 +47,8 @@ _EXIT_REASON_KR = {
     "signal": "매수신호",
 }
 
-# 전략 한글 매핑 (v2.3)
-_STRATEGY_KR = {"TF": "추세추종 v2.3"}
+# 전략 한글 매핑 (v2.4)
+_STRATEGY_KR = {"TF": "추세추종 v2.4", "TF_v2.3": "추세추종 v2.4"}
 
 
 class TradeHistoryTab(QWidget):
@@ -175,43 +175,60 @@ class TradeHistoryTab(QWidget):
     # ── 데이터 ──
 
     def _load_data(self):
-        """positions 테이블(CLOSED) → 매매 기록 형태로 변환."""
+        """swing_legacy.db `trades` 테이블(side='sell')에서 매매 기록 로드."""
+        trades: list[dict] = []
         try:
-            from src.data_pipeline.db import get_connection
+            import sqlite3
+            from pathlib import Path
 
-            trades = []
-            with get_connection() as conn:
-                rows = conn.execute(
-                    "SELECT p.*, s.name FROM positions p "
-                    "LEFT JOIN stocks s ON s.ticker = p.ticker "
-                    "WHERE p.status = 'CLOSED' "
-                    "ORDER BY p.exit_date DESC, p.id DESC LIMIT 500"
-                ).fetchall()
+            from src.data_pipeline.db import get_connection
+            from src.datastore import DataStore
+
+            ds = DataStore()
+            db_path = ds._db_path
+
+            # swing.db에서 종목명 매핑
+            stock_names: dict[str, str] = {}
+            try:
+                with get_connection() as sconn:
+                    for r in sconn.execute(
+                        "SELECT ticker, name FROM stocks"
+                    ).fetchall():
+                        stock_names[r['ticker']] = r['name']
+            except Exception:
+                pass
+
+            if Path(db_path).exists():
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                try:
+                    rows = conn.execute(
+                        "SELECT * FROM trades WHERE side = 'sell' "
+                        "ORDER BY executed_at DESC LIMIT 500"
+                    ).fetchall()
+                finally:
+                    conn.close()
+
                 for r in rows:
                     d = dict(r)
-                    entry_price = d.get('entry_price') or 0
-                    exit_price = d.get('exit_price') or 0
-                    shares = d.get('initial_shares') or d.get('shares') or 0
-                    pnl = d.get('pnl_amount') or 0
-                    pnl_pct = (
-                        (exit_price - entry_price) / entry_price
-                        if entry_price else 0
-                    )
+                    code = d.get('code', '')
                     trades.append({
-                        "executed_at": str(d.get('exit_date') or ''),
-                        "code": d.get('ticker', ''),
-                        "name": d.get('name') or d.get('ticker', ''),
+                        "executed_at": str(d.get('executed_at') or ''),
+                        "code": code,
+                        "name": d.get('name') or stock_names.get(code, code),
                         "side": "sell",
-                        "quantity": shares,
-                        "price": exit_price,
-                        "pnl": pnl,
-                        "pnl_pct": pnl_pct,
-                        "entry_strategy": d.get('strategy', 'TF'),
-                        "reason": d.get('exit_reason', ''),
+                        "quantity": int(d.get('quantity') or 0),
+                        "price": int(d.get('price') or 0),
+                        "pnl": float(d.get('pnl') or 0),
+                        "pnl_pct": float(d.get('pnl_pct') or 0),
+                        "entry_strategy": "TF",
+                        "reason": d.get('reason', '') or '',
                     })
-            self._trades = trades
         except Exception:
-            self._trades = []
+            import traceback
+            traceback.print_exc()
+            trades = []
+        self._trades = trades
         self._apply_filters()
 
     def _on_filter_changed(self):

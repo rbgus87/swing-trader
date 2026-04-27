@@ -41,7 +41,7 @@ class DashboardTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._max_positions = 4  # v2.3 고정
+        self._max_positions = 4  # v2.4 고정
         self._init_ui()
 
     def _init_ui(self):
@@ -292,20 +292,20 @@ class DashboardTab(QWidget):
         cand_val.setText(f"{candidates}건")
 
         # 포지션 카드 (positions_update에서도 갱신)
-        # 일일 손익 카드
+        # 일일 손익 카드 (pnl은 비율 — 0.05 = 5%)
         pnl = status.get("daily_pnl_pct", 0.0)
         pnl_color = _GREEN if pnl >= 0 else _RED
         _, pnl_val, _ = self._stat_pnl
-        pnl_val.setText(f"{pnl:+.2f}%")
+        pnl_val.setText(f"{pnl * 100:+.2f}%")
         pnl_val.setStyleSheet(
             f"color: {pnl_color}; font-size: 18px; font-weight: bold;"
         )
 
-        # MDD 카드
+        # MDD 카드 (mdd는 비율 — -0.05 = -5%)
         mdd = status.get("mdd", 0.0)
-        mdd_color = _RED if mdd < -5 else _SUBTEXT
+        mdd_color = _RED if mdd < -0.05 else _SUBTEXT
         _, mdd_val, _ = self._stat_mdd
-        mdd_val.setText(f"{mdd:.1f}%")
+        mdd_val.setText(f"{mdd * 100:.1f}%")
         mdd_val.setStyleSheet(
             f"color: {mdd_color}; font-size: 18px; font-weight: bold;"
         )
@@ -314,9 +314,10 @@ class DashboardTab(QWidget):
         self._capital = capital
         self._candidates_count = candidates
 
-        # 차트 데이터 업데이트 — pnl은 이미 "현재까지 누적 손익%"이므로 그대로 시계열 추가.
-        if self._has_chart and abs(pnl) <= 50:
-            self._equity_data.append(pnl)
+        # 차트 데이터 업데이트 — 비율을 % 단위로 변환해 시계열 추가.
+        pnl_pct_display = pnl * 100
+        if self._has_chart and abs(pnl_pct_display) <= 50:
+            self._equity_data.append(pnl_pct_display)
             self._update_chart()
 
     def reset_equity(self):
@@ -354,7 +355,7 @@ class DashboardTab(QWidget):
             else:
                 pnl_pct = 0.0
 
-            strategy_kr = {"TF": "추세추종 v2.3"}
+            strategy_kr = {"TF": "추세추종 v2.4", "TF_v2.3": "추세추종 v2.4"}
             entry_strat = pos.get("entry_strategy", "")
             strat_display = strategy_kr.get(entry_strat, entry_strat)
 
@@ -420,9 +421,9 @@ class DashboardTab(QWidget):
         # 카운트 라벨
         self._lbl_pos_count.setText(f"{len(positions)}종목")
 
-    # 사유 한글 매핑 (v2.3 + legacy)
+    # 사유 한글 매핑 (v2.4 + legacy)
     _EXIT_REASON_KR = {
-        # v2.3 orchestrator (대문자)
+        # v2.4 orchestrator (대문자)
         "STOP_LOSS": "손절",
         "TAKE_PROFIT_1": "TP1 분할(30%)",
         "TRAILING": "트레일링",
