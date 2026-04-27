@@ -363,9 +363,24 @@ class MainWindow(QMainWindow):
                         positions_count INTEGER NOT NULL,
                         breadth REAL,
                         gate_status TEXT,
+                        mdd REAL DEFAULT 0,
+                        peak_capital REAL DEFAULT 0,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                # 기존 DB 호환: mdd/peak_capital 컬럼 추가 (없으면)
+                import sqlite3
+                for col, defn in (
+                    ("mdd", "REAL DEFAULT 0"),
+                    ("peak_capital", "REAL DEFAULT 0"),
+                ):
+                    try:
+                        conn.execute(
+                            f"ALTER TABLE daily_portfolio_snapshot "
+                            f"ADD COLUMN {col} {defn}"
+                        )
+                    except sqlite3.OperationalError:
+                        pass
         except Exception as e:
             logger.warning(f"swing_trade.db 보조 테이블 보장 실패: {e}")
 
@@ -500,12 +515,13 @@ class MainWindow(QMainWindow):
         pv = snapshot['portfolio_value'] if snapshot else 0
         initial = 5_000_000
         pnl_ratio = ((pv - initial) / initial) if pv and initial else 0.0
+        mdd_ratio = (snapshot.get('mdd') or 0.0) if snapshot else 0.0
         self.dashboard_tab.update_status({
             "capital": int(cash or 0),
             "candidates": len(entry_signals),
             "max_positions": MAX_POSITIONS,
             "daily_pnl_pct": pnl_ratio,
-            "mdd": 0.0,
+            "mdd": float(mdd_ratio),
             "portfolio_value": int(pv or 0),
         })
 

@@ -175,12 +175,16 @@ class TradeHistoryTab(QWidget):
     # ── 데이터 ──
 
     def _load_data(self):
-        """swing_trade.db `trades` 테이블(side='sell')에서 매매 기록 로드."""
+        """매매 기록 로드 — CLOSED 포지션은 매수+매도 2행, OPEN은 매수 1행.
+
+        - swing_trade.db.positions: 보유 + 청산 이력
+        - swing_trade.db.trades(side='sell'): 매도 가격/손익/사유 매칭
+        - swing_data.db.stocks: 종목명 매핑
+        """
         trades: list[dict] = []
         try:
             from src.data_pipeline.db import get_data_db, get_trade_db
 
-            # swing_data.db에서 종목명 매핑
             stock_names: dict[str, str] = {}
             try:
                 with get_data_db() as sconn:
@@ -191,31 +195,93 @@ class TradeHistoryTab(QWidget):
             except Exception:
                 pass
 
-            # swing_trade.db에서 매도 기록
-            try:
-                with get_trade_db() as conn:
-                    rows = conn.execute(
-                        "SELECT * FROM trades WHERE side = 'sell' "
-                        "ORDER BY executed_at DESC LIMIT 500"
-                    ).fetchall()
-            except Exception:
-                rows = []
+            with get_trade_db() as conn:
+                # OPEN/SELLING 포지션 — 매수 행만 (보유 중)
+                open_rows = conn.execute(
+                    "SELECT * FROM positions "
+                    "WHERE status IN ('open', 'selling') "
+                    "ORDER BY entry_date DESC"
+                ).fetchall()
+                for p in open_rows:
+                    d = dict(p)
+                    code = d.get('code', '')
+                    trades.append({
+                        "executed_at": str(d.get('entry_date') or ''),
+                        "code": code,
+                        "name": d.get('name') or stock_names.get(code, code),
+                        "side": "buy",
+                        "quantity": int(d.get('quantity') or 0),
+                        "price": int(d.get('entry_price') or 0),
+                        "pnl": 0,
+                        "pnl_pct": 0,
+                        "entry_strategy": d.get('entry_strategy') or 'TF',
+                        "reason": "보유 중",
+                    })
 
-            for r in rows:
-                d = dict(r)
-                code = d.get('code', '')
-                trades.append({
-                    "executed_at": str(d.get('executed_at') or ''),
-                    "code": code,
-                    "name": d.get('name') or stock_names.get(code, code),
-                    "side": "sell",
-                    "quantity": int(d.get('quantity') or 0),
-                    "price": int(d.get('price') or 0),
-                    "pnl": float(d.get('pnl') or 0),
-                    "pnl_pct": float(d.get('pnl_pct') or 0),
-                    "entry_strategy": "TF",
-                    "reason": d.get('reason', '') or '',
-                })
+                # CLOSED 포지션 — 매수 행 + 매도 행 (exit_date 기준 최신순)
+                closed_rows = conn.execute(
+                    "SELECT * FROM positions WHERE status = 'closed' "
+                    "ORDER BY entry_date DESC LIMIT 500"
+                ).fetchall()
+
+                # 매도 trade를 code+entry_date로 매칭 (재진입 고려)
+                for p in closed_rows:
+                    d = dict(p)
+                    code = d.get('code', '')
+                    entry_date = str(d.get('entry_date') or '')
+                    name = d.get('name') or stock_names.get(code, code)
+                    entry_price = int(d.get('entry_price') or 0)
+                    strategy = d.get('entry_strategy') or 'TF'
+
+                    sell = conn.execute(
+                        "SELECT * FROM trades "
+                        "WHERE code = ? AND side = 'sell' AND executed_at >= ? "
+                        "ORDER BY executed_at ASC LIMIT 1",
+                        (code, entry_date),
+                    ).fetchone()
+
+                    if sell:
+                        sd = dict(sell)
+                        exit_at = str(sd.get('executed_at') or '')
+                        exit_price = int(sd.get('price') or 0)
+                        pnl = float(sd.get('pnl') or 0)
+                        pnl_pct = float(sd.get('pnl_pct') or 0)
+                        reason = sd.get('reason') or ''
+                        sell_qty = int(sd.get('quantity') or d.get('quantity') or 0)
+                    else:
+                        exit_at = ''
+                        exit_price = 0
+                        pnl = 0.0
+                        pnl_pct = 0.0
+                        reason = ''
+                        sell_qty = int(d.get('quantity') or 0)
+
+                    # 매수 행
+                    trades.append({
+                        "executed_at": entry_date,
+                        "code": code,
+                        "name": name,
+                        "side": "buy",
+                        "quantity": sell_qty,
+                        "price": entry_price,
+                        "pnl": 0,
+                        "pnl_pct": 0,
+                        "entry_strategy": strategy,
+                        "reason": "",
+                    })
+                    # 매도 행
+                    trades.append({
+                        "executed_at": exit_at,
+                        "code": code,
+                        "name": name,
+                        "side": "sell",
+                        "quantity": sell_qty,
+                        "price": exit_price,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "entry_strategy": strategy,
+                        "reason": reason,
+                    })
         except Exception:
             import traceback
             traceback.print_exc()

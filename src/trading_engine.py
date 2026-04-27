@@ -7,6 +7,7 @@ asyncio 기반으로 동작한다.
 import asyncio
 import inspect
 import logging
+import sqlite3
 import time
 from datetime import datetime
 from typing import Literal
@@ -154,8 +155,9 @@ class TradingEngine:
         self._daily_trades_cache: list[dict] | None = None  # 당일 매매 기록 캐시
         self._entry_logged: dict[str, str] = {}  # 종목별 마지막 로그 사유 (반복 방지)
 
-        # MDD 초기 자본 설정
+        # MDD 초기 자본 설정 + DB에서 마지막 세션 복원
         self._risk_mgr.set_initial_capital(float(self._initial_capital))
+        self._restore_mdd_from_db()
 
         # 스케줄러
         self._scheduler = AsyncIOScheduler()
@@ -1724,6 +1726,59 @@ class TradingEngine:
         except Exception as e:
             logger.warning(f"swing.db snapshot 갱신 실패: {e}")
 
+    def _restore_mdd_from_db(self):
+        """마지막 daily_portfolio_snapshot 행에서 peak_capital + MDD 복원.
+
+        엔진 재시작 시 RiskManager.peak_capital/current_mdd가 0으로 리셋되어
+        MDD 추적이 끊기는 것을 방지. 컬럼이 없거나 행이 없으면 묵살하고 초기값
+        유지 (set_initial_capital 결과).
+        """
+        try:
+            with get_trade_db() as conn:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='daily_portfolio_snapshot'"
+                ).fetchone()
+                if not row:
+                    return
+
+                # 컬럼 확인 — mdd/peak_capital 없으면 복원 불가
+                cols = {
+                    r[1] for r in conn.execute(
+                        "PRAGMA table_info(daily_portfolio_snapshot)"
+                    ).fetchall()
+                }
+                if 'mdd' not in cols or 'peak_capital' not in cols:
+                    return
+
+                row = conn.execute(
+                    "SELECT portfolio_value, mdd, peak_capital "
+                    "FROM daily_portfolio_snapshot "
+                    "ORDER BY date DESC LIMIT 1"
+                ).fetchone()
+                if not row:
+                    return
+
+                last_value = float(row['portfolio_value'] or 0)
+                last_mdd = float(row['mdd'] or 0)
+                last_peak = float(row['peak_capital'] or 0)
+
+                # peak_capital 우선 사용. 없으면 mdd 역산.
+                if last_peak > 0:
+                    peak = last_peak
+                elif last_mdd < 0 and last_value > 0:
+                    peak = last_value / (1 + last_mdd)
+                else:
+                    peak = max(last_value, float(self._initial_capital))
+
+                self._risk_mgr._peak_capital = float(peak)
+                self._risk_mgr.current_mdd = float(last_mdd)
+                logger.info(
+                    f"MDD 복원: peak={peak:,.0f}, MDD={last_mdd:.2%}"
+                )
+        except Exception as e:
+            logger.warning(f"MDD 복원 실패 (초기값 유지): {e}")
+
     def _update_swing_db_snapshot(self):
         """swing_trade.db daily_portfolio_snapshot 갱신 — GUI 표시용."""
         today = datetime.now().strftime("%Y-%m-%d")
@@ -1752,15 +1807,33 @@ class TradingEngine:
                     positions_count INTEGER NOT NULL,
                     breadth REAL,
                     gate_status TEXT,
+                    mdd REAL DEFAULT 0,
+                    peak_capital REAL DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            # 기존 DB 호환: mdd/peak_capital 컬럼 추가 (없으면)
+            for col, defn in (
+                ("mdd", "REAL DEFAULT 0"),
+                ("peak_capital", "REAL DEFAULT 0"),
+            ):
+                try:
+                    conn.execute(
+                        f"ALTER TABLE daily_portfolio_snapshot ADD COLUMN {col} {defn}"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
+            # MDD 갱신 (현재 portfolio_value 기준)
+            self._risk_mgr.update_mdd(float(portfolio_value))
+
             conn.execute(
                 """
                 INSERT OR REPLACE INTO daily_portfolio_snapshot
-                (date, cash, portfolio_value, positions_count, breadth, gate_status)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (date, cash, portfolio_value, positions_count, breadth,
+                 gate_status, mdd, peak_capital)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     today,
@@ -1769,6 +1842,8 @@ class TradingEngine:
                     len(positions),
                     float(self._breadth_value),
                     gate_status,
+                    float(self._risk_mgr.current_mdd),
+                    float(self._risk_mgr._peak_capital),
                 ),
             )
 
