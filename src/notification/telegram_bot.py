@@ -2,14 +2,22 @@
 
 requests 직접 호출로 Telegram Bot API를 사용하여 매매 알림을 발송한다.
 python-telegram-bot 라이브러리는 사용하지 않는다.
+
+전송은 별도 스레드풀에서 실행하여 호출측 asyncio 이벤트루프 블로킹을 방지한다.
 """
 
+import concurrent.futures
 import os
 import time
 from datetime import datetime
 
 import requests
 from loguru import logger
+
+
+_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="telegram"
+)
 
 
 class TelegramBot:
@@ -42,7 +50,7 @@ class TelegramBot:
         retries: int = 2,
         retry_sleep_sec: int = 30,
     ) -> bool:
-        """메시지 전송. timeout=30초, 실패 시 지정 간격으로 재시도.
+        """메시지 전송 — 별도 스레드풀에서 실행해 asyncio 블로킹 방지.
 
         실패해도 매매는 계속 진행하므로 로그 레벨은 WARNING.
 
@@ -55,6 +63,26 @@ class TelegramBot:
         Returns:
             전송 성공 여부.
         """
+        try:
+            future = _executor.submit(
+                self._send_sync, message, parse_mode, retries, retry_sleep_sec
+            )
+            # 최악 시나리오: retries × (timeout 30 + retry_sleep) + 여유 10초
+            deadline = retries * (30 + retry_sleep_sec) + 10
+            return future.result(timeout=deadline)
+        except Exception as e:
+            logger.warning(f"텔레그램 전송 실패 (무시): {e}")
+            return False
+
+    def _send_sync(
+        self,
+        message: str,
+        parse_mode: str,
+        retries: int,
+        retry_sleep_sec: int,
+    ) -> bool:
+        """실제 전송 로직 — 스레드풀에서 실행 (블로킹 I/O 격리)."""
+        last_err = ""
         for attempt in range(retries):
             try:
                 resp = requests.post(
