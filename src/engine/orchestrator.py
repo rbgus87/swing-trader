@@ -18,7 +18,7 @@ except (AttributeError, Exception):
 
 from loguru import logger
 
-from src.data_pipeline.db import get_connection
+from src.data_pipeline.db import get_data_db
 from src.engine.regime_detector import RegimeDetector
 from src.engine.strategy_router import StrategyRouter
 from src.engine.portfolio_manager import PortfolioManager
@@ -74,7 +74,7 @@ class Orchestrator:
         cash = self.portfolio.get_cash()
         positions = self.portfolio.get_open_positions()
         portfolio_value = cash
-        with get_connection() as conn:
+        with get_data_db() as conn:
             for pos in positions:
                 cursor = conn.execute(
                     "SELECT close FROM daily_candles WHERE ticker = ? AND date = ?",
@@ -101,7 +101,7 @@ class Orchestrator:
         )
 
     def _get_latest_trading_date(self) -> str:
-        with get_connection() as conn:
+        with get_data_db() as conn:
             cursor = conn.execute("SELECT MAX(date) FROM daily_candles")
             return cursor.fetchone()[0]
 

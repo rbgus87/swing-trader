@@ -4,7 +4,7 @@ Universe 종목 중 종가 > MA200 비율(breadth)로 gate OPEN/CLOSED 결정.
 Phase 2 백테스트의 calc_market_breadth()와 동일 로직을 라이브용으로 구현.
 """
 from loguru import logger
-from src.data_pipeline.db import get_connection
+from src.data_pipeline.db import get_data_db
 
 BREADTH_THRESHOLD = 0.40
 MCAP_THRESHOLD = 3_000_000_000_000
@@ -19,7 +19,7 @@ class RegimeDetector:
 
     def check(self, date_str: str) -> dict:
         """특정 일자 기준 breadth 계산 + gate 판정."""
-        with get_connection() as conn:
+        with get_data_db() as conn:
             cursor = conn.execute(
                 """
                 SELECT DISTINCT m.ticker

@@ -175,22 +175,15 @@ class TradeHistoryTab(QWidget):
     # ── 데이터 ──
 
     def _load_data(self):
-        """swing_legacy.db `trades` 테이블(side='sell')에서 매매 기록 로드."""
+        """swing_trade.db `trades` 테이블(side='sell')에서 매매 기록 로드."""
         trades: list[dict] = []
         try:
-            import sqlite3
-            from pathlib import Path
+            from src.data_pipeline.db import get_data_db, get_trade_db
 
-            from src.data_pipeline.db import get_connection
-            from src.datastore import DataStore
-
-            ds = DataStore()
-            db_path = ds._db_path
-
-            # swing.db에서 종목명 매핑
+            # swing_data.db에서 종목명 매핑
             stock_names: dict[str, str] = {}
             try:
-                with get_connection() as sconn:
+                with get_data_db() as sconn:
                     for r in sconn.execute(
                         "SELECT ticker, name FROM stocks"
                     ).fetchall():
@@ -198,32 +191,31 @@ class TradeHistoryTab(QWidget):
             except Exception:
                 pass
 
-            if Path(db_path).exists():
-                conn = sqlite3.connect(db_path)
-                conn.row_factory = sqlite3.Row
-                try:
+            # swing_trade.db에서 매도 기록
+            try:
+                with get_trade_db() as conn:
                     rows = conn.execute(
                         "SELECT * FROM trades WHERE side = 'sell' "
                         "ORDER BY executed_at DESC LIMIT 500"
                     ).fetchall()
-                finally:
-                    conn.close()
+            except Exception:
+                rows = []
 
-                for r in rows:
-                    d = dict(r)
-                    code = d.get('code', '')
-                    trades.append({
-                        "executed_at": str(d.get('executed_at') or ''),
-                        "code": code,
-                        "name": d.get('name') or stock_names.get(code, code),
-                        "side": "sell",
-                        "quantity": int(d.get('quantity') or 0),
-                        "price": int(d.get('price') or 0),
-                        "pnl": float(d.get('pnl') or 0),
-                        "pnl_pct": float(d.get('pnl_pct') or 0),
-                        "entry_strategy": "TF",
-                        "reason": d.get('reason', '') or '',
-                    })
+            for r in rows:
+                d = dict(r)
+                code = d.get('code', '')
+                trades.append({
+                    "executed_at": str(d.get('executed_at') or ''),
+                    "code": code,
+                    "name": d.get('name') or stock_names.get(code, code),
+                    "side": "sell",
+                    "quantity": int(d.get('quantity') or 0),
+                    "price": int(d.get('price') or 0),
+                    "pnl": float(d.get('pnl') or 0),
+                    "pnl_pct": float(d.get('pnl_pct') or 0),
+                    "entry_strategy": "TF",
+                    "reason": d.get('reason', '') or '',
+                })
         except Exception:
             import traceback
             traceback.print_exc()

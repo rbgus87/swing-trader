@@ -37,7 +37,7 @@ class _InterceptHandler(logging.Handler):
 from src.broker.kiwoom_api import KiwoomAPI
 from src.broker.order_manager import OrderManager
 from src.broker.tr_codes import ORDER_BUY, ORDER_SELL, PRICE_LIMIT, PRICE_MARKET
-from src.data_pipeline.db import get_connection
+from src.data_pipeline.db import get_data_db, get_trade_db
 from src.datastore import DataStore
 from src.models import ExitReason, Position, Signal, Tick, TradeRecord
 from src.notification.telegram_bot import TelegramBot
@@ -365,7 +365,7 @@ class TradingEngine:
         # 1. KOSPI / KOSDAQ 20일 수익률 (v2.4 시장별 상대강도용)
         def _fetch_index_ret(index_code: str) -> float | None:
             try:
-                with get_connection() as conn:
+                with get_data_db() as conn:
                     idx_rows = conn.execute(
                         "SELECT date, close FROM index_daily "
                         "WHERE index_code = ? AND date <= ? "
@@ -399,7 +399,7 @@ class TradingEngine:
         )
 
         # 3. Universe 구축 (어제 기준 — 스크리닝 시점에는 당일 시총 미확정)
-        with get_connection() as conn:
+        with get_data_db() as conn:
             universe_row = conn.execute(
                 """
                 SELECT DISTINCT m.ticker, s.name, s.market
@@ -419,7 +419,7 @@ class TradingEngine:
 
         # 4. 각 종목 일봉 로드 + 조건 체크
         candidates = {}
-        with get_connection() as conn:
+        with get_data_db() as conn:
             for ticker, name, market in universe:
                 rows = conn.execute(
                     "SELECT date, open, high, low, close, volume "
@@ -519,7 +519,7 @@ class TradingEngine:
         """Universe에서 MA200 위 종목 비율(breadth) 계산."""
         import pandas as pd
         try:
-            with get_connection() as conn:
+            with get_data_db() as conn:
                 tickers = [
                     r['ticker'] for r in conn.execute(
                         """
@@ -1198,14 +1198,14 @@ class TradingEngine:
     def _get_stock_name(self, code: str) -> str:
         """종목명 조회 — swing.db의 stocks 테이블 + 메모리 캐시.
 
-        swing_legacy.db에는 stocks가 없으므로 주 DB(swing.db) 경유.
+        swing_trade.db에는 stocks가 없으므로 데이터 DB(swing_data.db) 경유.
         """
         if code in self._poll_stock_names:
             name = self._poll_stock_names[code]
             if name and name != code:
                 return name
         try:
-            with get_connection() as conn:
+            with get_data_db() as conn:
                 row = conn.execute(
                     "SELECT name FROM stocks WHERE ticker = ?", (code,)
                 ).fetchone()
@@ -1635,7 +1635,7 @@ class TradingEngine:
                 continue
             code = pos_dict["code"]
             try:
-                with get_connection() as conn:
+                with get_data_db() as conn:
                     rows = conn.execute(
                         "SELECT date, close FROM daily_candles "
                         "WHERE ticker = ? AND date <= ? "
@@ -1725,7 +1725,7 @@ class TradingEngine:
             logger.warning(f"swing.db snapshot 갱신 실패: {e}")
 
     def _update_swing_db_snapshot(self):
-        """swing.db daily_portfolio_snapshot 갱신 — GUI 표시용."""
+        """swing_trade.db daily_portfolio_snapshot 갱신 — GUI 표시용."""
         today = datetime.now().strftime("%Y-%m-%d")
         positions = self._ds.get_open_positions()
 
@@ -1742,7 +1742,20 @@ class TradingEngine:
 
         gate_status = "OPEN" if self._breadth_ok else "CLOSED"
 
-        with get_connection() as conn:
+        with get_trade_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS daily_portfolio_snapshot (
+                    date DATE PRIMARY KEY,
+                    cash REAL NOT NULL,
+                    portfolio_value REAL NOT NULL,
+                    positions_count INTEGER NOT NULL,
+                    breadth REAL,
+                    gate_status TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.execute(
                 """
                 INSERT OR REPLACE INTO daily_portfolio_snapshot
@@ -1885,7 +1898,7 @@ class TradingEngine:
     def _get_latest_close(self, code: str) -> int | None:
         """daily_candles 최신 종가 조회 (일일 리포트 미실현 손익 폴백용)."""
         try:
-            with get_connection() as conn:
+            with get_data_db() as conn:
                 row = conn.execute(
                     "SELECT close FROM daily_candles "
                     "WHERE ticker = ? ORDER BY date DESC LIMIT 1",
@@ -1915,7 +1928,7 @@ class TradingEngine:
                 pos_dict.get("high_since_entry") or pos_dict["entry_price"]
             )
             try:
-                with get_connection() as conn:
+                with get_data_db() as conn:
                     row = conn.execute(
                         "SELECT MAX(high) AS max_high FROM daily_candles "
                         "WHERE ticker = ? AND date >= ?",

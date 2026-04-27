@@ -21,14 +21,17 @@ _POSITION_UPDATABLE_COLUMNS = frozenset({
 
 
 class DataStore:
-    """SQLite 기반 데이터 저장소.
+    """SQLite 기반 매매 데이터 저장소 (swing_trade.db).
 
     Args:
-        db_path: SQLite 파일 경로. 기본값은 "swing_legacy.db" (v2.3 orchestrator의 swing.db와 분리).
+        db_path: SQLite 파일 경로. 기본값은 ``TRADE_DB_PATH`` (swing_trade.db).
     """
 
-    def __init__(self, db_path: str = "swing_legacy.db"):
-        # exe 환경: 실행 파일 기준 디렉토리에 DB 생성
+    def __init__(self, db_path: str | None = None):
+        if db_path is None:
+            from src.data_pipeline import TRADE_DB_PATH
+            db_path = str(TRADE_DB_PATH)
+        # 상대 경로면 앱 디렉토리 기준으로 해석 (exe 호환)
         if not Path(db_path).is_absolute():
             from src.utils.config import _get_app_dir
             db_path = str(_get_app_dir() / db_path)

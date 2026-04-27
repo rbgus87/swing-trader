@@ -7,8 +7,8 @@ import os
 from datetime import datetime
 from loguru import logger
 
-from src.data_pipeline.db import get_connection
-from src.engine.portfolio_manager import SignalResult
+from src.data_pipeline.db import get_combined_db, get_trade_db
+from src.engine.portfolio_manager import PortfolioManager, SignalResult
 
 
 class OrderExecutor:
@@ -41,10 +41,11 @@ class OrderExecutor:
     def _paper_entry(self, sig: SignalResult) -> dict:
         """PENDING 상태로 INSERT. 익일 시가 체결 시 OPEN 전환."""
         now = datetime.now().isoformat()
-        with get_connection() as conn:
+        with get_trade_db() as conn:
+            PortfolioManager._ensure_v23_positions(conn)
             conn.execute(
                 """
-                INSERT INTO positions
+                INSERT INTO v23_positions
                 (ticker, strategy, entry_date, entry_price, shares, initial_shares,
                  atr_at_entry, stop_price, tp1_price, highest_since_entry,
                  tp1_triggered, status, created_at)
@@ -72,10 +73,11 @@ class OrderExecutor:
         now = datetime.now().isoformat()
         cost_pct = 0.00015 + 0.00015 + 0.0018 + 0.0005 * 2  # 왕복 0.31%
 
-        with get_connection() as conn:
+        with get_trade_db() as conn:
+            PortfolioManager._ensure_v23_positions(conn)
             cursor = conn.execute(
                 """
-                SELECT id, entry_price, shares FROM positions
+                SELECT id, entry_price, shares FROM v23_positions
                 WHERE ticker = ? AND status = 'OPEN'
                 ORDER BY entry_date ASC LIMIT 1
                 """,
@@ -97,7 +99,7 @@ class OrderExecutor:
             else:
                 conn.execute(
                     """
-                    UPDATE positions
+                    UPDATE v23_positions
                     SET status = 'CLOSED',
                         exit_date = ?, exit_price = ?,
                         exit_reason = ?, pnl_amount = ?
@@ -134,9 +136,11 @@ class OrderExecutor:
 
     def confirm_pending_entries(self, date_str: str):
         """PENDING 포지션 → OPEN 전환 (당일 시가 기준 재계산)."""
-        with get_connection() as conn:
+        with get_combined_db() as conn:
+            PortfolioManager._ensure_v23_positions(conn)
             cursor = conn.execute(
-                "SELECT id, ticker, atr_at_entry FROM positions WHERE status = 'PENDING'"
+                "SELECT id, ticker, atr_at_entry FROM trade.v23_positions "
+                "WHERE status = 'PENDING'"
             )
             pendings = cursor.fetchall()
             if not pendings:
@@ -156,7 +160,7 @@ class OrderExecutor:
                     atr = p['atr_at_entry']
                     conn.execute(
                         """
-                        UPDATE positions
+                        UPDATE trade.v23_positions
                         SET status = 'OPEN',
                             entry_date = ?,
                             entry_price = ?,

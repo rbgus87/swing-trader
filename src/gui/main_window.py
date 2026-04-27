@@ -34,7 +34,7 @@ from PyQt5.QtWidgets import (
 
 from loguru import logger
 
-from src.data_pipeline.db import get_connection
+from src.data_pipeline.db import get_combined_db, get_data_db, get_trade_db
 from src.gui.widgets.dashboard_tab import DashboardTab
 from src.gui.widgets.log_tab import LogTab
 from src.gui.widgets.settings_tab import SettingsTab
@@ -327,31 +327,21 @@ class MainWindow(QMainWindow):
     # ── DB 조회 ──
 
     def _ensure_swing_db_tables(self):
-        """swing.db에 필요 테이블이 없으면 생성 — 10초 타이머의 DEBUG 로그 방지."""
+        """swing_trade.db에 필요 테이블이 없으면 생성 — 10초 타이머 DEBUG 방지.
+
+        DataStore 인스턴스화로 positions/trades 등 매매 핵심 테이블을 만들고,
+        snapshot/signals(GUI 표시용)는 명시적으로 보장.
+        """
         try:
-            with get_connection() as conn:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS positions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ticker TEXT NOT NULL,
-                        strategy TEXT NOT NULL DEFAULT 'TF',
-                        entry_date DATE NOT NULL,
-                        entry_price REAL NOT NULL,
-                        shares INTEGER NOT NULL,
-                        initial_shares INTEGER NOT NULL,
-                        atr_at_entry REAL NOT NULL,
-                        stop_price REAL NOT NULL,
-                        tp1_price REAL NOT NULL,
-                        highest_since_entry REAL NOT NULL,
-                        tp1_triggered INTEGER DEFAULT 0,
-                        status TEXT DEFAULT 'OPEN',
-                        exit_date DATE,
-                        exit_price REAL,
-                        exit_reason TEXT,
-                        pnl_amount REAL,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
+            from src.datastore import DataStore
+            ds = DataStore()
+            ds.create_tables()  # positions/trades/daily_performance/ohlcv_cache/...
+            ds.close()
+        except Exception as e:
+            logger.warning(f"DataStore 테이블 보장 실패: {e}")
+
+        try:
+            with get_trade_db() as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS signals (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -378,22 +368,28 @@ class MainWindow(QMainWindow):
                     )
                 """)
         except Exception as e:
-            logger.warning(f"swing.db 테이블 보장 실패: {e}")
+            logger.warning(f"swing_trade.db 보조 테이블 보장 실패: {e}")
 
     def _refresh_from_db(self):
-        """DB에서 최신 데이터를 조회해 UI 업데이트. 테이블 미존재/쿼리 오류는 묵살."""
+        """DB에서 최신 데이터를 조회해 UI 업데이트.
+
+        - positions: swing_trade.db (DataStore 스키마: code/quantity/소문자 status)
+        - signals: swing_trade.db (orchestrator 스키마)
+        - daily_portfolio_snapshot: swing_trade.db
+        - daily_candles, stocks: swing_data.db
+        """
         positions: list[dict] = []
         signals_list: list[dict] = []
         snapshot: dict | None = None
 
         try:
-            with get_connection() as conn:
-                # positions
+            with get_combined_db() as conn:
+                # positions (DataStore 스키마: status='open'|'selling')
                 try:
                     rows = conn.execute(
-                        "SELECT p.*, s.name FROM positions p "
-                        "LEFT JOIN stocks s ON s.ticker = p.ticker "
-                        "WHERE p.status IN ('OPEN', 'PENDING') "
+                        "SELECT p.*, s.name AS stock_name FROM trade.positions p "
+                        "LEFT JOIN stocks s ON s.ticker = p.code "
+                        "WHERE p.status IN ('open', 'selling') "
                         "ORDER BY p.entry_date"
                     ).fetchall()
                     positions = [dict(r) for r in rows]
@@ -401,7 +397,7 @@ class MainWindow(QMainWindow):
                         cur = conn.execute(
                             "SELECT close FROM daily_candles "
                             "WHERE ticker = ? ORDER BY date DESC LIMIT 1",
-                            (p['ticker'],),
+                            (p['code'],),
                         ).fetchone()
                         p['current_price'] = (
                             cur['close'] if cur else p.get('entry_price', 0)
@@ -409,10 +405,10 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.debug(f"positions 조회 스킵: {e}")
 
-                # signals
+                # signals (orchestrator 스키마)
                 try:
                     rows = conn.execute(
-                        "SELECT s.*, st.name FROM signals s "
+                        "SELECT s.*, st.name FROM trade.signals s "
                         "LEFT JOIN stocks st ON st.ticker = s.ticker "
                         "ORDER BY s.id DESC LIMIT 50"
                     ).fetchall()
@@ -423,7 +419,7 @@ class MainWindow(QMainWindow):
                 # snapshot
                 try:
                     row = conn.execute(
-                        "SELECT * FROM daily_portfolio_snapshot "
+                        "SELECT * FROM trade.daily_portfolio_snapshot "
                         "ORDER BY date DESC LIMIT 1"
                     ).fetchone()
                     snapshot = dict(row) if row else None
@@ -439,32 +435,33 @@ class MainWindow(QMainWindow):
 
     def _update_dashboard(self, positions: list, signals_list: list,
                           snapshot: dict | None):
-        """DashboardTab 데이터 주입."""
-        # 포지션 → 대시보드 포맷
+        """DashboardTab 데이터 주입 — positions는 DataStore 스키마."""
         pos_dicts = []
         today = datetime.now().date()
         for p in positions:
             entry_date = p.get('entry_date')
-            hold_days = 0
-            if entry_date:
+            hold_days = p.get('hold_days') or 0
+            if not hold_days and entry_date:
                 try:
                     ed = datetime.strptime(str(entry_date), "%Y-%m-%d").date()
                     hold_days = max(0, (today - ed).days)
                 except Exception:
                     hold_days = 0
+            code = p.get('code') or ''
+            name = p.get('stock_name') or p.get('name') or code
             pos_dicts.append({
-                "code": p.get('ticker', ''),
-                "name": p.get('name') or p.get('ticker', ''),
-                "entry_strategy": p.get('strategy', 'TF'),
+                "code": code,
+                "name": name,
+                "entry_strategy": p.get('entry_strategy') or 'TF',
                 "hold_days": hold_days,
-                "quantity": p.get('shares', 0),
+                "quantity": p.get('quantity', 0),
                 "entry_price": p.get('entry_price', 0),
                 "current_price": p.get('current_price', 0),
                 "stop_price": p.get('stop_price', 0),
-                "tp1_price": p.get('tp1_price', 0),
-                "tp1_triggered": p.get('tp1_triggered', 0),
-                "atr_at_entry": p.get('atr_at_entry', 0),
-                "highest_since_entry": p.get('highest_since_entry', 0),
+                "tp1_price": p.get('target_price', 0),
+                "tp1_triggered": p.get('partial_sold', 0),
+                "atr_at_entry": 0,
+                "highest_since_entry": p.get('high_since_entry', 0),
             })
         self.dashboard_tab.update_positions(pos_dicts)
 

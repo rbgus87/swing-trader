@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import pandas as pd
 from loguru import logger
 
-from src.data_pipeline.db import get_connection
+from src.data_pipeline.db import get_combined_db, get_trade_db
 from src.strategy.trend_following_v2 import StrategyParams, calculate_indicators
 
 
@@ -45,26 +45,54 @@ class PortfolioManager:
         self.params = params or StrategyParams()
 
     def get_open_positions(self) -> list:
-        with get_connection() as conn:
+        with get_trade_db() as conn:
+            self._ensure_v23_positions(conn)
             cursor = conn.execute(
-                "SELECT * FROM positions WHERE status = 'OPEN'"
+                "SELECT * FROM v23_positions WHERE status = 'OPEN'"
             )
             return [dict(row) for row in cursor.fetchall()]
 
     def get_cash(self) -> float:
         """초기 자본 + 누적 청산 PnL - 현재 보유 매입액."""
-        with get_connection() as conn:
+        with get_trade_db() as conn:
+            self._ensure_v23_positions(conn)
             cursor = conn.execute(
                 "SELECT COALESCE(SUM(shares * entry_price), 0) as invested "
-                "FROM positions WHERE status = 'OPEN'"
+                "FROM v23_positions WHERE status = 'OPEN'"
             )
             invested = cursor.fetchone()['invested']
             cursor = conn.execute(
                 "SELECT COALESCE(SUM(pnl_amount), 0) as total_pnl "
-                "FROM positions WHERE status = 'CLOSED'"
+                "FROM v23_positions WHERE status = 'CLOSED'"
             )
             total_pnl = cursor.fetchone()['total_pnl']
         return self.initial_capital + total_pnl - invested
+
+    @staticmethod
+    def _ensure_v23_positions(conn):
+        """Orchestrator 스키마 v23_positions 테이블 보장 (DataStore.positions와 분리)."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS v23_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                strategy TEXT NOT NULL DEFAULT 'TF',
+                entry_date DATE NOT NULL,
+                entry_price REAL NOT NULL,
+                shares INTEGER NOT NULL,
+                initial_shares INTEGER NOT NULL,
+                atr_at_entry REAL NOT NULL,
+                stop_price REAL NOT NULL,
+                tp1_price REAL NOT NULL,
+                highest_since_entry REAL NOT NULL,
+                tp1_triggered INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'OPEN',
+                exit_date DATE,
+                exit_price REAL,
+                exit_reason TEXT,
+                pnl_amount REAL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
     def check_exits(self, date_str: str) -> list:
         """보유 종목 청산 조건 체크 (EOD)."""
@@ -74,7 +102,7 @@ class PortfolioManager:
 
         exit_signals = []
 
-        with get_connection() as conn:
+        with get_combined_db() as conn:
             for pos in positions:
                 ticker = pos['ticker']
                 cursor = conn.execute(
@@ -100,7 +128,7 @@ class PortfolioManager:
                 new_highest = max(pos['highest_since_entry'], day_high)
                 if new_highest > pos['highest_since_entry']:
                     conn.execute(
-                        "UPDATE positions SET highest_since_entry = ? WHERE id = ?",
+                        "UPDATE trade.v23_positions SET highest_since_entry = ? WHERE id = ?",
                         (new_highest, pos['id']),
                     )
 
@@ -127,8 +155,8 @@ class PortfolioManager:
                             reason='TAKE_PROFIT_1',
                         ))
                         conn.execute(
-                            "UPDATE positions SET tp1_triggered = 1, shares = shares - ? "
-                            "WHERE id = ?",
+                            "UPDATE trade.v23_positions SET tp1_triggered = 1, "
+                            "shares = shares - ? WHERE id = ?",
                             (partial_shares, pos['id']),
                         )
                     continue
@@ -192,7 +220,7 @@ class PortfolioManager:
         candidates = []
         rs_period = self.params.relative_strength_period
 
-        with get_connection() as conn:
+        with get_combined_db() as conn:
             # KOSPI 20일 수익률 (상대강도용)
             cursor = conn.execute(
                 "SELECT date, close FROM index_daily "
@@ -324,7 +352,21 @@ class PortfolioManager:
         return candidates[:open_slots]
 
     def record_signals(self, date_str: str, signals: list):
-        with get_connection() as conn:
+        with get_trade_db() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date DATE NOT NULL,
+                    ticker TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,
+                    strategy TEXT DEFAULT 'TF',
+                    price REAL,
+                    reason TEXT,
+                    executed INTEGER DEFAULT 0,
+                    executed_at DATETIME,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             for sig in signals:
                 conn.execute(
                     "INSERT INTO signals "
@@ -338,7 +380,18 @@ class PortfolioManager:
         positions = self.get_open_positions()
         cash = self.get_cash()
         portfolio_value = cash
-        with get_connection() as conn:
+        with get_combined_db() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trade.daily_portfolio_snapshot (
+                    date DATE PRIMARY KEY,
+                    cash REAL NOT NULL,
+                    portfolio_value REAL NOT NULL,
+                    positions_count INTEGER NOT NULL,
+                    breadth REAL,
+                    gate_status TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             for pos in positions:
                 cursor = conn.execute(
                     "SELECT close FROM daily_candles WHERE ticker = ? AND date = ?",
@@ -348,7 +401,7 @@ class PortfolioManager:
                 if row:
                     portfolio_value += pos['shares'] * row['close']
             conn.execute(
-                "INSERT OR REPLACE INTO daily_portfolio_snapshot "
+                "INSERT OR REPLACE INTO trade.daily_portfolio_snapshot "
                 "(date, cash, portfolio_value, positions_count, breadth, gate_status) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (date_str, cash, portfolio_value, len(positions),
@@ -356,7 +409,8 @@ class PortfolioManager:
             )
 
     def _get_name(self, ticker: str) -> str:
-        with get_connection() as conn:
+        from src.data_pipeline.db import get_data_db
+        with get_data_db() as conn:
             cursor = conn.execute(
                 "SELECT name FROM stocks WHERE ticker = ?", (ticker,)
             )
