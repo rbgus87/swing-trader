@@ -52,7 +52,7 @@ async def main():
             logger.error("LIVE 모드: TELEGRAM_BOT_TOKEN 필수")
             sys.exit(1)
 
-    from src.engine_legacy import TradingEngine
+    from src.trading_engine import TradingEngine
 
     engine = TradingEngine(mode=mode)
     _engine = engine

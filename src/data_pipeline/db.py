@@ -49,7 +49,7 @@ def _migrate_legacy_db_files() -> None:
 def _migrate_snapshot_to_trade_db(data_db: Path, trade_db: Path) -> None:
     """data DB의 daily_portfolio_snapshot 데이터를 trade DB로 1회 이전.
 
-    engine_legacy가 과거 swing.db에 기록한 GUI 표시용 스냅샷을 손실 없이
+    TradingEngine이 과거 swing.db에 기록한 GUI 표시용 스냅샷을 손실 없이
     옮긴 뒤, data DB에서 매매 전용 테이블(positions/signals/snapshot 등)을
     제거한다. 멱등 — 재실행해도 안전.
     """

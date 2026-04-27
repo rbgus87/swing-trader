@@ -4,14 +4,14 @@
 # 민감 정보(API키, 계좌번호 등)는 .env 파일에서 관리합니다.
 # 이 파일은 git에 커밋되므로 비밀번호/토큰을 절대 포함하지 마세요.
 #
-# Phase 2 기준 갱신: 2026-04-18
-# - Phase 0 결정: 자본 500만원, 4종목 동시 보유
-# - Phase 2 비용 모델: 왕복 0.31%
-# - 구 전략(golden_cross/disparity_reversion) 비활성화
+# 갱신: 2026-04-27 (Phase 2 연장 v2.4)
+# - 자본 500만원, 4종목 동시 보유
+# - 비용 모델: 왕복 0.31%
+# - 단일 전략: TrendFollowing v2.4 (시장별 상대강도)
 
 
 # ============================================================================
-# Phase 2 연장 — TrendFollowing v2.2 전략 파라미터 (상태 기반 추세추종)
+# TrendFollowing v2.4 전략 파라미터 (상태 기반 추세추종 + 시장별 상대강도)
 # ============================================================================
 # 이 섹션이 백테스트 및 라이브 운용의 기준값.
 
@@ -47,7 +47,7 @@ trend_following:
   atr_price_max: 0.08                  # ATR 밴드 상한
   min_trading_value: 5_000_000_000     # 50억원
 
-  # 청산 (v2.3 — TP1 비율만 0.5→0.3)
+  # 청산 (v2.4 — TP1 비율 0.3)
   stop_loss_atr: 2.0
   take_profit_atr: 2.0
   trailing_atr: 4.0
@@ -129,129 +129,10 @@ broker:
 
 schedule:
   screening_time: "08:30"
-  polling_start_time: "09:25"
+  polling_start_time: "09:00"
   polling_stop_time: "15:35"
   polling_interval: 10
   daily_report_time: "16:00"
   reconnect_time: "08:45"
 
 
-# ============================================================================
-# 아래는 구 전략 설정 (Phase 1 이전). 구 engine.py 의존성 있어 보존.
-# Phase 3 엔진 재구축 시 일괄 제거 예정.
-# ============================================================================
-
-# ── [LEGACY] v1 설정 (v2.3에서 사용하지 않음) ──
-# v2.3은 장전 Universe Pool 스크리닝으로 후보를 동적 생성한다.
-# 아래 키들은 참조 보존 목적으로만 주석화. 필요 시 git 이력에서 복원.
-#
-# watchlist:
-#   - '005930'
-#   - '000660'
-#   - '005380'
-#   - '000270'
-#   - '068270'
-#   - '035420'
-#   - '035720'
-#   - '105560'
-#   - '055550'
-#   - '066570'
-#   - '006400'
-#   - '003670'
-#   - '012330'
-#   - '028260'
-#   - '096770'
-#   - '003550'
-#   - '034730'
-#   - '032830'
-#   - '030200'
-#   - '017670'
-#
-# watchlist_refresh:
-#   enabled: true
-#   min_market_cap: 5_000_000_000_000
-#   min_daily_amount: 10_000_000_000
-#   min_atr_pct: 0.02
-#   max_atr_pct: 0.05
-#   top_n: 20
-
-# --- [LEGACY] Pre-Screening ---
-pre_screening:
-  min_market_cap: 100_000_000_000
-  volume_ratio_threshold: 1.5
-  pullback:
-    week52_high_min: -0.15
-    week52_high_max: 0.0
-    rsi_min: 45
-    rsi_max: 65
-    disparity_sma20_min: 100
-    disparity_sma20_max: 200
-    disparity_sma60_min: 100
-    disparity_sma60_max: 200
-  squeeze:
-    price_range_period: 20
-    price_range_max: 0.15
-    min_price: 3000
-    max_price: 200000
-    volume_ratio_threshold: 0.8
-
-# --- [LEGACY] Screening ---
-screening:
-  min_daily_amount: 1000000000
-  min_market_cap: 30000000000
-  min_price: 1000
-  max_price: 500000
-  top_n: 30
-
-# --- [LEGACY] 전략 ---
-strategy:
-  type: disabled
-  regime_strategy:
-    trending: golden_cross
-    sideways: disparity_reversion
-  flow_filter_enabled: false
-  regime_position_scale:
-    trending: 1.0
-    sideways: 0.7
-    bearish: 0.0
-  timeframe_primary: D
-  timeframe_entry: 60
-  adx_threshold: 20
-  macd_fast: 12
-  macd_slow: 26
-  macd_signal: 9
-  ma_trend: 20
-  rsi_period: 14
-  rsi_entry_min: 35
-  rsi_entry_max: 65
-  bb_period: 20
-  bb_std: 2.0
-  bb_touch_pct: 0.15
-  rsi_oversold: 45
-  rsi_pullback: 45
-  screening_lookback: 5
-  volume_multiplier: 1.0
-  vol_breakout_multiplier: 1.5
-  vol_lookback: 20
-  momentum_period: 60
-  pullback_days: 3
-  rsi_pullback_threshold: 40
-  disparity_entry: 96
-  disparity_exit: 100
-  disparity_stop: 88
-  disparity_max_hold: 7
-  max_hold_days: 10
-  target_return: 0.1
-  partial_sell_enabled: true
-  partial_target_pct: 0.5
-  partial_sell_ratio: 0.5
-
-# ── [LEGACY] HTS 조건검색 (v2.3 저녁 스크리닝 스킵됨) ──
-# v2.3은 장전 Universe 스크리닝 하나로 진입 후보를 뽑는다.
-#
-# watchlist_mode: "condition"
-# condition_search:
-#   enabled: true
-#   condition_name: "swing_pre_cross"
-#   fallback_to_fixed: true
-#   max_stocks: 30

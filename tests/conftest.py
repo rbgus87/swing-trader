@@ -275,7 +275,7 @@ def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
         )
         MockStopMgr.return_value = stop_mgr
 
-        from src.engine_legacy import TradingEngine
+        from src.trading_engine import TradingEngine
 
         eng = TradingEngine(mode="paper")
         eng._running = True

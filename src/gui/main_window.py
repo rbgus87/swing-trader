@@ -39,7 +39,7 @@ from src.gui.widgets.dashboard_tab import DashboardTab
 from src.gui.widgets.log_tab import LogTab
 from src.gui.widgets.settings_tab import SettingsTab
 from src.gui.widgets.trade_history_tab import TradeHistoryTab
-from src.gui.workers.engine_worker import EngineWorker, LegacyEngineWorker
+from src.gui.workers.engine_worker import EngineWorker
 from src.gui.workers.daily_run_worker import DailyRunWorker
 
 
@@ -57,9 +57,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 720)
         self.resize(1280, 800)
 
-        self._worker: EngineWorker | None = None  # orchestrator (EOD)
-        self._live: LegacyEngineWorker | None = None  # 실시간 엔진
-        self._daily: DailyRunWorker | None = None  # 일일 실행 (데이터 갱신+시그널)
+        self._live: EngineWorker | None = None  # 실시간 엔진
+        self._daily: DailyRunWorker | None = None  # 일일 실행 (데이터 갱신)
 
         self._init_ui()
         self._apply_theme()
@@ -150,13 +149,13 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self._lbl_sidebar_pnl)
 
         # ── 제어 버튼 ──
-        # 실시간 엔진 (engine_legacy)
+        # 실시간 엔진 (TradingEngine)
         btn_live_row = QHBoxLayout()
         btn_live_row.setSpacing(8)
         self.btn_start = QPushButton("▶ 시작")
         self.btn_start.setObjectName("startBtn")
         self.btn_start.setCursor(Qt.PointingHandCursor)
-        self.btn_start.setToolTip("실시간 엔진 시작 (engine_legacy + v2.4 전략)")
+        self.btn_start.setToolTip("실시간 엔진 시작 (TradingEngine + v2.4 전략)")
         btn_live_row.addWidget(self.btn_start)
 
         self.btn_stop = QPushButton("■ 중지")
@@ -637,7 +636,7 @@ class MainWindow(QMainWindow):
     def _on_engine_error(self, error: str):
         QMessageBox.critical(self, "엔진 오류", error)
 
-    # ── 실시간 엔진 (engine_legacy) ──
+    # ── 실시간 엔진 (TradingEngine) ──
 
     def _on_live_start(self):
         if self._live and self._live.isRunning():
@@ -654,7 +653,7 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.Yes:
                 return
 
-        self._live = LegacyEngineWorker(mode=mode)
+        self._live = EngineWorker(mode=mode)
         s = self._live.signals
         s.started.connect(self._on_live_started)
         s.stopped.connect(self._on_live_stopped)
@@ -734,7 +733,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_live_positions(self, positions: list):
-        # engine_legacy Position → dashboard 포맷
+        # TradingEngine Position → dashboard 포맷
         pos_dicts = []
         for p in positions:
             pos_dicts.append({
@@ -815,8 +814,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         engine_running = (
-            (self._worker is not None and self._worker.isRunning())
-            or (self._live is not None and self._live.isRunning())
+            (self._live is not None and self._live.isRunning())
             or (self._daily is not None and self._daily.isRunning())
         )
 
@@ -861,17 +859,10 @@ class MainWindow(QMainWindow):
             except ValueError:
                 pass
 
-        if self._worker and self._worker.isRunning():
-            if not self._worker.wait(5000):
-                logger.warning("EngineWorker 5초 내 미종료 — 강제 terminate")
-                self._worker.terminate()
-                self._worker.wait(2000)
-        self._worker = None
-
         if self._live and self._live.isRunning():
             self._live.signals.request_stop.emit()
             if not self._live.wait(5000):
-                logger.warning("LegacyEngineWorker 5초 내 미종료 — 강제 terminate")
+                logger.warning("EngineWorker 5초 내 미종료 — 강제 terminate")
                 self._live.terminate()
                 self._live.wait(2000)
         self._live = None

@@ -1775,11 +1775,9 @@ class TradingEngine:
     async def _daily_data_update(self):
         """17:00 자동 실행 — 일봉/시총/지수 수집 (데이터 레이어만).
 
-        시그널 생성(Orchestrator)은 제외한다. 익일 후보는 08:30
-        _pre_market_screening에서 v2.3 스크리닝이 담당하며, Orchestrator
-        결과물(swing.db)은 engine_legacy가 사용하지 않기 때문. GUI의
-        DailyRunWorker는 5단계를 그대로 유지 — 수동 실행 시 즉시 신호
-        확인이 유용한 별도 경로.
+        시그널 생성은 별도 단계 없이 익일 08:30 _pre_market_screening에서
+        v2.4 스크리닝이 담당. GUI의 DailyRunWorker는 4단계 (수집만) — 수동
+        실행 시 즉시 데이터 갱신용.
 
         원천 타이밍:
           - FDR(Naver): 15:40~16:00 종가 반영

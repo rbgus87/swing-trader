@@ -430,7 +430,7 @@ class DashboardTab(QWidget):
         "TREND_EXIT": "추세이탈",
         "TIME_EXIT": "시간청산",
         "FINAL_CLOSE": "강제청산",
-        # engine_legacy (소문자 — ExitReason.value)
+        # TradingEngine (소문자 — ExitReason.value)
         "stop_loss": "손절",
         "partial_target": "TP1 분할(30%)",
         "target_reached": "목표가",

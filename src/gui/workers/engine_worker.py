@@ -1,7 +1,6 @@
-"""Worker 스레드 모음.
+"""실시간 엔진 Worker — TradingEngine을 asyncio 루프에서 구동.
 
-- EngineWorker: v2.4 Orchestrator(EOD 배치) 1회 실행.
-- LegacyEngineWorker: engine_legacy.TradingEngine(실시간 asyncio 루프) 구동.
+2초 간격 폴링으로 상태/포지션/체결/후보를 시그널로 emit.
 """
 
 import asyncio
@@ -14,31 +13,7 @@ from src.gui.workers.signals import EngineSignals
 
 
 class EngineWorker(QThread):
-    """Orchestrator(EOD 배치)를 1회 실행."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.signals = EngineSignals()
-        self.setTerminationEnabled(True)
-
-    def run(self):
-        self.signals.started.emit()
-        try:
-            from src.engine.orchestrator import Orchestrator
-            orch = Orchestrator()
-            orch.run()
-        except Exception as e:
-            logger.error(f"Orchestrator 실행 오류: {e}")
-            self.signals.error.emit(str(e))
-        finally:
-            self.signals.stopped.emit()
-
-
-class LegacyEngineWorker(QThread):
-    """engine_legacy.TradingEngine(실시간)을 asyncio 루프에서 실행.
-
-    2초 간격 폴링으로 상태/포지션/체결/후보를 시그널로 emit.
-    """
+    """TradingEngine(실시간)을 asyncio 루프에서 실행."""
 
     def __init__(self, mode: str = "paper", parent=None):
         super().__init__(parent)
@@ -59,7 +34,7 @@ class LegacyEngineWorker(QThread):
         try:
             self._loop.run_until_complete(self._run_engine())
         except Exception as e:
-            logger.error(f"LegacyEngineWorker 오류: {e}")
+            logger.error(f"EngineWorker 오류: {e}")
             self.signals.error.emit(str(e))
         finally:
             if self._engine and getattr(self._engine, '_running', False):
@@ -83,7 +58,7 @@ class LegacyEngineWorker(QThread):
             self.signals.stopped.emit()
 
     async def _run_engine(self):
-        from src.engine_legacy import TradingEngine
+        from src.trading_engine import TradingEngine
         self._engine = TradingEngine(mode=self._mode)
         await self._engine.start()
         self.signals.started.emit()

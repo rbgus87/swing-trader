@@ -31,17 +31,9 @@ def build() -> None:
         "--hidden-import=src.utils.config",
         "--hidden-import=src.utils.logger",
         "--hidden-import=src.utils.market_calendar",
-        # ── v2.3 실시간 엔진 ──
-        "--hidden-import=src.engine_legacy",
+        # ── 실시간 엔진 (TradingEngine) ──
+        "--hidden-import=src.trading_engine",
         "--hidden-import=src.strategy.trend_following_v2",
-        # ── 4-레이어 엔진 (일일 실행) ──
-        "--hidden-import=src.engine",
-        "--hidden-import=src.engine.orchestrator",
-        "--hidden-import=src.engine.regime_detector",
-        "--hidden-import=src.engine.strategy_router",
-        "--hidden-import=src.engine.portfolio_manager",
-        "--hidden-import=src.engine.order_executor",
-        "--hidden-import=src.engine.notifier",
         # ── 데이터 파이프라인 (일일 실행용) ──
         "--hidden-import=src.data_pipeline",
         "--hidden-import=src.data_pipeline.db",
