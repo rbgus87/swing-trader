@@ -104,8 +104,8 @@ class TelegramBot:
             if is_last:
                 logger.warning(f"텔레그램 전송 최종 실패 (무시): {last_err}")
             else:
-                logger.warning(
-                    f"텔레그램 전송 실패, {retry_sleep_sec}초 후 재시도: {last_err}"
+                logger.debug(
+                    f"텔레그램 첫 시도 실패, {retry_sleep_sec}초 후 재시도"
                 )
                 time.sleep(retry_sleep_sec)
         return False

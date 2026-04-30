@@ -32,7 +32,7 @@ python src/data_pipeline/collect_daily_candles.py
 python src/data_pipeline/collect_market_cap.py
 
 # 폐지 종목 갱신 (월 1회)
-bash scripts/update_delisting.sh
+python scripts/update_delisting.py
 
 # 정합성 검증
 python src/data_pipeline/data_integrity_check.py

@@ -253,7 +253,72 @@ risk:
 
 ---
 
-## 9. 모니터링
+## 9. 데이터 갱신 절차
+
+### 일일 갱신 (자동 — daily_run.sh)
+
+```bash
+# 매일 장 마감 후 (16:00 이후) 자동 실행
+bash scripts/daily_run.sh
+```
+
+내용: 일봉 OHLCV + 시총 + 신규 상장 감지 + 시그널 생성. GUI의 "🔄 일일 실행" 버튼과 동일.
+
+### 월간 갱신 — 상장폐지 종목 (수동, 월 1회)
+
+KRX OpenAPI는 폐지 엔드포인트를 제공하지 않아 KRX 정보데이터시스템에서 xls를
+수동 다운로드 후 import해야 합니다. **월 1회 정도가 권장**.
+
+**절차**:
+
+1. 브라우저에서 `data.krx.co.kr` 접속 → "상장폐지현황" 검색 → xls 다운로드
+2. 받은 파일을 `data/raw/delisting/상장폐지현황.xls`에 **덮어쓰기**
+3. 실행 (cmd / PowerShell / Git Bash / WSL 모두 동일):
+
+   ```bash
+   python scripts/update_delisting.py
+   ```
+
+   옵션:
+   ```bash
+   python scripts/update_delisting.py --skip-candles  # xls 파싱만
+   python scripts/update_delisting.py --skip-infer    # 추론 생략
+   ```
+
+**스크립트가 하는 일** (3단계, 모두 멱등):
+
+| 단계 | 모듈 | 역할 |
+|------|------|------|
+| 1/3 | `import_delisted_list.main()`  | xls 파싱 → `stocks` 테이블에 INSERT/UPDATE. cutoff 2014-01-01 이후만 |
+| 2/3 | `collect_daily_candles.main()` | 신규 폐지 종목의 일봉 OHLCV를 FDR로 수집 (생존편향 제거용) |
+| 3/3 | `infer_delisted.infer_delisted()` | 일봉 마지막 거래일 + 임계값으로 `delisted_date` 역산 (KRX 폐지일 미제공 fallback) |
+
+**ticker 재사용 처리**:
+- 같은 ticker가 다른 종목으로 재발행된 경우 자동 감지 → `ticker_reuse_events` + `TICKER_REUSE_POLLUTED` anomaly 기록
+- 기존 stocks 행은 보존, 새 폐지 정보는 무시 (충돌 방지)
+
+**검증** (선택):
+
+```bash
+# 새 폐지 종목 정상 import 확인
+python -c "
+from src.data_pipeline.db import get_connection
+with get_connection() as c:
+    n = c.execute('SELECT COUNT(*) FROM stocks WHERE delisted_date IS NOT NULL').fetchone()[0]
+    last = c.execute('SELECT ticker, name, delisted_date FROM stocks WHERE delisted_date IS NOT NULL ORDER BY delisted_date DESC LIMIT 5').fetchall()
+print(f'폐지 종목 총 {n}건. 최근 5건:')
+for r in last: print(f'  {r[\"ticker\"]} {r[\"name\"]} → {r[\"delisted_date\"]}')
+"
+```
+
+**알려진 한계**:
+- `delisted_date`는 일봉 마지막 거래일 + 임계값으로 추정 → **월 단위 정확도**. Universe 필터링에는 충분.
+- KRX market 정보는 xls에 없어 폐지 종목은 `market='UNKNOWN'`으로 import. SQLite ALTER COLUMN 미지원으로 보정 불가.
+- 일부 소형주(약 2%)는 KRX historical snapshot에 미반환 → 누락 가능.
+
+---
+
+## 10. 모니터링
 
 ### 텔레그램 알림 종류
 
@@ -275,7 +340,7 @@ risk:
 
 ---
 
-## 10. WF 검증 최종 결과 (2026-03-22)
+## 11. WF 검증 최종 결과 (2026-03-22)
 
 ### 설정
 - 전략: **adaptive** (실전 사용 전략, 국면별 자동 전환)
@@ -333,7 +398,7 @@ risk:
 
 ---
 
-## 11. 인프라 개선 이력
+## 12. 인프라 개선 이력
 
 | 항목 | 이전 | 현재 |
 |------|------|------|
@@ -344,7 +409,7 @@ risk:
 
 ---
 
-## 12. 트러블슈팅
+## 13. 트러블슈팅
 
 | 증상 | 원인 | 해결 |
 |------|------|------|

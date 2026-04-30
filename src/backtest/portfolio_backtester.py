@@ -50,6 +50,7 @@ class PortfolioTradeResult:
     pnl_amount: float
     pnl_pct: float
     is_partial: bool = False
+    initial_shares: int = 0   # 분석용 — 진입 시점 수량 (TP 발동 가능 여부 판정)
 
 
 @dataclass
@@ -561,6 +562,7 @@ def run_portfolio_backtest(
                         pnl_amount=pnl_amount,
                         pnl_pct=pnl_pct,
                         is_partial=True,
+                        initial_shares=pos.initial_shares,
                     ))
                     cash += partial_shares * pos.tp1_price
                     pos.shares -= partial_shares
@@ -593,6 +595,7 @@ def run_portfolio_backtest(
                         pnl_amount=pnl_amount,
                         pnl_pct=pnl_pct,
                         is_partial=True,
+                        initial_shares=pos.initial_shares,
                     ))
                     cash += partial_shares * tp2_price
                     pos.shares -= partial_shares
@@ -644,6 +647,7 @@ def run_portfolio_backtest(
                     pnl_amount=pnl_amount,
                     pnl_pct=pnl_pct,
                     is_partial=pos.tp1_triggered,
+                    initial_shares=pos.initial_shares,
                 ))
                 cash += pos.shares * exit_price
                 today_realized_pnl += pnl_amount
@@ -787,6 +791,9 @@ def run_portfolio_backtest(
                             'actual_cost': int(actual_cost),
                             'mode': sizing_mode,
                             'date': date_str,
+                            'ticker': cand['ticker'],
+                            'shares': int(shares),
+                            'entry_price': float(entry_price),
                         })
 
                 cash -= actual_cost
@@ -878,6 +885,7 @@ def run_portfolio_backtest(
                 exit_reason='FINAL_CLOSE',
                 hold_days=pos.hold_days,
                 shares=pos.shares,
+                initial_shares=pos.initial_shares,
                 pnl_amount=pnl_amount,
                 pnl_pct=pnl_pct,
             ))

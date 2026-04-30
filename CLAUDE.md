@@ -34,7 +34,7 @@ Phase 0 기획에 따라 데이터 파이프라인부터 새로 구축합니다.
 ### 갱신 절차
 
 - 일봉/시총 일일 갱신: Phase 2 이후 구축 (Step 4b)
-- 폐지 종목 갱신: 월 1회 `bash scripts/update_delisting.sh`
+- 폐지 종목 갱신: 월 1회 `python scripts/update_delisting.py`
 
 ### 정합성 검증 (Step 4a)
 
@@ -141,7 +141,7 @@ Phase 0 기획에 따라 데이터 파이프라인부터 새로 구축합니다.
 bash scripts/daily_run.sh    # 데이터 갱신 + 시그널 생성
 
 # 폐지 종목 갱신 (월 1회)
-bash scripts/update_delisting.sh
+python scripts/update_delisting.py
 ```
 
 ### DB 테이블 (Phase 3 추가)
