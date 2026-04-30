@@ -32,6 +32,7 @@ class Position:
     highest_since_entry: float
     hold_days: int = 0
     tp1_triggered: bool = False
+    tp2_triggered: bool = False
     strategy: str = 'TF'       # 'TF' or 'MR'
 
 
@@ -433,11 +434,19 @@ def run_portfolio_backtest(
     preloaded_data: dict = None,
     precomputed: dict = None,
     risk: "RiskParams | None" = None,
+    sizing_mode: str = 'cash_pct',
+    alloc_tracker: list | None = None,
+    equity_alloc_cap: float | None = None,
 ) -> PortfolioResult:
     """포트폴리오 레벨 백테스트 실행.
 
     preloaded_data: load_backtest_data()의 반환값. 제공 시 데이터 로딩 스킵.
     risk: RiskParams 객체. None이면 리스크 규칙 미적용 (v2 baseline).
+    sizing_mode:
+      'cash_pct'           → alloc = cash × (1/max_positions)  (v2.4 호환, 기본)
+      'equity'/'equity_equal' → alloc = total_equity / max_positions  (cash로 상한, v2.5)
+    alloc_tracker: 매 진입마다 dict 기록을 append할 list (실험용).
+    equity_alloc_cap: equity 모드일 때 alloc 절대 상한 (원). None이면 미적용.
     """
     if params is None:
         params = StrategyParams()
@@ -556,6 +565,38 @@ def run_portfolio_backtest(
                     cash += partial_shares * pos.tp1_price
                     pos.shares -= partial_shares
                     pos.tp1_triggered = True
+                    today_realized_pnl += pnl_amount
+                continue
+
+            # 2.5 TP2 (실험 13: TP1 후 추가 익절. tp2_atr=0이면 비활성)
+            elif (params.tp2_atr > 0 and params.tp2_sell_ratio > 0
+                  and pos.tp1_triggered and not pos.tp2_triggered
+                  and day['high'] >= pos.entry_price + pos.atr_at_entry * params.tp2_atr):
+                tp2_price = pos.entry_price + pos.atr_at_entry * params.tp2_atr
+                partial_shares = int(pos.initial_shares * params.tp2_sell_ratio)
+                partial_shares = min(partial_shares, pos.shares)
+                if partial_shares > 0:
+                    pnl_pct = (tp2_price / pos.entry_price - 1) - total_cost_pct
+                    pnl_amount = (partial_shares * pos.entry_price
+                                  * (tp2_price / pos.entry_price - 1)
+                                  - partial_shares * pos.entry_price * total_cost_pct)
+                    trades.append(PortfolioTradeResult(
+                        ticker=pos.ticker,
+                        name=ticker_names.get(pos.ticker, pos.ticker),
+                        entry_date=pos.entry_date,
+                        entry_price=pos.entry_price,
+                        exit_date=date_str,
+                        exit_price=tp2_price,
+                        exit_reason='TAKE_PROFIT_2',
+                        hold_days=pos.hold_days,
+                        shares=partial_shares,
+                        pnl_amount=pnl_amount,
+                        pnl_pct=pnl_pct,
+                        is_partial=True,
+                    ))
+                    cash += partial_shares * tp2_price
+                    pos.shares -= partial_shares
+                    pos.tp2_triggered = True
                     today_realized_pnl += pnl_amount
                 continue
 
@@ -715,13 +756,38 @@ def run_portfolio_backtest(
                             max_alloc_pct = risk.alloc_normal
                     else:
                         max_alloc_pct = 1.0 / max_positions
-                    alloc = min(cash * max_alloc_pct, cash)
+
+                    if sizing_mode in ('equity_equal', 'equity'):
+                        # equity = cash + 보유 종목의 당일 평가액 (없으면 entry가)
+                        today_equity = cash
+                        for _p in positions:
+                            _d, _ = get_day_row(_p.ticker)
+                            if _d is not None:
+                                today_equity += _p.shares * _d['close']
+                            else:
+                                today_equity += _p.shares * _p.entry_price
+                        alloc = today_equity / max_positions
+                        if equity_alloc_cap is not None:
+                            alloc = min(alloc, equity_alloc_cap)
+                        alloc = min(alloc, cash)
+                    else:
+                        alloc = min(cash * max_alloc_pct, cash)
+
                     if alloc < min_position_amount:
                         continue
                     shares = int(alloc / entry_price)
                     if shares <= 0:
                         continue
                     actual_cost = shares * entry_price
+
+                    if alloc_tracker is not None:
+                        alloc_tracker.append({
+                            'order': len(positions) + 1,
+                            'alloc': int(alloc),
+                            'actual_cost': int(actual_cost),
+                            'mode': sizing_mode,
+                            'date': date_str,
+                        })
 
                 cash -= actual_cost
 

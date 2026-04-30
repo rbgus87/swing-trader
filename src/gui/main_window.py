@@ -35,6 +35,7 @@ from PyQt5.QtWidgets import (
 from loguru import logger
 
 from src.data_pipeline.db import get_combined_db, get_data_db, get_trade_db
+from src.utils.config import config
 from src.gui.widgets.dashboard_tab import DashboardTab
 from src.gui.widgets.log_tab import LogTab
 from src.gui.widgets.settings_tab import SettingsTab
@@ -92,7 +93,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("appTitle")
         sidebar_layout.addWidget(title)
 
-        ver_label = QLabel("v2.4")
+        ver_label = QLabel("v2.5")
         ver_label.setStyleSheet(
             "color: #45475a; font-size: 10px; margin-top: -8px; padding: 0;"
         )
@@ -126,7 +127,7 @@ class MainWindow(QMainWindow):
         # ── 전략 요약 ──
         sidebar_layout.addWidget(self._sidebar_section("전략"))
 
-        self._lbl_strategy_name = QLabel("TF v2.4")
+        self._lbl_strategy_name = QLabel("TF v2.5")
         self._lbl_strategy_name.setObjectName("strategyName")
         sidebar_layout.addWidget(self._lbl_strategy_name)
 
@@ -155,7 +156,7 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("▶ 시작")
         self.btn_start.setObjectName("startBtn")
         self.btn_start.setCursor(Qt.PointingHandCursor)
-        self.btn_start.setToolTip("실시간 엔진 시작 (TradingEngine + v2.4 전략)")
+        self.btn_start.setToolTip("실시간 엔진 시작 (TradingEngine + v2.5 전략)")
         btn_live_row.addWidget(self.btn_start)
 
         self.btn_stop = QPushButton("■ 중지")
@@ -195,7 +196,8 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self._sidebar_section("파라미터"))
 
         self._lbl_params = QLabel(
-            "SL ATR×2.0\nTP1 ATR×2.0 (30%)\nTrail ATR×4.0\nHold 20일"
+            "SL ATR×2.0\nTP1 ATR×2.0 (30%)\nTP2 ATR×4.0 (30%)\n"
+            "Trail ATR×4.0\nHold 20일\nSizing: equity/4"
         )
         self._lbl_params.setStyleSheet(
             "color: #a6adc8; font-size: 10px; padding: 0; "
@@ -474,6 +476,8 @@ class MainWindow(QMainWindow):
                 "stop_price": p.get('stop_price', 0),
                 "tp1_price": p.get('target_price', 0),
                 "tp1_triggered": p.get('partial_sold', 0),
+                "tp2_price": p.get('tp2_price', 0),
+                "tp2_triggered": p.get('partial_sold_2', 0),
                 "atr_at_entry": 0,
                 "highest_since_entry": p.get('high_since_entry', 0),
             })
@@ -513,7 +517,10 @@ class MainWindow(QMainWindow):
         # 상태 카드 (daily_pnl_pct/mdd는 비율 — dashboard_tab에서 ×100 표시)
         cash = snapshot['cash'] if snapshot else 0
         pv = snapshot['portfolio_value'] if snapshot else 0
-        initial = 5_000_000
+        initial = int(config.get(
+            "trading.initial_capital",
+            config.get("backtest.initial_capital", 10_000_000),
+        ))
         pnl_ratio = ((pv - initial) / initial) if pv and initial else 0.0
         mdd_ratio = (snapshot.get('mdd') or 0.0) if snapshot else 0.0
         self.dashboard_tab.update_status({
@@ -551,7 +558,10 @@ class MainWindow(QMainWindow):
 
             # 누적 수익률
             pv = snapshot.get('portfolio_value') or 0
-            initial = 5_000_000
+            initial = int(config.get(
+                "trading.initial_capital",
+                config.get("backtest.initial_capital", 10_000_000),
+            ))
             pnl = ((pv - initial) / initial * 100) if pv and initial else 0.0
             pnl_color = "#a6e3a1" if pnl >= 0 else "#f38ba8"
             self._lbl_sidebar_pnl.setText(f"수익률: {pnl:+.2f}%")
@@ -566,7 +576,7 @@ class MainWindow(QMainWindow):
 
     def _update_status_bar(self, snapshot: dict | None):
         mode = self.combo_mode.currentText().upper()
-        strategy = "TF v2.4"
+        strategy = "TF v2.5"
         next_td = self._next_trading_date()
         if snapshot:
             gate = snapshot.get('gate_status') or 'UNKNOWN'

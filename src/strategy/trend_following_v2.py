@@ -63,6 +63,9 @@ class StrategyParams:
     trailing_atr: float = 4.0
     max_hold_days: int = 20
     tp1_sell_ratio: float = 0.3
+    # TP2 (실험 13: 2단계 익절). tp2_atr=0 또는 tp2_sell_ratio=0이면 비활성.
+    tp2_atr: float = 0.0
+    tp2_sell_ratio: float = 0.0
 
 
 @dataclass

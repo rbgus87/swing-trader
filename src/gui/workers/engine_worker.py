@@ -119,6 +119,8 @@ class EngineWorker(QThread):
                 pos["quantity"] = pos.get("quantity", 0)
                 pos["tp1_price"] = pos.get("target_price", 0)
                 pos["tp1_triggered"] = bool(pos.get("partial_sold", 0))
+                pos["tp2_price"] = pos.get("tp2_price", 0)
+                pos["tp2_triggered"] = bool(pos.get("partial_sold_2", 0))
                 pos["atr_at_entry"] = self._engine._get_atr(code, pos.get("entry_price", 0))
                 pos["highest_since_entry"] = pos.get("high_since_entry", 0)
             self.signals.positions_updated.emit(positions)

@@ -17,6 +17,8 @@ _POSITION_UPDATABLE_COLUMNS = frozenset({
     "code", "name", "entry_date", "entry_price", "quantity",
     "stop_price", "target_price", "status", "updated_at",
     "high_since_entry", "hold_days", "partial_sold",
+    # v2.5
+    "initial_quantity", "tp2_price", "partial_sold_2",
 })
 
 
@@ -80,7 +82,10 @@ class DataStore:
                     hold_days INTEGER DEFAULT 0,
                     partial_sold INTEGER DEFAULT 0,
                     entry_strategy TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL DEFAULT ''
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    initial_quantity INTEGER DEFAULT 0,
+                    tp2_price INTEGER DEFAULT 0,
+                    partial_sold_2 INTEGER DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS trades (
@@ -213,6 +218,32 @@ class DataStore:
                 pass
             self._set_schema_version(3)
 
+        if current < 4:
+            # v4: positions에 v2.5 TP2 컬럼 추가 (initial_quantity, tp2_price, partial_sold_2)
+            for col, ddl in (
+                ("initial_quantity",
+                 "ALTER TABLE positions ADD COLUMN initial_quantity INTEGER DEFAULT 0"),
+                ("tp2_price",
+                 "ALTER TABLE positions ADD COLUMN tp2_price INTEGER DEFAULT 0"),
+                ("partial_sold_2",
+                 "ALTER TABLE positions ADD COLUMN partial_sold_2 INTEGER DEFAULT 0"),
+            ):
+                try:
+                    self.conn.execute(ddl)
+                    logger.info(f"마이그레이션 v4: positions.{col} 컬럼 추가")
+                except sqlite3.OperationalError:
+                    pass  # 이미 존재
+            # 기존 open 포지션 — initial_quantity가 0이면 현재 quantity로 백필
+            try:
+                self.conn.execute(
+                    "UPDATE positions SET initial_quantity = quantity "
+                    "WHERE status = 'open' AND initial_quantity = 0"
+                )
+            except sqlite3.OperationalError:
+                pass
+            self.conn.commit()
+            self._set_schema_version(4)
+
     def _get_schema_version(self) -> int:
         """현재 스키마 버전 조회."""
         try:
@@ -246,13 +277,15 @@ class DataStore:
             삽입된 row의 id.
         """
         with self._lock:
+            initial_qty = pos.initial_quantity if pos.initial_quantity > 0 else pos.quantity
             cursor = self.conn.execute(
                 """
                 INSERT INTO positions
                     (code, name, entry_date, entry_price, quantity,
                      stop_price, target_price, status, high_since_entry,
-                     partial_sold, entry_strategy, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     partial_sold, entry_strategy, updated_at,
+                     initial_quantity, tp2_price, partial_sold_2)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pos.code,
@@ -267,6 +300,9 @@ class DataStore:
                     0,
                     pos.entry_strategy,
                     pos.updated_at,
+                    initial_qty,
+                    pos.tp2_price,
+                    0,
                 ),
             )
             self.conn.commit()

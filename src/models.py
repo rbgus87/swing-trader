@@ -50,6 +50,10 @@ class Position:
     partial_sold: bool = False
     entry_strategy: str = ""  # 진입 전략명 (adaptive 국면 전환 시 올바른 exit 적용)
     updated_at: str = ""
+    # v2.5 — 2단계 익절 + 초기 수량 보존
+    initial_quantity: int = 0    # 진입 시점 수량 (TP2 사이징 기준)
+    tp2_price: int = 0           # entry_price + atr × tp2_atr (TP2 발동 가격)
+    partial_sold_2: bool = False # TP2 발동 여부
 
 
 @dataclass
@@ -88,6 +92,7 @@ class ExitReason(Enum):
     TRAILING_STOP = "trailing_stop"
     TARGET_REACHED = "target_reached"
     PARTIAL_TARGET = "partial_target"
+    PARTIAL_TARGET_2 = "partial_target_2"  # v2.5: TP2 분할(30%)
     MACD_DEAD = "macd_dead"
     FLOW_EXIT = "flow_exit"
     DISPARITY_EXIT = "disparity_exit"

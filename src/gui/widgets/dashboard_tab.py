@@ -41,7 +41,7 @@ class DashboardTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._max_positions = 4  # v2.4 고정
+        self._max_positions = 4  # v2.5 고정
         self._init_ui()
 
     def _init_ui(self):
@@ -91,7 +91,7 @@ class DashboardTab(QWidget):
 
         self.positions_table = self._make_table(
             ["종목코드", "종목명", "전략", "보유일", "수량", "매수가",
-             "현재가", "평가금액", "수익률", "손절가", "TP1", "트레일"]
+             "현재가", "평가금액", "수익률", "손절가", "TP1", "TP2", "트레일"]
         )
         pos_layout.addWidget(self.positions_table)
         splitter.addWidget(pos_widget)
@@ -355,7 +355,7 @@ class DashboardTab(QWidget):
             else:
                 pnl_pct = 0.0
 
-            strategy_kr = {"TF": "추세추종 v2.4", "TF_v2.3": "추세추종 v2.4"}
+            strategy_kr = {"TF": "추세추종 v2.5", "TF_v2.3": "추세추종 v2.5"}
             entry_strat = pos.get("entry_strategy", "")
             strat_display = strategy_kr.get(entry_strat, entry_strat)
 
@@ -371,6 +371,17 @@ class DashboardTab(QWidget):
                 )
             else:
                 tp1_display = "-"
+
+            # TP2 표시 (v2.5)
+            tp2_price = float(pos.get("tp2_price", 0) or 0)
+            tp2_triggered = bool(pos.get("tp2_triggered", 0))
+            if tp2_price > 0:
+                tp2_display = (
+                    f"✅ {int(tp2_price):,}" if tp2_triggered
+                    else f"{int(tp2_price):,}"
+                )
+            else:
+                tp2_display = "-"
 
             # 트레일 스탑 계산
             highest = float(pos.get("highest_since_entry", 0) or 0)
@@ -393,6 +404,7 @@ class DashboardTab(QWidget):
                 f"{pnl_pct:+.2f}%",
                 f"{int(pos.get('stop_price', 0) or 0):,}",
                 tp1_display,
+                tp2_display,
                 trail_display,
             ]
             for col, text in enumerate(items):
@@ -404,6 +416,8 @@ class DashboardTab(QWidget):
                 if col == 2 and entry_strat == "TF":
                     item.setForeground(QColor(_GREEN))
                 if col == 10 and tp1_triggered:
+                    item.setForeground(QColor(_PEACH))
+                if col == 11 and tp2_triggered:
                     item.setForeground(QColor(_PEACH))
                 self.positions_table.setItem(row, col, item)
 
@@ -421,11 +435,12 @@ class DashboardTab(QWidget):
         # 카운트 라벨
         self._lbl_pos_count.setText(f"{len(positions)}종목")
 
-    # 사유 한글 매핑 (v2.4 + legacy)
+    # 사유 한글 매핑 (v2.5 + legacy)
     _EXIT_REASON_KR = {
-        # v2.4 orchestrator (대문자)
+        # 백테스터 / orchestrator (대문자)
         "STOP_LOSS": "손절",
         "TAKE_PROFIT_1": "TP1 분할(30%)",
+        "TAKE_PROFIT_2": "TP2 분할(30%)",
         "TRAILING": "트레일링",
         "TREND_EXIT": "추세이탈",
         "TIME_EXIT": "시간청산",
@@ -433,6 +448,7 @@ class DashboardTab(QWidget):
         # TradingEngine (소문자 — ExitReason.value)
         "stop_loss": "손절",
         "partial_target": "TP1 분할(30%)",
+        "partial_target_2": "TP2 분할(30%)",
         "target_reached": "목표가",
         "trailing_stop": "트레일링",
         "trend_exit": "추세이탈",

@@ -59,7 +59,7 @@ V23_EXCLUDED_TYPES = ('SPAC', 'REIT', 'FOREIGN', 'PREFERRED')
 V23_BREADTH_GATE = 0.40
 V23_MAX_POSITIONS = 4
 V23_MIN_POSITION_AMOUNT = 300_000
-V23_POSITION_RATIO = 0.25
+V23_POSITION_RATIO = 0.25  # legacy (v2.4 cash×25%) — v2.5 sizing_mode='equity' 사용 시 미적용
 
 
 class TradingEngine:
@@ -102,8 +102,15 @@ class TradingEngine:
         )
         self._poll_stock_names: dict[str, str] = {}  # 폴링에서 수집한 종목명
 
-        # v2.3 전략 파라미터 (단일 전략)
-        self._params = StrategyParams()
+        # v2.5 전략 파라미터 — config의 TP2/sizing 값 반영
+        self._params = StrategyParams(
+            tp1_sell_ratio=float(config.get("trend_following.tp1_sell_ratio", 0.30)),
+            tp2_atr=float(config.get("trend_following.tp2_atr", 0.0)),
+            tp2_sell_ratio=float(config.get("trend_following.tp2_sell_ratio", 0.0)),
+        )
+        self._sizing_mode = str(
+            config.get("trend_following.sizing_mode", "equity")
+        ).lower()
 
         self._risk_mgr = RiskManager(self._ds, config.data)
         self._sizer = PositionSizer()
@@ -648,9 +655,9 @@ class TradingEngine:
                 await self._execute_sell(pos, tick.price, exit_reason)
 
     def _evaluate_exit(self, pos: Position, current_price: int) -> ExitReason | None:
-        """v2.3 통합 청산 판단 (틱마다 호출).
+        """v2.5 통합 청산 판단 (틱마다 호출).
 
-        실시간: SL / TP1 분할(30%) / Trail
+        실시간: SL / TP1 분할(30%) / TP2 분할(30%) / Trail
         EOD: 추세이탈(MA5<MA20) / Hold 20일
         """
         # 1. 손절 (SL ATR×2.0)
@@ -664,6 +671,15 @@ class TradingEngine:
             and current_price >= pos.target_price
         ):
             return ExitReason.PARTIAL_TARGET
+
+        # 2.5 TP2 분할 매도 (v2.5: TP1 발동 후, ATR×4.0, 초기 수량의 30%)
+        if (
+            getattr(pos, "partial_sold", False)
+            and not getattr(pos, "partial_sold_2", False)
+            and getattr(pos, "tp2_price", 0) > 0
+            and current_price >= pos.tp2_price
+        ):
+            return ExitReason.PARTIAL_TARGET_2
 
         # 3. 트레일링 — StopManager가 high_since_entry 갱신 + stop_price 상향
         #    _check_exit_conditions에서 update_trailing_stop 호출 후 is_stopped 체크로
@@ -795,15 +811,15 @@ class TradingEngine:
         if tick.code in held:
             return
 
-        # 포지션 사이징: 가용자본 × 25%
-        capital = self._get_available_capital()
-        alloc = int(capital * V23_POSITION_RATIO)
+        # 포지션 사이징 (v2.5): equity / max_positions (cash로 상한)
+        alloc = self._calculate_alloc()
         if alloc < V23_MIN_POSITION_AMOUNT:
             reason_key = "자본부족"
             if self._entry_logged.get(tick.code) != reason_key:
                 logger.info(
                     f"진입 차단 ({name}): 자본 부족 "
-                    f"(alloc={alloc:,} < {V23_MIN_POSITION_AMOUNT:,})"
+                    f"(alloc={alloc:,} < {V23_MIN_POSITION_AMOUNT:,}, "
+                    f"mode={self._sizing_mode})"
                 )
                 self._entry_logged[tick.code] = reason_key
             return
@@ -1008,13 +1024,20 @@ class TradingEngine:
             await self._record_buy(tick, qty, matched_strategy.name)
 
     async def _execute_sell(self, position: Position, price: int, reason: ExitReason):
-        """매도 실행. 부분 매도(PARTIAL_TARGET) 시 절반만 매도하고 포지션 유지."""
-        # 부분 매도 수량 결정 (v2.3: tp1_sell_ratio=0.3)
-        is_partial = reason == ExitReason.PARTIAL_TARGET
+        """매도 실행. 부분 매도(TP1/TP2) 시 일부만 매도하고 포지션 유지."""
+        # 부분 매도 수량 결정
+        # v2.5: TP1 = quantity × tp1_sell_ratio, TP2 = initial_quantity × tp2_sell_ratio
+        is_partial = reason in (ExitReason.PARTIAL_TARGET, ExitReason.PARTIAL_TARGET_2)
         if is_partial:
-            sell_ratio = self._params.tp1_sell_ratio
-            sell_qty = max(1, int(position.quantity * sell_ratio))
-            # 잔여 수량이 0이 되면 전량 매도로 전환
+            if reason == ExitReason.PARTIAL_TARGET:
+                sell_ratio = self._params.tp1_sell_ratio
+                base_qty = position.quantity
+            else:  # PARTIAL_TARGET_2
+                sell_ratio = self._params.tp2_sell_ratio
+                # 초기 수량 기준 — TP1 후 잔여 quantity가 작아도 TP2 비율은 initial 기반
+                base_qty = position.initial_quantity if position.initial_quantity > 0 else position.quantity
+            sell_qty = max(1, int(base_qty * sell_ratio))
+            # 잔여 수량이 0 이하가 되면 전량 매도로 전환
             if sell_qty >= position.quantity:
                 is_partial = False
                 sell_qty = position.quantity
@@ -1058,12 +1081,23 @@ class TradingEngine:
 
         # 포지션 상태 업데이트
         if is_partial:
-            # 부분 매도: 수량 감소, 포지션 유지
+            # 부분 매도: 수량 감소, 포지션 유지. TP1/TP2 플래그 분기.
             remaining_qty = position.quantity - sell_qty
-            self._ds.update_position(
-                position.id, quantity=remaining_qty, status="open", partial_sold=1
+            update_kwargs = {
+                "quantity": remaining_qty,
+                "status": "open",
+            }
+            if reason == ExitReason.PARTIAL_TARGET:
+                update_kwargs["partial_sold"] = 1
+                tag = "TP1"
+            else:  # PARTIAL_TARGET_2
+                update_kwargs["partial_sold_2"] = 1
+                tag = "TP2"
+            self._ds.update_position(position.id, **update_kwargs)
+            logger.info(
+                f"{tag} 부분 매도: {position.code} {sell_qty}주 매도, "
+                f"{remaining_qty}주 잔여 (트레일링 계속)"
             )
-            logger.info(f"부분 매도 완료: {position.code} {sell_qty}주 매도, {remaining_qty}주 잔여 (트레일링 계속)")
         else:
             if self.mode == "paper":
                 self._ds.update_position(position.id, status="closed")
@@ -1227,9 +1261,14 @@ class TradingEngine:
         else:
             atr = self._get_atr(tick.code, tick.price)
 
-        # v2.3: SL = entry - ATR×2.0, TP1 = entry + ATR×2.0
+        # v2.5: SL = entry - ATR×2.0, TP1 = entry + ATR×2.0, TP2 = entry + ATR×4.0
         stop_price = int(tick.price - atr * self._params.stop_loss_atr)
         target_price = int(tick.price + atr * self._params.take_profit_atr)
+        tp2_price = (
+            int(tick.price + atr * self._params.tp2_atr)
+            if self._params.tp2_atr > 0
+            else 0
+        )
         name = self._get_stock_name(tick.code)
 
         pos = Position(
@@ -1243,6 +1282,8 @@ class TradingEngine:
             target_price=target_price,
             high_since_entry=tick.price,
             entry_strategy=strategy_name,
+            initial_quantity=qty,
+            tp2_price=tp2_price,
         )
         self._ds.insert_position(pos)
         self._invalidate_positions_cache()
@@ -1363,6 +1404,29 @@ class TradingEngine:
         invested = sum(p["entry_price"] * p["quantity"] for p in positions)
         return max(0, self._initial_capital - invested)
 
+    def _calculate_alloc(self) -> int:
+        """진입 alloc 금액 계산 (v2.5).
+
+        sizing_mode == 'equity': alloc = total_equity / max_positions (균등 + 복리)
+        sizing_mode == 'cash':   alloc = cash × (1/max_positions)         (v2.4 호환)
+        둘 다 cash로 상한 제한 (없는 돈으로 매수 방지).
+        """
+        cash = self._get_available_capital()
+        max_pos = max(1, V23_MAX_POSITIONS)
+
+        if self._sizing_mode == "equity":
+            equity = cash
+            for p in self._get_cached_positions():
+                code = p.get("code", "")
+                qty = p.get("quantity", 0)
+                price = self._latest_prices.get(code, p.get("entry_price", 0))
+                equity += int(price) * int(qty)
+            alloc = equity // max_pos
+        else:
+            alloc = int(cash * V23_POSITION_RATIO)
+
+        return int(min(alloc, cash))
+
     def _get_cached_positions(self) -> list[dict]:
         """포지션 메모리 캐시 반환. 없으면 DB 조회."""
         if self._positions_cache is None:
@@ -1399,6 +1463,9 @@ class TradingEngine:
             partial_sold=bool(d.get("partial_sold", 0)),
             entry_strategy=d.get("entry_strategy", ""),
             updated_at=d.get("updated_at", ""),
+            initial_quantity=d.get("initial_quantity", 0) or d["quantity"],
+            tp2_price=d.get("tp2_price", 0),
+            partial_sold_2=bool(d.get("partial_sold_2", 0)),
         )
 
     # ── 장마감 ──
