@@ -33,8 +33,12 @@ echo ============================================
 echo   실행 파일: SwingTrader.exe (프로젝트 루트)
 echo              dist\SwingTrader.exe
 echo.
-echo   실행 전 확인사항:
-echo     1. exe 옆에 .env 파일 배치 (API 키)
-echo     2. exe 옆에 config.yaml 배치 (전략 설정)
+echo   실행 전 확인사항 (exe와 같은 폴더에 배치):
+echo     1. .env             (API 키)
+echo     2. config.yaml      (전략 설정)
+echo     3. swing_data.db    (시세 DB — Phase 1 데이터)
+echo     4. swing_trade.db   (운영 DB — 자동 생성됨)
+echo.
+echo   설치 후 환경 검증: SwingTrader.exe --selftest
 echo ============================================
 pause

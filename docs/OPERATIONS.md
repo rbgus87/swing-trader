@@ -54,6 +54,17 @@ python gui.py --selftest       # GUI 진입 전 검증 후 exit
 
 exit code: `0` = 모두 OK, `1` = FAIL 1건+. **빌드 직후 자동 실행** — `python build_exe.py`가 PyInstaller 빌드 후 `SwingTrader.exe --selftest`를 60초 timeout으로 호출, FAIL 시 운영 투입 차단.
 
+⚠️ **PyInstaller --onefile 동작**: `_resolve_project_root()`는 `sys.executable.parent`를 루트로 인식하므로 **exe와 같은 폴더에 `.env / config.yaml / swing_data.db / swing_trade.db` 4종 파일이 모두 존재해야** selftest 단계 4·5 통과. 운영 폴더 구조:
+
+```
+운영폴더/
+├── SwingTrader.exe       ← 빌드된 단일 실행 파일
+├── .env                  ← KIWOOM_APPKEY, TELEGRAM_BOT_TOKEN 등
+├── config.yaml           ← 전략 설정
+├── swing_data.db         ← Phase 1 시세 DB (3,446 종목 / 7M+ 행)
+└── swing_trade.db        ← 운영 DB (positions/trades — 첫 실행 시 자동 생성)
+```
+
 ### Paper Trading (모의매매)
 
 ```bash

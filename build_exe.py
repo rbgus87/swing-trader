@@ -134,6 +134,9 @@ def build() -> None:
     print(f"루트에 복사: {root_exe}")
 
     # 빌드 직후 selftest 자동 실행 — silent failure 조기 차단
+    # 주의: PyInstaller exe는 sys.executable.parent를 PROJECT_ROOT로 인식하므로
+    #       dist/SwingTrader.exe 대신 루트에 복사된 SwingTrader.exe를 호출해야
+    #       프로젝트 루트의 config.yaml / swing_*.db를 정상 발견함.
     print("\n" + "=" * 50)
     print("빌드된 exe selftest 실행")
     print("=" * 50)
@@ -142,13 +145,14 @@ def build() -> None:
     env["PYTHONIOENCODING"] = "utf-8"
     try:
         result = subprocess.run(
-            [exe_path, "--selftest"],
+            [root_exe, "--selftest"],
             capture_output=True,
             text=True,
             timeout=60,
             encoding="utf-8",
             errors="replace",
             env=env,
+            cwd=PROJECT_ROOT,
         )
     except subprocess.TimeoutExpired:
         print("*** selftest 60초 타임아웃 — 운영 투입 금지 ***")
