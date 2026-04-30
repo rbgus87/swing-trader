@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("appTitle")
         sidebar_layout.addWidget(title)
 
-        ver_label = QLabel("v2.5")
+        ver_label = QLabel("v2.6")
         ver_label.setStyleSheet(
             "color: #45475a; font-size: 10px; margin-top: -8px; padding: 0;"
         )
@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         # ── 전략 요약 ──
         sidebar_layout.addWidget(self._sidebar_section("전략"))
 
-        self._lbl_strategy_name = QLabel("TF v2.5")
+        self._lbl_strategy_name = QLabel("TF v2.6")
         self._lbl_strategy_name.setObjectName("strategyName")
         sidebar_layout.addWidget(self._lbl_strategy_name)
 
@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("▶ 시작")
         self.btn_start.setObjectName("startBtn")
         self.btn_start.setCursor(Qt.PointingHandCursor)
-        self.btn_start.setToolTip("실시간 엔진 시작 (TradingEngine + v2.5 전략)")
+        self.btn_start.setToolTip("실시간 엔진 시작 (TradingEngine + v2.6 전략)")
         btn_live_row.addWidget(self.btn_start)
 
         self.btn_stop = QPushButton("■ 중지")
@@ -196,8 +196,8 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self._sidebar_section("파라미터"))
 
         self._lbl_params = QLabel(
-            "SL ATR×2.0\nTP1 ATR×2.0 (30%)\nTP2 ATR×4.0 (30%)\n"
-            "Trail ATR×4.0\nHold 20일\nSizing: equity/4"
+            "SL ATR×2.0\nTP1 ATR×2.0 (10%)\nTP2 ATR×4.0 (10%)\n"
+            "Trail ATR×4.0 (잔여 80%)\nHold 20일\nSizing: equity/4"
         )
         self._lbl_params.setStyleSheet(
             "color: #a6adc8; font-size: 10px; padding: 0; "
@@ -576,7 +576,7 @@ class MainWindow(QMainWindow):
 
     def _update_status_bar(self, snapshot: dict | None):
         mode = self.combo_mode.currentText().upper()
-        strategy = "TF v2.5"
+        strategy = "TF v2.6"
         next_td = self._next_trading_date()
         if snapshot:
             gate = snapshot.get('gate_status') or 'UNKNOWN'

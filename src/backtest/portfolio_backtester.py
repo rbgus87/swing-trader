@@ -438,6 +438,7 @@ def run_portfolio_backtest(
     sizing_mode: str = 'cash_pct',
     alloc_tracker: list | None = None,
     equity_alloc_cap: float | None = None,
+    breadth_gate_threshold: float | None = None,
 ) -> PortfolioResult:
     """포트폴리오 레벨 백테스트 실행.
 
@@ -679,7 +680,8 @@ def run_portfolio_backtest(
                 if br_row['close'] > ma200_v:
                     above += 1
             breadth = above / total_b if total_b > 0 else 0.5
-        gate_open = breadth >= BREADTH_GATE_THRESHOLD
+        gate_th = breadth_gate_threshold if breadth_gate_threshold is not None else BREADTH_GATE_THRESHOLD
+        gate_open = breadth >= gate_th
         if gate_open:
             gate_open_days += 1
         else:

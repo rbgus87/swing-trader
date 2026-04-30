@@ -706,12 +706,12 @@ class SettingsTab(QWidget):
 
         strategy = self._config.get("strategy", {})
 
-        # v2.5 현재 확정 파라미터 (읽기 전용)
-        form.addRow(self._make_separator("현재 전략 (TrendFollowing v2.5)"))
+        # v2.6 현재 확정 파라미터 (읽기 전용)
+        form.addRow(self._make_separator("현재 전략 (TrendFollowing v2.6)"))
         v23_summary = QLabel(
             "• 진입: 추세추종 (완전 정배열 + MACD + 시장별 상대강도 +5%p)\n"
-            "• 청산: SL ATR×2.0 / TP1 ATR×2.0(30%) / TP2 ATR×4.0(30%) / "
-            "Trail ATR×4.0 / Hold 20일\n"
+            "• 청산: SL ATR×2.0 / TP1 ATR×2.0(10%) / TP2 ATR×4.0(10%) / "
+            "Trail ATR×4.0 (잔여 80%) / Hold 20일\n"
             "• Universe: 시총 3조+, 거래대금 50억+\n"
             "• 가드레일: breadth ≥ 0.40\n"
             "• 포트폴리오: 4종목 동시, 사이징 equity/4 (균등+복리), 최소 30만원\n"
@@ -724,7 +724,7 @@ class SettingsTab(QWidget):
         v23_summary.setWordWrap(True)
         form.addRow(v23_summary)
 
-        form.addRow(self._make_separator("레거시 설정 (비활성 — v2.5 미사용)"))
+        form.addRow(self._make_separator("레거시 설정 (비활성 — v2.6 미사용)"))
         self.w_strategy_type = SettingField.combo(
             ["golden_cross", "disparity_reversion", "adaptive"],
             strategy.get("type", "adaptive"),
