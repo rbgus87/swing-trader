@@ -2,11 +2,15 @@
 
 실행: python build_exe.py
 결과: dist/SwingTrader.exe
+
+빌드 직후 자동으로 `SwingTrader.exe --selftest` 를 호출해 환경/의존성 무결성을
+검증한다. selftest FAIL 시 exit 1 — 운영 투입 차단.
 """
 
 import PyInstaller.__main__
 import os
 import shutil
+import subprocess
 import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +30,7 @@ def build() -> None:
         f"--add-data={os.path.join(PROJECT_ROOT, 'src', 'gui', 'styles', 'theme.qss')};src/gui/styles",
         # 히든 임포트 (동적 import 되는 모듈)
         # ── 공통 ──
+        "--hidden-import=selftest",
         "--hidden-import=src.datastore",
         "--hidden-import=src.models",
         "--hidden-import=src.utils.config",
@@ -116,17 +121,48 @@ def build() -> None:
     PyInstaller.__main__.run(args)
 
     exe_path = os.path.join(PROJECT_ROOT, "dist", "SwingTrader.exe")
-    if os.path.exists(exe_path):
-        size_mb = os.path.getsize(exe_path) / (1024 * 1024)
-        print(f"\n빌드 완료: {exe_path} ({size_mb:.1f} MB)")
-
-        # 프로젝트 루트에 exe 복사
-        root_exe = os.path.join(PROJECT_ROOT, "SwingTrader.exe")
-        shutil.copy2(exe_path, root_exe)
-        print(f"루트에 복사: {root_exe}")
-    else:
+    if not os.path.exists(exe_path):
         print("\n빌드 실패!")
         sys.exit(1)
+
+    size_mb = os.path.getsize(exe_path) / (1024 * 1024)
+    print(f"\n빌드 완료: {exe_path} ({size_mb:.1f} MB)")
+
+    # 프로젝트 루트에 exe 복사
+    root_exe = os.path.join(PROJECT_ROOT, "SwingTrader.exe")
+    shutil.copy2(exe_path, root_exe)
+    print(f"루트에 복사: {root_exe}")
+
+    # 빌드 직후 selftest 자동 실행 — silent failure 조기 차단
+    print("\n" + "=" * 50)
+    print("빌드된 exe selftest 실행")
+    print("=" * 50)
+    # exe 내부 Python이 stdout을 UTF-8로 열도록 강제 (cp949 파이프 인코딩 방지)
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    try:
+        result = subprocess.run(
+            [exe_path, "--selftest"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        print("*** selftest 60초 타임아웃 — 운영 투입 금지 ***")
+        sys.exit(1)
+
+    print(result.stdout)
+    if result.returncode != 0:
+        if result.stderr:
+            print("STDERR:")
+            print(result.stderr)
+        print("\n*** 빌드된 exe selftest FAIL ***")
+        print("운영 투입 금지. 빌드 옵션 재검토 필요.")
+        sys.exit(1)
+    print("*** 빌드 + selftest 모두 통과 ***")
 
 
 if __name__ == "__main__":

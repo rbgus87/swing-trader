@@ -2,6 +2,7 @@
 
 Usage:
     python gui.py
+    python gui.py --selftest    # 환경/의존성 검증 후 종료 (10초 내)
 """
 
 import atexit
@@ -22,6 +23,11 @@ def _force_exit():
 if __name__ == "__main__":
     # PyInstaller exe 호환
     multiprocessing.freeze_support()
+
+    # --selftest 플래그: GUI 진입 전 환경 검증 (exit code 반환)
+    if "--selftest" in sys.argv:
+        from selftest import run_selftest
+        sys.exit(run_selftest())
 
     atexit.register(_force_exit)
 

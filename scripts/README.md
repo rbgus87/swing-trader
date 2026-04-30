@@ -28,6 +28,13 @@ python scripts/update_delisting.py --skip-infer     # 추론 생략
 
 ## 검증 도구
 
+- **`../selftest.py` (루트)** — 환경/의존성 무결성 검증 (~6초)
+  ```bash
+  python selftest.py             # 직접 실행
+  python gui.py --selftest       # GUI 진입 전 검증 후 exit
+  ```
+  9단계: 모듈 import / 지표 계산 / config / 두 DB / 엔진·백테스터 import / Kiwoom·Telegram 네트워크. exit code 0 = 모두 OK, 1 = FAIL 1건+. 빌드 직후 `python build_exe.py`가 자동으로 호출.
+
 - `run_walk_forward.py` — Walk-Forward 검증 (파라미터 변경 후 / 분기 1회)
 - `verify_fdr_capabilities.py`, `verify_krx_split_adjustment.py`, `verify_ticker_reuse.py` — 데이터 정합성 검증
 

@@ -29,6 +29,31 @@ pip install opendartreader     # DART 재무제표 (선택)
 
 ## 2. 실행 모드
 
+### 사전 환경 검증 (selftest)
+
+운영 시작·빌드 직후·전략 사양 변경 후 `selftest`로 환경 무결성 1회 확인 (약 6초):
+
+```bash
+python selftest.py             # 직접 실행
+python gui.py --selftest       # GUI 진입 전 검증 후 exit
+```
+
+9단계 검증:
+
+| # | 단계 | 내용 |
+|---|------|------|
+| 1 | 모듈 import | pandas/numpy/PyQt5/pykrx/FinanceDataReader 등 19개 |
+| 2 | 지표 계산 | ATR/ADX/MA/MACD 1회 빌드 — NaN 검출 |
+| 3 | Config | 13개 필수 키 + 타입 + sizing_mode 화이트리스트 |
+| 4 | swing_trade.db | 6개 테이블 + positions v4 컬럼 (initial_quantity/tp2_price/partial_sold_2) |
+| 5 | swing_data.db | 5개 테이블 + 행 수 sanity (stocks≥100, candles≥100K) |
+| 6 | TradingEngine import | 클래스 import + StrategyParams config 키 검증 |
+| 7 | Backtester import | PortfolioTradeResult.initial_shares (v2.5 마이그) |
+| 8 | Kiwoom 토큰 | `/oauth2/token` 호출 (.env 키 없으면 SKIP) |
+| 9 | Telegram getMe | 봇 토큰 검증 (.env 없으면 SKIP) |
+
+exit code: `0` = 모두 OK, `1` = FAIL 1건+. **빌드 직후 자동 실행** — `python build_exe.py`가 PyInstaller 빌드 후 `SwingTrader.exe --selftest`를 60초 timeout으로 호출, FAIL 시 운영 투입 차단.
+
 ### Paper Trading (모의매매)
 
 ```bash
@@ -52,6 +77,7 @@ python gui.py
 
 - 실거래 전 Paper 모드에서 최소 1주일 검증 권장
 - 텔레그램 알림이 정상 동작하는지 반드시 확인
+- 운영 투입 직전 `python gui.py --selftest`로 환경 무결성 확인 권장
 
 ---
 

@@ -143,6 +143,9 @@ bash scripts/daily_run.sh    # 데이터 갱신 + 시그널 생성
 
 # 폐지 종목 갱신 (월 1회)
 python scripts/update_delisting.py
+
+# 환경 무결성 검증 (운영 전 / 빌드 후 / 전략 사양 변경 후)
+python selftest.py           # 9단계 약 6초
 ```
 
 ### DB 테이블 (Phase 3 추가)
