@@ -74,8 +74,8 @@ trend_following:
 
 trading:
   universe: kospi_kosdaq
-  max_positions: 4
-  initial_capital: 50_000_000          # v2.5: 500만원
+  max_positions: 6
+  initial_capital: 10_000_000          # v2.5: 1000만원
   reentry_cooldown_days: 3
   order_type: market
   entry_start_time: "09:30"
