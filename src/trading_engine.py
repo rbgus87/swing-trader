@@ -53,7 +53,7 @@ from src.utils.config import config
 from src.utils.market_calendar import is_market_open
 
 
-# v2.3 Universe 파라미터
+# v2.6 Universe 파라미터
 V23_MCAP_THRESHOLD = 3_000_000_000_000
 V23_EXCLUDED_TYPES = ('SPAC', 'REIT', 'FOREIGN', 'PREFERRED')
 V23_BREADTH_GATE = 0.40
@@ -114,7 +114,7 @@ class TradingEngine:
 
         self._risk_mgr = RiskManager(self._ds, config.data)
         self._sizer = PositionSizer()
-        # StopManager는 v2.3 규칙으로 초기화:
+        # StopManager는 v2.6 규칙으로 초기화:
         #   SL = entry - ATR×2.0, Trail = highest - ATR×4.0
         #   trailing_activate_pct=0 → 즉시 활성 (후퇴 금지 룰로 초기 SL 유지)
         self._stop_mgr = StopManager(
@@ -125,12 +125,12 @@ class TradingEngine:
         )
         self._telegram = TelegramBot()
 
-        # 단일 전략 모드 (v2.3)
-        self._strategy_type = "TF_v2.3"
+        # 단일 전략 모드 (v2.6)
+        self._strategy_type = "TF_v2.6"
         self._is_adaptive = False
         self._strategies = []
         self._strategy = None
-        logger.info("전략 로드: TrendFollowing v2.3")
+        logger.info("전략 로드: TrendFollowing v2.6")
 
         # breadth 가드레일 캐시 (장전에 갱신)
         self._breadth_ok: bool = True
@@ -139,7 +139,7 @@ class TradingEngine:
         # 17:00 일일 데이터 갱신 중복 실행 방지
         self._data_update_running: bool = False
 
-        # v2.3 진입 후보 캐시 (스크리닝에서 사전 계산)
+        # v2.6 진입 후보 캐시 (스크리닝에서 사전 계산)
         self._v23_entry_cache: dict = {}
 
         # 시장 국면 판단기 (breadth로 대체되지만 레거시 호환 유지)
@@ -285,9 +285,9 @@ class TradingEngine:
         self._scheduler.start()
 
         # watchlist → 후보 등록 (polling 시작 전에 준비)
-        # v2.3: 고정 watchlist 경로 폐기 → 스크리닝으로 Universe 동적 선정
+        # v2.6: 고정 watchlist 경로 폐기 → 스크리닝으로 Universe 동적 선정
         self._candidates = []
-        logger.info("v2.3 모드 — 장전 스크리닝으로 후보 동적 선정")
+        logger.info("v2.6 모드 — 장전 스크리닝으로 후보 동적 선정")
 
         # 재시작 시 보유 포지션 high_since_entry 복구 (일봉 기반)
         try:
@@ -295,11 +295,11 @@ class TradingEngine:
         except Exception as e:
             logger.warning(f"기동 시 high_since_entry 보정 실패: {e}")
 
-        # 엔진 기동 즉시 v2.3 스크리닝 1회 실행 (스케줄 시각(08:30) 대기 없이 바로 후보 확보)
+        # 엔진 기동 즉시 v2.6 스크리닝 1회 실행 (스케줄 시각(08:30) 대기 없이 바로 후보 확보)
         try:
             await self._pre_market_screening()
         except Exception as e:
-            logger.warning(f"기동 시 v2.3 스크리닝 실패 (cron에서 재시도됨): {e}")
+            logger.warning(f"기동 시 v2.6 스크리닝 실패 (cron에서 재시도됨): {e}")
 
         # 장 시간대이면 즉시 REST polling 시작 (프로그램이 장중에 시작된 경우)
         from src.utils.market_calendar import is_trading_day, now_kst
@@ -337,7 +337,7 @@ class TradingEngine:
     # ── 장전 ──
 
     async def _pre_market_screening(self, _retry: int = 0):
-        """장전 스크리닝 — v2.3 상태 기반 추세추종 후보 생성 (08:30)."""
+        """장전 스크리닝 — v2.6 상태 기반 추세추종 후보 생성 (08:30)."""
         max_retries = 3
 
         # 토큰 갱신
@@ -349,7 +349,7 @@ class TradingEngine:
         try:
             await asyncio.to_thread(self._v23_screen_universe)
         except Exception as e:
-            logger.error(f"v2.3 스크리닝 실패 (시도 {_retry + 1}/{max_retries + 1}): {e}")
+            logger.error(f"v2.6 스크리닝 실패 (시도 {_retry + 1}/{max_retries + 1}): {e}")
             if _retry < max_retries:
                 delay = 60 * (_retry + 1)
                 logger.info(f"스크리닝 재시도 예약: {delay}초 후")
@@ -363,7 +363,7 @@ class TradingEngine:
         return
 
     def _v23_screen_universe(self):
-        """v2.3 진입 조건으로 Universe를 스캔 → self._candidates + self._v23_entry_cache 갱신."""
+        """v2.6 진입 조건으로 Universe를 스캔 → self._candidates + self._v23_entry_cache 갱신."""
         import pandas as pd
         from datetime import timedelta
 
@@ -424,7 +424,7 @@ class TradingEngine:
                 (today, V23_MCAP_THRESHOLD, *V23_EXCLUDED_TYPES, today),
             ).fetchall()
         universe = [(r['ticker'], r['name'], r['market']) for r in universe_row]
-        logger.info(f"v2.3 Universe: {len(universe)}종목")
+        logger.info(f"v2.6 Universe: {len(universe)}종목")
 
         # 4. 각 종목 일봉 로드 + 조건 체크
         candidates = {}
@@ -498,7 +498,7 @@ class TradingEngine:
             self._atr_cache[tkr] = c['atr']
 
         logger.info(
-            f"v2.3 후보 확정: {len(candidates)}종목 "
+            f"v2.6 후보 확정: {len(candidates)}종목 "
             f"(breadth={breadth:.0%})"
         )
 
@@ -517,7 +517,7 @@ class TradingEngine:
             sample_text = "\n".join(sample_lines) if sample_lines else "  (없음)"
             gate_mark = "🟢 OPEN" if self._breadth_ok else "🔴 CLOSED"
             self._telegram.send(
-                f"📋 v2.3 후보 {len(candidates)}종목\n"
+                f"📋 v2.6 후보 {len(candidates)}종목\n"
                 f"시장: {gate_mark} (breadth {breadth:.0%})\n\n"
                 f"{sample_text}{more}"
             )
@@ -591,7 +591,7 @@ class TradingEngine:
         self._update_daily_pnl(tick)
 
         # 3. 후보 종목 진입 조건 체크
-        # v2.3 가드레일: breadth < 0.40이면 매수 전체 차단
+        # v2.6 가드레일: breadth < 0.40이면 매수 전체 차단
         if not self._breadth_ok:
             if not getattr(self, "_regime_block_logged", False):
                 logger.info(
@@ -693,11 +693,11 @@ class TradingEngine:
         return None
 
     def _check_strategy_exit(self, pos: Position, current_price: int) -> ExitReason | None:
-        """v2.3: 전략별 분기 제거 — _evaluate_exit에 통합. 호환성 위해 no-op."""
+        """v2.6: 전략별 분기 제거 — _evaluate_exit에 통합. 호환성 위해 no-op."""
         return None
 
     def _check_strategy_exit_legacy_unused(self, pos: Position, current_price: int) -> ExitReason | None:
-        """레거시 전략별 청산 — v2.3 전환 후 미사용."""
+        """레거시 전략별 청산 — v2.6 전환 후 미사용."""
         strategy = pos.entry_strategy
 
         # golden_cross: 데드크로스 + RSI 과열
@@ -786,7 +786,7 @@ class TradingEngine:
         return None
 
     async def _check_entry_conditions(self, tick: Tick):
-        """v2.3 진입 — 스크리닝에서 확정된 후보만 시가 매수."""
+        """v2.6 진입 — 스크리닝에서 확정된 후보만 시가 매수."""
         name = self._poll_stock_names.get(tick.code, tick.code)
 
         cache = self._v23_entry_cache.get(tick.code)
@@ -836,9 +836,9 @@ class TradingEngine:
                 tick.code, qty, order_price, ORDER_BUY, hoga
             )
             if result.success:
-                await self._record_buy(tick, qty, "TF_v2.3")
+                await self._record_buy(tick, qty, "TF_v2.6")
         elif self.mode == "paper":
-            await self._record_buy(tick, qty, "TF_v2.3")
+            await self._record_buy(tick, qty, "TF_v2.6")
 
         # 중복 매수 방지
         self._v23_entry_cache.pop(tick.code, None)
@@ -851,7 +851,7 @@ class TradingEngine:
         return
 
     async def _check_entry_conditions_legacy_unused(self, tick: Tick):
-        """레거시 멀티전략 진입 로직 — v2.3 전환 후 미사용."""
+        """레거시 멀티전략 진입 로직 — v2.6 전환 후 미사용."""
         from src.strategy.signals import (
             calculate_indicators,
             calculate_signal_score,
@@ -1253,7 +1253,7 @@ class TradingEngine:
         return code
 
     async def _record_buy(self, tick: Tick, qty: int, strategy_name: str = ""):
-        """매수 기록 — v2.3 stop/target 직접 계산."""
+        """매수 기록 — v2.6 stop/target 직접 계산."""
         # ATR: 스크리닝 캐시 우선, 없으면 _get_atr 폴백
         cache = self._v23_entry_cache.get(tick.code)
         if cache and cache.get('atr'):
@@ -1357,11 +1357,11 @@ class TradingEngine:
             self.halt()
 
     def _switch_strategy_by_regime(self):
-        """v2.3: 단일 전략 모드 — no-op (레거시 호출 호환)."""
+        """v2.6: 단일 전략 모드 — no-op (레거시 호출 호환)."""
         return
 
     def _switch_strategy_by_regime_legacy_unused(self):
-        """레거시 국면별 전략 전환 — v2.3 전환 후 미사용."""
+        """레거시 국면별 전략 전환 — v2.6 전환 후 미사용."""
         regime = self._market_regime.regime_type
         regime_map = getattr(self, '_strategy_config', {}).get("regime_strategy", {})
         new_names = regime_map.get(regime)
@@ -1527,18 +1527,18 @@ class TradingEngine:
             logger.error(f"config.yaml 업데이트 실패: {e}")
 
     async def _evening_watchlist_screening(self):
-        """장마감 후 HTS 조건검색 — v2.3 모드에서는 불필요하여 스킵.
+        """장마감 후 HTS 조건검색 — v2.6 모드에서는 불필요하여 스킵.
 
-        v2.3은 장전 _v23_screen_universe()로 Universe 기반 후보를 동적 생성하므로
+        v2.6은 장전 _v23_screen_universe()로 Universe 기반 후보를 동적 생성하므로
         전날 저녁 조건검색 결과를 DB에 적재할 필요 없음.
         """
         logger.info(
-            "v2.3 모드 — 저녁 HTS 조건검색 스킵 (장전 스크리닝으로 대체)"
+            "v2.6 모드 — 저녁 HTS 조건검색 스킵 (장전 스크리닝으로 대체)"
         )
         return
 
     async def _evening_watchlist_screening_legacy_unused(self):
-        """레거시 저녁 조건검색 — v2.3 전환 후 미사용."""
+        """레거시 저녁 조건검색 — v2.6 전환 후 미사용."""
         logger.info("저녁 조건검색 시작 (다음 거래일 watchlist 생성)")
 
         watchlist_mode = config.get("watchlist_mode", "fixed")
@@ -1635,7 +1635,7 @@ class TradingEngine:
         """장 마감 후 정리 (15:35).
 
         1. (live) 미체결 주문 전량 취소 + selling 포지션 복원
-        2. v2.3 추세 이탈 체크 (MA5 < MA20) — 일봉 확정 후
+        2. v2.6 추세 이탈 체크 (MA5 < MA20) — 일봉 확정 후
         """
         logger.info("장마감 정리 시작")
 
@@ -1664,7 +1664,7 @@ class TradingEngine:
                 self._invalidate_positions_cache()
                 self._sell_retry_counts.clear()
 
-        # 3. v2.3 추세 이탈 체크 (MA5 < MA20 EOD)
+        # 3. v2.6 추세 이탈 체크 (MA5 < MA20 EOD)
         try:
             await self._v23_check_trend_exit()
         except Exception as e:
@@ -1726,10 +1726,10 @@ class TradingEngine:
                 logger.warning(f"추세 체크 실패 ({code}): {e}")
 
         if not to_close:
-            logger.info("v2.3 추세 이탈 청산 대상 없음")
+            logger.info("v2.6 추세 이탈 청산 대상 없음")
             return
 
-        logger.info(f"v2.3 추세 이탈 청산: {len(to_close)}건")
+        logger.info(f"v2.6 추세 이탈 청산: {len(to_close)}건")
         for pos, last_close in to_close:
             await self._execute_sell(pos, last_close, ExitReason.TREND_EXIT)
 

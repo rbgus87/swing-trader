@@ -1,7 +1,7 @@
 """메인 윈도우 — 좌측 사이드바 + 우측 탭 레이아웃.
 
-4-레이어 엔진(orchestrator) 연결 버전:
-  - 일일 실행: orchestrator.run() 1회 트리거
+TradingEngine(v2.6) 직접 연결:
+  - 일일 실행: DailyRunWorker가 TradingEngine 진입점을 1회 트리거
   - 10초 타이머로 DB에서 positions/signals/snapshot 직접 조회
   - 실시간 폴링 없음 (EOD 배치 구조)
 """

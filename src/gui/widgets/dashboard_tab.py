@@ -437,7 +437,7 @@ class DashboardTab(QWidget):
 
     # 사유 한글 매핑 (v2.6 + legacy)
     _EXIT_REASON_KR = {
-        # 백테스터 / orchestrator (대문자)
+        # 백테스터 (대문자)
         "STOP_LOSS": "손절",
         "TAKE_PROFIT_1": "TP1 분할(10%)",
         "TAKE_PROFIT_2": "TP2 분할(10%)",
