@@ -1,14 +1,7 @@
 """PyInstaller 빌드 스크립트
 
 실행: python build_exe.py
-결과: dist/SwingTrader/SwingTrader.exe (onedir)
-
-onedir 채택 이유:
-  - onefile은 매 실행 시 임시 폴더로 압축해제 → 시작 ~10초 + 디스크 IO
-  - onedir은 압축 단계 없음 → 빌드/시작 모두 빠름
-  - PROJECT_ROOT 결정 로직(src/data_pipeline/__init__.py, src/utils/config.py)에
-    onedir 폴백을 추가했으므로 dist/SwingTrader/SwingTrader.exe 직접 실행 시
-    상위 디렉토리에서 config.yaml/swing_*.db 자동 발견.
+결과: dist/SwingTrader.exe → 루트로 복사
 
 빌드 직후 자동으로 `SwingTrader.exe --selftest` 를 호출해 환경/의존성 무결성을
 검증한다. selftest FAIL 시 exit 1 — 운영 투입 차단.
@@ -28,7 +21,7 @@ def build() -> None:
     args = [
         os.path.join(PROJECT_ROOT, "gui.py"),
         "--name=SwingTrader",
-        "--onedir",
+        "--onefile",
         "--windowed",                    # 콘솔 창 숨김
         "--noconfirm",
         # 프로젝트 모듈 포함
@@ -131,55 +124,40 @@ def build() -> None:
     ]
 
     print("=" * 50)
-    print("Swing Trader - exe 빌드 시작 (onedir)")
+    print("Swing Trader - exe 빌드 시작")
     print("=" * 50)
 
     build_started = time.time()
     PyInstaller.__main__.run(args)
     build_elapsed = time.time() - build_started
 
-    # onedir: dist/SwingTrader/SwingTrader.exe
-    dist_dir = os.path.join(PROJECT_ROOT, "dist", "SwingTrader")
-    exe_path = os.path.join(dist_dir, "SwingTrader.exe")
+    exe_path = os.path.join(PROJECT_ROOT, "dist", "SwingTrader.exe")
     if not os.path.exists(exe_path):
         print("\n빌드 실패!")
         sys.exit(1)
 
-    # 폴더 전체 사이즈 측정
-    total_size = 0
-    for root, _, files in os.walk(dist_dir):
-        for f in files:
-            try:
-                total_size += os.path.getsize(os.path.join(root, f))
-            except OSError:
-                pass
-    size_mb = total_size / (1024 * 1024)
-    exe_mb = os.path.getsize(exe_path) / (1024 * 1024)
-    print(f"\n빌드 완료: {exe_path}")
-    print(f"  exe 단독: {exe_mb:.1f} MB / 폴더 합계: {size_mb:.1f} MB")
+    size_mb = os.path.getsize(exe_path) / (1024 * 1024)
+    print(f"\n빌드 완료: {exe_path} ({size_mb:.1f} MB)")
     print(f"  빌드 소요 시간: {build_elapsed:.1f}s")
 
-    # 루트의 구버전 onefile exe 정리 (있으면 혼란 방지)
-    legacy_root_exe = os.path.join(PROJECT_ROOT, "SwingTrader.exe")
-    if os.path.exists(legacy_root_exe):
-        try:
-            os.remove(legacy_root_exe)
-            print(f"구버전 루트 exe 제거: {legacy_root_exe}")
-        except OSError as e:
-            print(f"  (구버전 exe 제거 실패: {e})")
+    # 프로젝트 루트에 exe 복사
+    root_exe = os.path.join(PROJECT_ROOT, "SwingTrader.exe")
+    shutil.copy2(exe_path, root_exe)
+    print(f"루트에 복사: {root_exe}")
 
     # 빌드 직후 selftest 자동 실행 — silent failure 조기 차단
-    # onedir: dist/SwingTrader/SwingTrader.exe 직접 실행 + cwd=PROJECT_ROOT.
-    # PROJECT_ROOT 탐색 로직이 exe_dir → exe_dir.parent → exe_dir.parent.parent 순으로
-    # config.yaml을 찾으므로 swing-trader/ 가 root로 인식됨.
+    # 주의: PyInstaller exe는 sys.executable.parent를 PROJECT_ROOT로 인식하므로
+    #       dist/SwingTrader.exe 대신 루트에 복사된 SwingTrader.exe를 호출해야
+    #       프로젝트 루트의 config.yaml / swing_*.db를 정상 발견함.
     print("\n" + "=" * 50)
     print("빌드된 exe selftest 실행")
     print("=" * 50)
+    # exe 내부 Python이 stdout을 UTF-8로 열도록 강제 (cp949 파이프 인코딩 방지)
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     try:
         result = subprocess.run(
-            [exe_path, "--selftest"],
+            [root_exe, "--selftest"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -201,7 +179,6 @@ def build() -> None:
         print("운영 투입 금지. 빌드 옵션 재검토 필요.")
         sys.exit(1)
     print("*** 빌드 + selftest 모두 통과 ***")
-    print(f"\n실행: {exe_path}")
 
 
 if __name__ == "__main__":

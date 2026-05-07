@@ -14,17 +14,13 @@ from dotenv import load_dotenv
 def _get_app_dir() -> Path:
     """exe 또는 스크립트 기준 디렉토리 반환.
 
-    PyInstaller --onedir: exe가 dist/SwingTrader/SwingTrader.exe 형태이므로
-        config.yaml 위치를 기준으로 위로 탐색.
+    PyInstaller --onedir: exe가 있는 폴더
     PyInstaller --onefile: 임시 폴더(_MEIPASS)가 아닌 exe 위치
     일반 실행: 프로젝트 루트 (cwd)
     """
     if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).parent
-        for cand in (exe_dir, exe_dir.parent, exe_dir.parent.parent):
-            if (cand / "config.yaml").exists():
-                return cand
-        return exe_dir
+        # PyInstaller exe
+        return Path(sys.executable).parent
     return Path.cwd()
 
 

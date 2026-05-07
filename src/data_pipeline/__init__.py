@@ -8,9 +8,6 @@ Phase A: DB 역할 분리
 PyInstaller --onefile: __file__은 _MEIPASS 임시폴더 내부를 가리키므로
 parents[2]를 쓰면 DB_PATH가 임시폴더로 잡혀 실제 DB를 찾지 못한다.
 sys.executable의 부모(= exe가 놓인 폴더)를 루트로 사용한다.
-
-PyInstaller --onedir: exe가 dist/SwingTrader/SwingTrader.exe 처럼 한 단계
-더 들어간 폴더에 있을 수 있으므로, config.yaml 위치를 기준으로 위로 탐색한다.
 """
 import sys
 from pathlib import Path
@@ -18,12 +15,7 @@ from pathlib import Path
 
 def _resolve_project_root() -> Path:
     if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).resolve().parent
-        # config.yaml 발견 위치를 PROJECT_ROOT로 사용 (onedir 호환)
-        for cand in (exe_dir, exe_dir.parent, exe_dir.parent.parent):
-            if (cand / "config.yaml").exists():
-                return cand
-        return exe_dir
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
 
 
