@@ -1,23 +1,24 @@
-"""설정 탭 — config.yaml 편집 + .env 관리.
+"""설정 탭 — config.yaml 편집 + .env 관리 (v2.6 전용).
 
-모든 슬라이더 값은 ×1000 스케일로 저장/로드하여 float 정밀도 유지.
-.env 파일 쓰기를 지원하여 API 키 변경사항도 정상 저장.
+v2.6 정리:
+  - 5개 탭: 매매 / 전략 / 리스크 / 스케줄 / API
+  - 종목관리/스크리닝 탭 제거 (v1 레거시 — 동적 Universe 사용)
+  - 전략 탭: TrendFollowing v2.6 파라미터 직접 편집
+
+슬라이더 값은 ×1000 또는 ×scale 정수로 저장하여 float 정밀도 유지.
 """
 
 import os
 from pathlib import Path
 
-import yaml
 from ruamel.yaml import YAML
 from dotenv import load_dotenv, set_key
-from PyQt5.QtCore import Qt, QLocale, QThread, pyqtSignal
-from PyQt5.QtGui import QColor
+from PyQt5.QtCore import Qt, QLocale
 from PyQt5.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -26,111 +27,9 @@ from PyQt5.QtWidgets import (
     QSlider,
     QSpinBox,
     QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
-
-
-class _StockNameWorker(QThread):
-    """백그라운드에서 종목 코드 → 종목명 조회."""
-    finished = pyqtSignal(dict)
-
-    def __init__(self, codes: list, parent=None):
-        super().__init__(parent)
-        self._codes = codes
-
-    def run(self):
-        result = {}
-        try:
-            from data.provider import get_provider
-            provider = get_provider()
-            for code in self._codes:
-                try:
-                    name = provider.get_stock_name(code)
-                    if name and name != code:
-                        result[code] = name
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        self.finished.emit(result)
-
-
-class _StockSearchWorker(QThread):
-    """백그라운드에서 전종목 리스트를 KRX에서 다운로드 + 캐시."""
-    finished = pyqtSignal(dict)
-    _CACHE_FILE = Path("data/stock_names.json")
-    _CACHE_MAX_AGE_HOURS = 24  # 캐시 유효기간 (시간)
-
-    def __init__(self, force_refresh: bool = False, parent=None):
-        super().__init__(parent)
-        self._force_refresh = force_refresh
-
-    def run(self):
-        import json
-        import time
-
-        # 1) 캐시 파일이 있고, 유효기간 내면 로드
-        if not self._force_refresh and self._CACHE_FILE.exists():
-            try:
-                age_hours = (time.time() - self._CACHE_FILE.stat().st_mtime) / 3600
-                if age_hours < self._CACHE_MAX_AGE_HOURS:
-                    with open(self._CACHE_FILE, "r", encoding="utf-8") as f:
-                        cache = json.load(f)
-                    if cache:
-                        self.finished.emit(cache)
-                        return
-            except Exception:
-                pass
-
-        # 2) KRX에서 전종목 다운로드 (KOSPI + KOSDAQ)
-        cache = self._fetch_from_krx()
-
-        # 3) KRX 실패 시 기존 캐시 파일 폴백
-        if not cache and self._CACHE_FILE.exists():
-            try:
-                with open(self._CACHE_FILE, "r", encoding="utf-8") as f:
-                    cache = json.load(f)
-            except Exception:
-                pass
-
-        # 4) 캐시 파일 저장
-        if cache:
-            try:
-                self._CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-                with open(self._CACHE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(cache, f, ensure_ascii=False)
-            except Exception:
-                pass
-
-        self.finished.emit(cache)
-
-    def _fetch_from_krx(self) -> dict:
-        """KRX kind.krx.co.kr에서 KOSPI+KOSDAQ 전종목 다운로드."""
-        import requests
-        import pandas as pd
-        from io import StringIO
-
-        results = {}
-        try:
-            for mtype in ("stockMkt", "kosdaqMkt"):
-                resp = requests.get(
-                    "https://kind.krx.co.kr/corpgeneral/corpList.do",
-                    params={"method": "download", "marketType": mtype},
-                    timeout=15,
-                )
-                resp.encoding = "euc-kr"
-                df = pd.read_html(StringIO(resp.text))[0]
-                # 종목코드(3번째 컬럼) + 회사명(1번째 컬럼)
-                df["code"] = df.iloc[:, 2].apply(lambda x: str(x).zfill(6))
-                df["name"] = df.iloc[:, 0]
-                for _, row in df.iterrows():
-                    results[row["code"]] = row["name"]
-        except Exception:
-            pass
-        return results
 
 
 class SettingField:
@@ -183,14 +82,7 @@ class SettingField:
     @staticmethod
     def float_slider(value: float, min_v: float, max_v: float,
                      scale: int = 10, fmt: str = "{:.1f}") -> QWidget:
-        """일반 float 슬라이더 + 라벨.
-
-        Args:
-            value: 현재 값.
-            min_v, max_v: 범위.
-            scale: 내부 정수 변환 배율.
-            fmt: 라벨 표시 포맷.
-        """
+        """일반 float 슬라이더 + 라벨."""
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -233,7 +125,7 @@ class SettingField:
 
 
 class SettingsTab(QWidget):
-    """설정 탭 — config.yaml + .env 편집."""
+    """설정 탭 — config.yaml + .env 편집 (v2.6 전용)."""
 
     def __init__(self, config_path: str = "config.yaml", parent=None):
         super().__init__(parent)
@@ -265,11 +157,9 @@ class SettingsTab(QWidget):
             elif child.layout():
                 self._clear_layout(child.layout())
 
-        # 서브탭 (아이콘 텍스트로 직관적 구분)
+        # v2.6 서브탭 — 5개
         self.sub_tabs = QTabWidget()
-        self.sub_tabs.addTab(self._build_watchlist_tab(), "\U0001F50D 종목관리")
         self.sub_tabs.addTab(self._build_trading_tab(), "\U0001F4B0 매매")
-        self.sub_tabs.addTab(self._build_screening_tab(), "\U0001F4CA 스크리닝")
         self.sub_tabs.addTab(self._build_strategy_tab(), "\U0001F3AF 전략")
         self.sub_tabs.addTab(self._build_risk_tab(), "\U0001F6E1 리스크")
         self.sub_tabs.addTab(self._build_schedule_tab(), "\U000023F0 스케줄")
@@ -302,326 +192,7 @@ class SettingsTab(QWidget):
             elif child.layout():
                 self._clear_layout(child.layout())
 
-    # ── Watchlist 서브탭 ──
-
-    _HOVER_STYLE = """
-        QTableWidget::item:hover {
-            background-color: #313244;
-        }
-        QTableWidget::item:selected {
-            background-color: #45475a;
-        }
-    """
-
-    def _build_watchlist_tab(self) -> QWidget:
-        w = QWidget()
-        root = QVBoxLayout(w)
-        root.setSpacing(8)
-        root.setContentsMargins(12, 12, 12, 12)
-
-        # ═══ 좌우 분할 ═══
-        columns = QHBoxLayout()
-        columns.setSpacing(12)
-
-        # ── 왼쪽: 종목 검색 ──
-        left = QVBoxLayout()
-        left.setSpacing(4)
-
-        # 1행: 검색 입력 + 버튼
-        search_row = QHBoxLayout()
-        search_row.setSpacing(4)
-        self.w_search_input = QLineEdit()
-        self.w_search_input.setPlaceholderText("코드 또는 종목명")
-        self.w_search_input.setFixedHeight(28)
-        self.w_search_input.returnPressed.connect(self._on_search_stock)
-        search_row.addWidget(self.w_search_input, stretch=1)
-
-        btn_search = QPushButton("검색")
-        btn_search.setFixedHeight(28)
-        btn_search.setFixedWidth(52)
-        btn_search.setStyleSheet("font-size: 11px; padding: 2px 8px;")
-        btn_search.clicked.connect(self._on_search_stock)
-        search_row.addWidget(btn_search)
-        left.addLayout(search_row)
-
-        # 2행: 상태 텍스트
-        self.w_search_status = QLabel("더블클릭으로 추가")
-        self.w_search_status.setFixedHeight(18)
-        self.w_search_status.setStyleSheet("color: #a6adc8; font-size: 11px;")
-        left.addWidget(self.w_search_status)
-
-        # 3행: 검색 결과 테이블
-        self.w_search_results = QTableWidget(0, 1)
-        self.w_search_results.setHorizontalHeaderLabels(["검색 종목 (0건)"])
-        self.w_search_results.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.w_search_results.verticalHeader().setVisible(False)
-        self.w_search_results.verticalHeader().setDefaultSectionSize(24)
-        self.w_search_results.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.w_search_results.setSelectionBehavior(QTableWidget.SelectRows)
-        self.w_search_results.setMouseTracking(True)
-        self.w_search_results.setStyleSheet(self._HOVER_STYLE)
-        self.w_search_results.doubleClicked.connect(self._on_search_double_click)
-        left.addWidget(self.w_search_results, stretch=1)
-
-        columns.addLayout(left, stretch=1)
-
-        # ── 오른쪽: 감시 종목 ──
-        right = QVBoxLayout()
-        right.setSpacing(4)
-
-        watchlist = self._config.get("watchlist", [])
-
-        # 1행: 캐시 갱신 + 전체 삭제 버튼
-        action_row = QHBoxLayout()
-        action_row.setSpacing(4)
-        self.btn_refresh_cache = QPushButton("캐시 갱신")
-        self.btn_refresh_cache.setFixedHeight(28)
-        self.btn_refresh_cache.setStyleSheet("font-size: 11px; padding: 2px 8px;")
-        self.btn_refresh_cache.clicked.connect(self._on_refresh_cache)
-        action_row.addWidget(self.btn_refresh_cache)
-        action_row.addStretch()
-        btn_clear = QPushButton("전체 삭제")
-        btn_clear.setFixedHeight(28)
-        btn_clear.setStyleSheet("font-size: 11px; padding: 2px 8px;")
-        btn_clear.clicked.connect(self._on_clear_watchlist)
-        action_row.addWidget(btn_clear)
-        right.addLayout(action_row)
-
-        # 2행: 상태 텍스트
-        self.w_watchlist_status = QLabel("Del 키로 삭제")
-        self.w_watchlist_status.setFixedHeight(18)
-        self.w_watchlist_status.setStyleSheet("color: #a6adc8; font-size: 11px;")
-        right.addWidget(self.w_watchlist_status)
-
-        # 3행: 감시 종목 테이블
-        self.w_watchlist_table = QTableWidget(0, 1)
-        self.w_watchlist_label = None  # 더 이상 separator 사용 안 함
-        self.w_watchlist_table.setHorizontalHeaderLabels(
-            [f"감시 종목 ({len(watchlist)}개)"]
-        )
-        self.w_watchlist_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.w_watchlist_table.verticalHeader().setVisible(False)
-        self.w_watchlist_table.verticalHeader().setDefaultSectionSize(24)
-        self.w_watchlist_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.w_watchlist_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.w_watchlist_table.setMouseTracking(True)
-        self.w_watchlist_table.setStyleSheet(self._HOVER_STYLE)
-        right.addWidget(self.w_watchlist_table, stretch=1)
-
-        columns.addLayout(right, stretch=1)
-
-        root.addLayout(columns, stretch=1)
-
-        # 초기화
-        self._stock_cache = {}
-        self._saved_watchlist_codes = set(watchlist)  # 저장된 원본 코드 (변경 감지용)
-        self._populate_watchlist(watchlist)
-        self._start_name_lookup(watchlist)
-        self._start_full_cache_load()
-
-        # Del 키 바인딩
-        self.w_watchlist_table.keyPressEvent = self._watchlist_key_press
-
-        return w
-
-    def _on_refresh_cache(self):
-        """종목 캐시 수동 갱신 (KRX에서 강제 다운로드)."""
-        self.btn_refresh_cache.setEnabled(False)
-        self.btn_refresh_cache.setText("갱신 중...")
-        self._start_full_cache_load(force_refresh=True)
-
-    def _on_search_double_click(self, index):
-        """검색 결과 더블클릭 → watchlist에 추가."""
-        row = index.row()
-        item = self.w_search_results.item(row, 0)
-        if not item:
-            return
-        text = item.text()
-        code = text.split()[0]
-        name = text.split("  ", 1)[1] if "  " in text else ""
-        self._add_to_watchlist(code, name)
-
-    def _watchlist_key_press(self, event):
-        """watchlist에서 Del/Backspace 키 → 선택 종목 삭제."""
-        from PyQt5.QtCore import Qt as QtKey
-        if event.key() in (QtKey.Key_Delete, QtKey.Key_Backspace):
-            rows = self.w_watchlist_table.selectionModel().selectedRows()
-            if rows:
-                item = self.w_watchlist_table.item(rows[0].row(), 0)
-                if item:
-                    code = item.text().split()[0]
-                    self._remove_from_watchlist(code)
-        else:
-            QTableWidget.keyPressEvent(self.w_watchlist_table, event)
-
-    def _start_name_lookup(self, codes: list):
-        """watchlist 종목명을 백그라운드에서 조회."""
-        if not codes:
-            return
-        self._name_worker = _StockNameWorker(codes, parent=self)
-        self._name_worker.finished.connect(self._on_names_loaded)
-        self._name_worker.start()
-
-    def _on_names_loaded(self, names: dict):
-        """종목명 조회 완료 → 테이블 업데이트."""
-        self._stock_cache.update(names)
-        for row in range(self.w_watchlist_table.rowCount()):
-            item = self.w_watchlist_table.item(row, 0)
-            if item:
-                code = item.text().split(" ")[0]  # "005930" or "005930  삼성전자"
-                if code in names:
-                    item.setText(f"{code}  {names[code]}")
-
-    def _start_full_cache_load(self, force_refresh: bool = False):
-        """전종목 검색용 캐시를 백그라운드 로드."""
-        self._search_worker = _StockSearchWorker(
-            force_refresh=force_refresh, parent=self
-        )
-        self._search_worker.finished.connect(self._on_full_cache_loaded)
-        self._search_worker.start()
-        self.w_search_status.setStyleSheet("color: #f9e2af; font-size: 11px;")
-        msg = "KRX에서 종목 다운로드 중..." if force_refresh else "종목 데이터 로딩 중..."
-        self.w_search_status.setText(msg)
-
-    def _on_full_cache_loaded(self, cache: dict):
-        """전종목 캐시 로드 완료."""
-        self._stock_cache.update(cache)
-        if cache:
-            self.w_search_status.setStyleSheet("color: #a6e3a1; font-size: 11px;")
-            self.w_search_status.setText(f"{len(cache)}종목 준비 완료")
-            # watchlist 종목명도 갱신
-            for row in range(self.w_watchlist_table.rowCount()):
-                item = self.w_watchlist_table.item(row, 0)
-                if item:
-                    text = item.text()
-                    code = text.split(" ")[0]
-                    if code in cache and cache[code] not in text:
-                        item.setText(f"{code}  {cache[code]}")
-        # 캐시 갱신 버튼 복원
-        if hasattr(self, "btn_refresh_cache"):
-            self.btn_refresh_cache.setEnabled(True)
-            self.btn_refresh_cache.setText("캐시 갱신")
-        else:
-            self.w_search_status.setText("종목코드로 검색 가능")
-
-    def _on_search_stock(self):
-        """종목 검색."""
-        query = self.w_search_input.text().strip()
-        if not query:
-            return
-
-        self.w_search_results.setRowCount(0)
-        results = []
-
-        # 캐시에서 코드/종목명 검색 (대소문자 무시)
-        query_lower = query.lower()
-        if self._stock_cache:
-            for code, name in self._stock_cache.items():
-                if query_lower in code.lower() or query_lower in name.lower():
-                    results.append((code, name))
-                if len(results) >= 50:
-                    break
-
-        # 캐시에 없고 6자리 코드면 DataProvider 개별 조회
-        if not results and len(query) == 6 and query.isdigit():
-            try:
-                from data.provider import get_provider
-                name = get_provider().get_stock_name(query)
-                if name and name != query:
-                    results.append((query, name))
-                    self._stock_cache[query] = name
-                else:
-                    results.append((query, ""))
-            except Exception:
-                results.append((query, ""))
-
-        if not results:
-            self.w_search_status.setStyleSheet("color: #f38ba8; font-size: 11px;")
-            self.w_search_status.setText("검색 결과 없음")
-            self.w_search_results.setHorizontalHeaderLabels(["검색 종목 (0건)"])
-            return
-
-        self.w_search_status.setStyleSheet("color: #a6adc8; font-size: 11px;")
-        self.w_search_status.setText("더블클릭으로 추가")
-        for code, name in results:
-            row = self.w_search_results.rowCount()
-            self.w_search_results.insertRow(row)
-
-            display = f"{code}  {name}" if name else code
-            self.w_search_results.setItem(row, 0, QTableWidgetItem(display))
-
-        self.w_search_results.setHorizontalHeaderLabels(
-            [f"검색 종목 ({len(results)}건)"]
-        )
-
-    def _add_to_watchlist(self, code: str, name: str):
-        """감시 종목에 추가."""
-        # 중복 체크
-        for row in range(self.w_watchlist_table.rowCount()):
-            item = self.w_watchlist_table.item(row, 0)
-            if item and item.text().startswith(code):
-                self.w_search_status.setStyleSheet("color: #f9e2af; font-size: 11px;")
-                self.w_search_status.setText(f"{code} 이미 등록됨")
-                return
-
-        if not name:
-            name = self._stock_cache.get(code, "")
-
-        row = self.w_watchlist_table.rowCount()
-        self.w_watchlist_table.insertRow(row)
-
-        display = f"{code}  {name}" if name else code
-        item = QTableWidgetItem(display)
-
-        # 새로 추가된 종목 (아직 미저장) → 초록색 텍스트 + [NEW] 표시
-        if code not in self._saved_watchlist_codes:
-            item.setForeground(QColor("#a6e3a1"))
-            item.setText(f"[NEW] {display}")
-
-        self.w_watchlist_table.setItem(row, 0, item)
-
-        self._update_watchlist_count()
-        self.w_search_status.setStyleSheet("color: #a6e3a1; font-size: 11px;")
-        self.w_search_status.setText(f"{code} {name} 추가됨")
-
-    def _remove_from_watchlist(self, code: str):
-        """감시 종목에서 제거."""
-        for row in range(self.w_watchlist_table.rowCount()):
-            item = self.w_watchlist_table.item(row, 0)
-            if item and item.text().startswith(code):
-                self.w_watchlist_table.removeRow(row)
-                break
-        self._update_watchlist_count()
-
-    def _on_clear_watchlist(self):
-        """감시 종목 전체 삭제."""
-        if self.w_watchlist_table.rowCount() == 0:
-            return
-        reply = QMessageBox.question(
-            self, "확인", "감시 종목을 모두 삭제하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes:
-            self.w_watchlist_table.setRowCount(0)
-            self._update_watchlist_count()
-
-    def _populate_watchlist(self, codes: list):
-        """config에서 로드한 종목 코드로 테이블 채우기 (이름은 비동기 로드)."""
-        self.w_watchlist_table.setRowCount(0)
-        for code in codes:
-            row = self.w_watchlist_table.rowCount()
-            self.w_watchlist_table.insertRow(row)
-            self.w_watchlist_table.setItem(row, 0, QTableWidgetItem(code))
-        self._update_watchlist_count()
-
-    def _update_watchlist_count(self):
-        """감시 종목 수 업데이트 (테이블 헤더에 표시)."""
-        count = self.w_watchlist_table.rowCount()
-        self.w_watchlist_table.setHorizontalHeaderLabels(
-            [f"감시 종목 ({count}개)"]
-        )
-
-    # ── Trading 서브탭 ──
+    # ── 매매 서브탭 ──
 
     def _build_trading_tab(self) -> QWidget:
         w = QWidget()
@@ -632,70 +203,56 @@ class SettingsTab(QWidget):
 
         trading = self._config.get("trading", {})
 
+        form.addRow(self._make_separator("기본 설정"))
+
+        self.w_initial_capital = SettingField.spin(
+            trading.get("initial_capital", 10_000_000),
+            100_000, 1_000_000_000, "원",
+        )
+        form.addRow("초기 자본", self.w_initial_capital)
+
+        self.w_max_positions = SettingField.spin(
+            trading.get("max_positions", 6), 1, 10, "종목"
+        )
+        form.addRow("최대 보유 종목", self.w_max_positions)
+
         self.w_universe = SettingField.combo(
             ["kospi", "kosdaq", "kospi_kosdaq"],
             trading.get("universe", "kospi_kosdaq"),
         )
         form.addRow("투자 유니버스", self.w_universe)
 
-        self.w_max_positions = SettingField.spin(
-            trading.get("max_positions", 3), 1, 10, "종목"
+        form.addRow(self._make_separator("Universe (동적, 읽기 전용)"))
+        universe_pool = self._config.get("universe_pool", {})
+        min_cap = int(universe_pool.get("min_market_cap", 3_000_000_000_000) / 1_000_000_000_000)
+        min_amt = int(universe_pool.get("min_trading_value", 5_000_000_000) / 100_000_000)
+        refresh = universe_pool.get("refresh_interval_days", 60)
+        info = QLabel(
+            f"• 시총 {min_cap}조원 이상 / 거래대금 {min_amt}억원 이상\n"
+            f"• {refresh}일마다 재계산 (분기별)\n"
+            "• v2.6 단일 전략(TrendFollowing)이 매일 동적으로 진입 후보 산출"
         )
-        form.addRow("최대 보유 종목", self.w_max_positions)
+        info.setStyleSheet(
+            "color: #a6adc8; font-size: 11px; line-height: 1.4; "
+            "padding: 8px; background-color: #1e1e2e; border-radius: 4px;"
+        )
+        info.setWordWrap(True)
+        form.addRow(info)
 
-        self.w_reentry_cooldown = SettingField.spin(
-            trading.get("reentry_cooldown_days", 3), 0, 30, "일"
+        form.addRow(self._make_separator("진입 시간대"))
+        self.w_entry_start = SettingField.line_edit(
+            trading.get("entry_start_time", "09:30"),
         )
-        form.addRow("재진입 쿨다운", self.w_reentry_cooldown)
+        form.addRow("진입 시작 시각", self.w_entry_start)
 
-        self.w_reentry_cooldown_trend = SettingField.spin(
-            trading.get("reentry_cooldown_trend_days", 1), 0, 30, "일"
+        self.w_entry_end = SettingField.line_edit(
+            trading.get("entry_end_time", "15:00"),
         )
-        form.addRow("추세 유지 시 쿨다운", self.w_reentry_cooldown_trend)
+        form.addRow("진입 종료 시각", self.w_entry_end)
 
         return scroll
 
-    # ── Screening 서브탭 ──
-
-    def _build_screening_tab(self) -> QWidget:
-        w = QWidget()
-        scroll = self._wrap_scroll(w)
-        form = QFormLayout(w)
-        form.setSpacing(12)
-        form.setContentsMargins(16, 16, 16, 16)
-
-        screening = self._config.get("screening", {})
-
-        self.w_min_amount = SettingField.spin(
-            int(screening.get("min_daily_amount", 5_000_000_000) / 100_000_000),
-            1, 500, "억원"
-        )
-        form.addRow("최소 거래대금", self.w_min_amount)
-
-        self.w_min_market_cap = SettingField.spin(
-            int(screening.get("min_market_cap", 30_000_000_000) / 100_000_000),
-            1, 10000, "억원"
-        )
-        form.addRow("최소 시가총액", self.w_min_market_cap)
-
-        self.w_min_price = SettingField.spin(
-            screening.get("min_price", 1000), 100, 50000, "원"
-        )
-        form.addRow("최소 주가", self.w_min_price)
-
-        self.w_max_price = SettingField.spin(
-            screening.get("max_price", 500000), 10000, 2000000, "원"
-        )
-        form.addRow("최대 주가", self.w_max_price)
-
-        self.w_top_n = SettingField.spin(
-            screening.get("top_n", 30), 5, 100, "종목"
-        )
-        form.addRow("후보 수", self.w_top_n)
-
-        return scroll
-
-    # ── Strategy 서브탭 ──
+    # ── 전략 서브탭 ──
 
     def _build_strategy_tab(self) -> QWidget:
         w = QWidget()
@@ -704,133 +261,82 @@ class SettingsTab(QWidget):
         form.setSpacing(12)
         form.setContentsMargins(16, 16, 16, 16)
 
-        strategy = self._config.get("strategy", {})
+        tf = self._config.get("trend_following", {})
 
-        # v2.6 현재 확정 파라미터 (읽기 전용)
+        # v2.6 전략 요약 (읽기 전용)
         form.addRow(self._make_separator("현재 전략 (TrendFollowing v2.6)"))
-        v23_summary = QLabel(
-            "• 진입: 추세추종 (완전 정배열 + MACD + 시장별 상대강도 +5%p)\n"
-            "• 청산: SL ATR×2.0 / TP1 ATR×2.0(10%) / TP2 ATR×4.0(10%) / "
-            "Trail ATR×4.0 (잔여 80%) / Hold 20일\n"
-            "• Universe: 시총 3조+, 거래대금 50억+\n"
-            "• 가드레일: breadth ≥ 0.40\n"
-            "• 포트폴리오: 4종목 동시, 사이징 equity/4 (균등+복리), 최소 30만원\n"
-            "• 자본: 1000만원"
+        summary = QLabel(
+            "• 진입: 추세추종 (완전 정배열 + MA60 +5~+20% + MACD hist > 0\n"
+            "        + 시장별 상대강도 +5%p + ADX≥20)\n"
+            "• 가드레일: breadth ≥ 0.40 (Universe MA200)\n"
+            "• Universe: 시총 3조+, 거래대금 50억+, 60일 재계산\n"
+            "• 포트폴리오: equity / max_positions (균등 + 복리)"
         )
-        v23_summary.setStyleSheet(
+        summary.setStyleSheet(
             "color: #a6e3a1; font-size: 11px; line-height: 1.5; "
             "padding: 8px; background-color: #1e1e2e; border-radius: 4px;"
         )
-        v23_summary.setWordWrap(True)
-        form.addRow(v23_summary)
+        summary.setWordWrap(True)
+        form.addRow(summary)
 
-        form.addRow(self._make_separator("레거시 설정 (비활성 — v2.6 미사용)"))
-        self.w_strategy_type = SettingField.combo(
-            ["golden_cross", "disparity_reversion", "adaptive"],
-            strategy.get("type", "adaptive"),
+        # 청산 파라미터 — 편집 가능
+        form.addRow(self._make_separator("청산 (편집)"))
+
+        self.w_sl_atr = SettingField.float_slider(
+            float(tf.get("stop_loss_atr", 2.0)), 0.5, 4.0, scale=10, fmt="{:.1f}x",
         )
-        form.addRow("전략 유형", self.w_strategy_type)
+        form.addRow("SL (ATR 배수)", self.w_sl_atr)
 
-        # MACD
-        form.addRow(self._make_separator("고급 설정 (MACD)"))
-        self.w_macd_fast = SettingField.spin(strategy.get("macd_fast", 12), 2, 50)
-        form.addRow("단기 기간", self.w_macd_fast)
-        self.w_macd_slow = SettingField.spin(strategy.get("macd_slow", 26), 10, 100)
-        form.addRow("장기 기간", self.w_macd_slow)
-        self.w_macd_signal = SettingField.spin(strategy.get("macd_signal", 9), 2, 30)
-        form.addRow("시그널 기간", self.w_macd_signal)
-
-        # RSI
-        form.addRow(self._make_separator("RSI"))
-        self.w_rsi_period = SettingField.spin(strategy.get("rsi_period", 14), 5, 30)
-        form.addRow("기간", self.w_rsi_period)
-        self.w_rsi_min = SettingField.spin(strategy.get("rsi_entry_min", 40), 10, 60)
-        form.addRow("진입 하한", self.w_rsi_min)
-        self.w_rsi_max = SettingField.spin(strategy.get("rsi_entry_max", 65), 50, 90)
-        form.addRow("진입 상한", self.w_rsi_max)
-
-        # Target
-        form.addRow(self._make_separator("청산"))
-        self.w_target_return = SettingField.pct_slider(
-            strategy.get("target_return", 0.10), 0.02, 0.30
+        self.w_tp1_atr = SettingField.float_slider(
+            float(tf.get("take_profit_atr", 2.0)), 0.5, 5.0, scale=10, fmt="{:.1f}x",
         )
-        form.addRow("목표 수익률", self.w_target_return)
+        form.addRow("TP1 거리 (ATR)", self.w_tp1_atr)
 
-        self.w_max_hold = SettingField.spin(strategy.get("max_hold_days", 15), 1, 60, "일")
-        form.addRow("최대 보유일", self.w_max_hold)
-
-        self.w_adx_threshold = SettingField.spin(strategy.get("adx_threshold", 20), 10, 50)
-        form.addRow("ADX 기준", self.w_adx_threshold)
-
-        # 이격도 (Disparity Reversion)
-        form.addRow(self._make_separator("이격도 평균회귀"))
-
-        self.w_disparity_entry = SettingField.spin(
-            strategy.get("disparity_entry", 96), 85, 99, "%"
+        self.w_tp1_ratio = SettingField.pct_slider(
+            float(tf.get("tp1_sell_ratio", 0.10)), 0.0, 1.0,
         )
-        form.addRow("진입 이격도", self.w_disparity_entry)
+        form.addRow("TP1 매도 비율", self.w_tp1_ratio)
 
-        self.w_disparity_stop = SettingField.spin(
-            strategy.get("disparity_stop", 88), 80, 95, "%"
+        self.w_tp2_atr = SettingField.float_slider(
+            float(tf.get("tp2_atr", 4.0)), 0.0, 8.0, scale=10, fmt="{:.1f}x",
         )
-        form.addRow("손절 이격도", self.w_disparity_stop)
+        form.addRow("TP2 거리 (ATR)", self.w_tp2_atr)
 
-        self.w_disparity_max_hold = SettingField.spin(
-            strategy.get("disparity_max_hold", 7), 3, 15, "일"
+        self.w_tp2_ratio = SettingField.pct_slider(
+            float(tf.get("tp2_sell_ratio", 0.10)), 0.0, 1.0,
         )
-        form.addRow("최대 보유 (이격도)", self.w_disparity_max_hold)
+        form.addRow("TP2 매도 비율", self.w_tp2_ratio)
 
-        # 국면별 포지션 스케일링
-        form.addRow(self._make_separator("국면별 스케일링"))
-
-        regime_scale = strategy.get("regime_position_scale", {})
-        self.w_scale_trending = SettingField.pct_slider(
-            regime_scale.get("trending", 1.0), 0.0, 1.0
+        self.w_trail_atr = SettingField.float_slider(
+            float(tf.get("trailing_atr", 4.0)), 1.0, 8.0, scale=10, fmt="{:.1f}x",
         )
-        form.addRow("추세장 스케일", self.w_scale_trending)
+        form.addRow("Trail (ATR 배수)", self.w_trail_atr)
 
-        self.w_scale_sideways = SettingField.pct_slider(
-            regime_scale.get("sideways", 0.7), 0.0, 1.0
+        self.w_hold_days = SettingField.spin(
+            int(tf.get("max_hold_days", 20)), 1, 60, "일",
         )
-        form.addRow("횡보장 스케일", self.w_scale_sideways)
+        form.addRow("최대 보유일", self.w_hold_days)
 
-        # 부분 매도
-        form.addRow(self._make_separator("부분 매도"))
-        self.w_partial_sell_enabled = SettingField.combo(
-            ["true", "false"],
-            "true" if strategy.get("partial_sell_enabled", True) else "false",
+        # 사이징
+        form.addRow(self._make_separator("포지션 사이징"))
+        self.w_sizing_mode = SettingField.combo(
+            ["equity", "cash"], tf.get("sizing_mode", "equity"),
         )
-        form.addRow("부분 매도 활성화", self.w_partial_sell_enabled)
+        form.addRow("사이징 모드", self.w_sizing_mode)
 
-        self.w_partial_target_pct = SettingField.pct_slider(
-            strategy.get("partial_target_pct", 0.5), 0.1, 0.9
+        sizing_info = QLabel(
+            "• equity: total_equity / max_positions (균등 + 복리, v2.5 권장)\n"
+            "• cash:   cash × (1 / max_positions) (현금 기반, v2.4 호환)"
         )
-        form.addRow("목표 달성률 트리거", self.w_partial_target_pct)
-
-        self.w_partial_sell_ratio = SettingField.pct_slider(
-            strategy.get("partial_sell_ratio", 0.5), 0.1, 0.9
+        sizing_info.setStyleSheet(
+            "color: #6c7086; font-size: 10px; line-height: 1.4; padding: 4px;"
         )
-        form.addRow("매도 비율", self.w_partial_sell_ratio)
-
-        # watchlist 자동 갱신
-        form.addRow(self._make_separator("watchlist 자동 갱신"))
-
-        wl_refresh = self._config.get("watchlist_refresh", {})
-        self.w_wl_enabled = SettingField.combo(
-            ["true", "false"],
-            "true" if wl_refresh.get("enabled", True) else "false",
-        )
-        form.addRow("자동 갱신", self.w_wl_enabled)
-
-        self.w_wl_min_cap = SettingField.spin(
-            int(wl_refresh.get("min_market_cap", 5_000_000_000_000) / 1_000_000_000_000),
-            1, 50, "조"
-        )
-        form.addRow("최소 시가총액", self.w_wl_min_cap)
+        sizing_info.setWordWrap(True)
+        form.addRow(sizing_info)
 
         return scroll
 
-    # ── Risk 서브탭 ──
+    # ── 리스크 서브탭 ──
 
     def _build_risk_tab(self) -> QWidget:
         w = QWidget()
@@ -841,48 +347,43 @@ class SettingsTab(QWidget):
 
         risk = self._config.get("risk", {})
 
-        form.addRow(self._make_separator("포지션 사이징"))
-        self.w_max_pos_ratio = SettingField.pct_slider(
-            risk.get("max_position_ratio", 0.15), 0.05, 0.50
+        form.addRow(self._make_separator("포지션 한도"))
+        self.w_min_pos_amount = SettingField.spin(
+            int(risk.get("min_position_amount", 1_000_000)),
+            100_000, 100_000_000, "원",
         )
-        form.addRow("최대 비중", self.w_max_pos_ratio)
+        form.addRow("최소 포지션 금액", self.w_min_pos_amount)
 
-        self.w_min_pos_ratio = SettingField.pct_slider(
-            risk.get("min_position_ratio", 0.03), 0.01, 0.20
-        )
-        form.addRow("최소 비중", self.w_min_pos_ratio)
-
-        self.w_sizing_method = SettingField.combo(
-            ["half_kelly", "quarter_kelly", "fixed"],
-            risk.get("sizing_method", "half_kelly"),
-        )
-        form.addRow("사이징 방식", self.w_sizing_method)
-
-        form.addRow(self._make_separator("손절"))
-        self.w_stop_atr = SettingField.float_slider(
-            risk.get("stop_atr_multiplier", 2.5), 0.5, 5.0, scale=10, fmt="{:.1f}x"
-        )
-        form.addRow("ATR 배수", self.w_stop_atr)
-
-        self.w_max_stop = SettingField.pct_slider(
-            risk.get("max_stop_pct", 0.10), 0.03, 0.20
-        )
-        form.addRow("최대 손절폭", self.w_max_stop)
-
-        form.addRow(self._make_separator("일일 한도"))
+        form.addRow(self._make_separator("일일 손실 한도"))
         self.w_daily_loss_limit = SettingField.pct_slider(
-            abs(risk.get("daily_loss_limit", -0.03)), 0.01, 0.10
+            abs(float(risk.get("daily_loss_limit", -0.03))), 0.01, 0.10,
         )
-        form.addRow("일일 손실 한도", self.w_daily_loss_limit)
+        form.addRow("일일 손실 한도 (-)", self.w_daily_loss_limit)
 
         self.w_daily_loss_warning = SettingField.pct_slider(
-            abs(risk.get("daily_loss_warning", -0.02)), 0.01, 0.10
+            abs(float(risk.get("daily_loss_warning", -0.02))), 0.01, 0.10,
         )
-        form.addRow("일일 손실 경고", self.w_daily_loss_warning)
+        form.addRow("일일 손실 경고 (-)", self.w_daily_loss_warning)
+
+        form.addRow(self._make_separator("최대 낙폭 (MDD)"))
+        self.w_max_mdd = SettingField.pct_slider(
+            abs(float(risk.get("max_mdd", -0.20))), 0.05, 0.50,
+        )
+        form.addRow("최대 MDD (-)", self.w_max_mdd)
+
+        info = QLabel(
+            "• v2.6 사이징은 trend_following.sizing_mode가 결정 (전략 탭 참고)\n"
+            "• SL / Trail 등 청산 ATR 배수는 전략 탭에서 관리"
+        )
+        info.setStyleSheet(
+            "color: #6c7086; font-size: 10px; line-height: 1.4; padding: 6px;"
+        )
+        info.setWordWrap(True)
+        form.addRow(info)
 
         return scroll
 
-    # ── Schedule 서브탭 ──
+    # ── 스케줄 서브탭 ──
 
     def _build_schedule_tab(self) -> QWidget:
         w = QWidget()
@@ -893,30 +394,41 @@ class SettingsTab(QWidget):
 
         schedule = self._config.get("schedule", {})
 
+        form.addRow(self._make_separator("일일 작업"))
         self.w_screening_time = SettingField.line_edit(
-            schedule.get("screening_time", "08:30")
+            schedule.get("screening_time", "08:30"),
         )
         form.addRow("스크리닝 시각", self.w_screening_time)
 
         self.w_report_time = SettingField.line_edit(
-            schedule.get("daily_report_time", "16:00")
+            schedule.get("daily_report_time", "16:00"),
         )
         form.addRow("리포트 시각", self.w_report_time)
 
         self.w_reconnect_time = SettingField.line_edit(
-            schedule.get("reconnect_time", "08:45")
+            schedule.get("reconnect_time", "08:45"),
         )
         form.addRow("재연결 시각", self.w_reconnect_time)
 
-        trading = self._config.get("trading", {})
-        self.w_initial_capital = SettingField.spin(
-            trading.get("initial_capital", 3_000_000), 100_000, 100_000_000, "원"
+        form.addRow(self._make_separator("폴링"))
+        self.w_polling_start = SettingField.line_edit(
+            schedule.get("polling_start_time", "09:00"),
         )
-        form.addRow("초기 투자금", self.w_initial_capital)
+        form.addRow("폴링 시작 시각", self.w_polling_start)
+
+        self.w_polling_stop = SettingField.line_edit(
+            schedule.get("polling_stop_time", "15:35"),
+        )
+        form.addRow("폴링 종료 시각", self.w_polling_stop)
+
+        self.w_polling_interval = SettingField.spin(
+            int(schedule.get("polling_interval", 10)), 1, 300, "초",
+        )
+        form.addRow("폴링 주기", self.w_polling_interval)
 
         return scroll
 
-    # ── API & Alerts 서브탭 ──
+    # ── API 서브탭 ──
 
     def _build_api_tab(self) -> QWidget:
         w = QWidget()
@@ -986,7 +498,6 @@ class SettingsTab(QWidget):
         """API 키를 .env 파일에 저장."""
         env_path = str(self._env_path.resolve())
 
-        # .env 파일이 없으면 생성
         if not self._env_path.exists():
             self._env_path.touch()
 
@@ -1003,119 +514,52 @@ class SettingsTab(QWidget):
             set_key(env_path, key, value)
 
     def _on_reset(self):
-        """초기화 — 종목관리 탭에서는 감시 종목만 복원, 그 외는 전체 리셋."""
-        current_tab = self.sub_tabs.currentIndex()
-        tab_name = self.sub_tabs.tabText(current_tab)
-
-        if tab_name == "종목관리":
-            # 감시 종목만 config에서 다시 로드
-            self._load_config()
-            watchlist = self._config.get("watchlist", [])
-            self._saved_watchlist_codes = set(watchlist)
-            self._populate_watchlist(watchlist)
-            self._start_name_lookup(watchlist)
-            self._update_watchlist_count()
-            self.w_watchlist_status.setStyleSheet("color: #a6e3a1; font-size: 11px;")
-            self.w_watchlist_status.setText("감시 종목 초기화 완료")
-        else:
-            self._load_config()
-            self._build_content()
+        """초기화 — config.yaml 다시 로드 후 UI 재구축."""
+        self._load_config()
+        self._build_content()
 
     def _collect_config(self):
-        """위젯 값들을 self._config 딕셔너리에 수집."""
-        # Watchlist — 셀 텍스트에서 코드(앞 6자리) 추출
-        watchlist = []
-        for row in range(self.w_watchlist_table.rowCount()):
-            item = self.w_watchlist_table.item(row, 0)
-            if item:
-                text = item.text()
-                if text.startswith("[NEW] "):
-                    text = text[6:]
-                code = text.split()[0]  # "005930  삼성전자" → "005930"
-                watchlist.append(code)
-        self._config["watchlist"] = watchlist
+        """위젯 값들을 self._config 딕셔너리에 수집 (v2.6 사양)."""
 
-        # 저장 후 원본 갱신 → [NEW] 표시 제거
-        self._saved_watchlist_codes = set(watchlist)
-        for row in range(self.w_watchlist_table.rowCount()):
-            item = self.w_watchlist_table.item(row, 0)
-            if item:
-                text = item.text()
-                if text.startswith("[NEW] "):
-                    item.setText(text[6:])  # "[NEW] " 제거
-                item.setForeground(QColor("#cdd6f4"))  # 기본 텍스트 색상
-
-        # Trading
+        # ── trading ──
         trading = self._config.setdefault("trading", {})
-        trading["universe"] = self.w_universe.currentText()
+        trading["initial_capital"] = self.w_initial_capital.value()
         trading["max_positions"] = self.w_max_positions.value()
-        trading["reentry_cooldown_days"] = self.w_reentry_cooldown.value()
-        trading["reentry_cooldown_trend_days"] = self.w_reentry_cooldown_trend.value()
+        trading["universe"] = self.w_universe.currentText()
+        trading["entry_start_time"] = self.w_entry_start.text()
+        trading["entry_end_time"] = self.w_entry_end.text()
 
-        # Screening
-        screening = self._config.setdefault("screening", {})
-        screening["min_daily_amount"] = self.w_min_amount.value() * 100_000_000
-        screening["min_market_cap"] = self.w_min_market_cap.value() * 100_000_000
-        screening["min_price"] = self.w_min_price.value()
-        screening["max_price"] = self.w_max_price.value()
-        screening["top_n"] = self.w_top_n.value()
+        # ── trend_following (v2.6 청산 파라미터 + 사이징) ──
+        tf = self._config.setdefault("trend_following", {})
+        tf["stop_loss_atr"] = self.w_sl_atr._slider.value() / self.w_sl_atr._scale
+        tf["take_profit_atr"] = self.w_tp1_atr._slider.value() / self.w_tp1_atr._scale
+        tf["tp1_sell_ratio"] = self.w_tp1_ratio._slider.value() / 1000
+        tf["tp2_atr"] = self.w_tp2_atr._slider.value() / self.w_tp2_atr._scale
+        tf["tp2_sell_ratio"] = self.w_tp2_ratio._slider.value() / 1000
+        tf["trailing_atr"] = self.w_trail_atr._slider.value() / self.w_trail_atr._scale
+        tf["max_hold_days"] = self.w_hold_days.value()
+        tf["sizing_mode"] = self.w_sizing_mode.currentText()
 
-        # Strategy
-        strategy = self._config.setdefault("strategy", {})
-        strategy["type"] = self.w_strategy_type.currentText()
-        strategy["macd_fast"] = self.w_macd_fast.value()
-        strategy["macd_slow"] = self.w_macd_slow.value()
-        strategy["macd_signal"] = self.w_macd_signal.value()
-        strategy["rsi_period"] = self.w_rsi_period.value()
-        strategy["rsi_entry_min"] = self.w_rsi_min.value()
-        strategy["rsi_entry_max"] = self.w_rsi_max.value()
-        strategy["target_return"] = self.w_target_return._slider.value() / 1000
-        strategy["max_hold_days"] = self.w_max_hold.value()
-        strategy["adx_threshold"] = self.w_adx_threshold.value()
-        strategy["partial_sell_enabled"] = self.w_partial_sell_enabled.currentText() == "true"
-        strategy["partial_target_pct"] = self.w_partial_target_pct._slider.value() / 1000
-        strategy["partial_sell_ratio"] = self.w_partial_sell_ratio._slider.value() / 1000
-
-        # 이격도 파라미터
-        strategy["disparity_entry"] = self.w_disparity_entry.value()
-        strategy["disparity_stop"] = self.w_disparity_stop.value()
-        strategy["disparity_max_hold"] = self.w_disparity_max_hold.value()
-
-        # watchlist 자동 갱신
-        wl_refresh = self._config.setdefault("watchlist_refresh", {})
-        wl_refresh["enabled"] = self.w_wl_enabled.currentText() == "true"
-        wl_refresh["min_market_cap"] = self.w_wl_min_cap.value() * 1_000_000_000_000
-
-        # 국면별 스케일링
-        strategy.setdefault("regime_position_scale", {})
-        strategy["regime_position_scale"]["trending"] = self.w_scale_trending._slider.value() / 1000
-        strategy["regime_position_scale"]["sideways"] = self.w_scale_sideways._slider.value() / 1000
-        strategy["regime_position_scale"]["bearish"] = 0.0
-
-        # Risk
+        # ── risk (v2.6 사용 항목만) ──
         risk = self._config.setdefault("risk", {})
-        risk["max_position_ratio"] = self.w_max_pos_ratio._slider.value() / 1000
-        risk["min_position_ratio"] = self.w_min_pos_ratio._slider.value() / 1000
-        risk["sizing_method"] = self.w_sizing_method.currentText()
-        # stop_atr_multiplier: float_slider (scale=10)
-        risk["stop_atr_multiplier"] = self.w_stop_atr._slider.value() / self.w_stop_atr._scale
-        risk["max_stop_pct"] = self.w_max_stop._slider.value() / 1000
+        risk["min_position_amount"] = self.w_min_pos_amount.value()
         risk["daily_loss_limit"] = -(self.w_daily_loss_limit._slider.value() / 1000)
         risk["daily_loss_warning"] = -(self.w_daily_loss_warning._slider.value() / 1000)
+        risk["max_mdd"] = -(self.w_max_mdd._slider.value() / 1000)
 
-        # Schedule
+        # ── schedule ──
         schedule = self._config.setdefault("schedule", {})
         schedule["screening_time"] = self.w_screening_time.text()
         schedule["daily_report_time"] = self.w_report_time.text()
         schedule["reconnect_time"] = self.w_reconnect_time.text()
-
-        # Trading — 초기 투자금
-        trading["initial_capital"] = self.w_initial_capital.value()
+        schedule["polling_start_time"] = self.w_polling_start.text()
+        schedule["polling_stop_time"] = self.w_polling_stop.text()
+        schedule["polling_interval"] = self.w_polling_interval.value()
 
     # ── 유틸 ──
 
     def _make_separator(self, text: str) -> QLabel:
-        label = QLabel(f"\u2500\u2500  {text}")
+        label = QLabel(f"──  {text}")
         label.setStyleSheet(
             "color: #89b4fa; font-weight: bold; font-size: 12px; "
             "padding: 8px 0 4px 0; margin-top: 4px;"
