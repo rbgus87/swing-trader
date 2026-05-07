@@ -44,7 +44,7 @@ from src.gui.workers.engine_worker import EngineWorker
 from src.gui.workers.daily_run_worker import DailyRunWorker
 
 
-MAX_POSITIONS = 4
+MAX_POSITIONS = int(config.get("trading.max_positions", 6))
 
 
 class MainWindow(QMainWindow):

@@ -10,6 +10,7 @@ from PyQt5.QtCore import QThread
 from loguru import logger
 
 from src.gui.workers.signals import EngineSignals
+from src.utils.config import config
 
 
 class EngineWorker(QThread):
@@ -101,7 +102,7 @@ class EngineWorker(QThread):
             "mdd": self._engine._risk_mgr.current_mdd,
             "candidates": len(self._engine._candidates),
             "capital": self._engine._get_available_capital(),
-            "max_positions": 4,
+            "max_positions": int(config.get("trading.max_positions", 6)),
             "breadth": self._engine._breadth_value,
             "gate_open": self._engine._breadth_ok,
         })

@@ -5,6 +5,8 @@ v4 리디자인: 카드형 요약 통계, 차트 영역, 개선된 레이아웃
 
 import html
 
+from src.utils.config import config
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
@@ -41,7 +43,7 @@ class DashboardTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._max_positions = 4  # v2.6 고정
+        self._max_positions = int(config.get("trading.max_positions", 6))
         self._init_ui()
 
     def _init_ui(self):

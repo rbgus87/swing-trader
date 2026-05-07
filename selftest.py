@@ -128,7 +128,7 @@ def step_imports() -> tuple[str, str, str]:
         try:
             importlib.import_module(mod)
         except ImportError as e:
-            missing.append(f"{mod} ({type(e).__name__})")
+            missing.append(f"{mod} ({type(e).__name__}: {str(e)[:80]})")
     if missing:
         names = " ".join(m.split(" ")[0].split(".")[0] for m in missing)
         return (
