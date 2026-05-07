@@ -151,8 +151,8 @@ class EngineWorker(QThread):
                     "price": int(c.get("close", 0)),
                     "date": datetime.now().strftime("%Y-%m-%d"),
                     "reason": (
-                        f"trend state: ADX={c.get('adx', 0):.1f}, "
-                        f"MA60_dist={c.get('ma60_dist', 0):+.1%}"
+                        f"ADX {c.get('adx', 0):.0f} / "
+                        f"MA60 {c.get('ma60_dist', 0):+.0%}"
                     ),
                 })
             self.signals.candidates_updated.emit(candidates)

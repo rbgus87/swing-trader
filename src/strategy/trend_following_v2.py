@@ -204,6 +204,7 @@ def scan_entry_signals(
         if not (params.atr_price_min <= atr_ratio <= params.atr_price_max):
             continue
         # 상대강도
+        rs_diff: float | None = None
         if kospi_ret_map is not None:
             if 'date' in df.columns:
                 d = row['date']
@@ -213,7 +214,8 @@ def scan_entry_signals(
             kospi_ret = kospi_ret_map.get(ts)
             if kospi_ret is None or pd.isna(kospi_ret):
                 continue
-            if (row['stock_ret_n'] - float(kospi_ret)) < params.relative_strength_threshold:
+            rs_diff = float(row['stock_ret_n']) - float(kospi_ret)
+            if rs_diff < params.relative_strength_threshold:
                 continue
 
         if 'date' in df.columns:
@@ -222,6 +224,7 @@ def scan_entry_signals(
         else:
             date_str = df.index[i].strftime('%Y-%m-%d')
 
+        rs_part = f" / RS {rs_diff:+.1%}" if rs_diff is not None else ""
         signals.append(Signal(
             date=date_str,
             ticker=ticker,
@@ -229,8 +232,7 @@ def scan_entry_signals(
             price=row['close'],
             atr=row['atr'],
             score=float(row['adx']),
-            reason=(f"trend state: MA aligned, ADX={row['adx']:.1f}, "
-                    f"MA60_dist={row['ma60_dist']:+.1%}, MACD_hist={row['macd_hist']:+.3f}"),
+            reason=f"ADX {row['adx']:.0f} / MA60 {row['ma60_dist']:+.0%}{rs_part}",
         ))
 
     return signals

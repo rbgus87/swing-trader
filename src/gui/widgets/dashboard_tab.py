@@ -493,25 +493,33 @@ class DashboardTab(QWidget):
         self._lbl_trade_count.setText(f"{len(trades)}건")
 
     def update_candidates(self, candidates: list):
-        """당일 신호 테이블 업데이트."""
+        """당일 신호 테이블 업데이트.
+
+        사유 컬럼: 30자 초과 시 말줄임 + 전체 텍스트는 툴팁으로 제공.
+        """
         self.candidates_table.setRowCount(len(candidates))
         for row, cand in enumerate(candidates):
             price = int(cand.get("price", 0) or 0)
             date = str(cand.get("date", "") or "")[-10:]
-            reason = str(cand.get("reason", "") or "")
+            reason_full = str(cand.get("reason", "") or "")
+            reason_short = (
+                reason_full if len(reason_full) <= 30 else reason_full[:29] + "…"
+            )
 
             items = [
                 cand.get("code", ""),
                 cand.get("name", ""),
                 f"{price:,}" if price else "",
                 date,
-                reason,
+                reason_short,
             ]
             for col, text in enumerate(items):
                 item = QTableWidgetItem(text)
                 if col == 4:
                     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                     item.setForeground(QColor(_SUBTEXT))
+                    if reason_full:
+                        item.setToolTip(reason_full)
                 else:
                     item.setTextAlignment(Qt.AlignCenter)
                 self.candidates_table.setItem(row, col, item)
