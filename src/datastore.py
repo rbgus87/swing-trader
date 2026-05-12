@@ -19,6 +19,8 @@ _POSITION_UPDATABLE_COLUMNS = frozenset({
     "high_since_entry", "hold_days", "partial_sold",
     # v2.5
     "initial_quantity", "tp2_price", "partial_sold_2",
+    # 청산 사유 분류 (SL/트레일링)
+    "initial_stop_price",
 })
 
 
@@ -85,7 +87,8 @@ class DataStore:
                     updated_at TEXT NOT NULL DEFAULT '',
                     initial_quantity INTEGER DEFAULT 0,
                     tp2_price INTEGER DEFAULT 0,
-                    partial_sold_2 INTEGER DEFAULT 0
+                    partial_sold_2 INTEGER DEFAULT 0,
+                    initial_stop_price INTEGER DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS trades (
@@ -244,6 +247,27 @@ class DataStore:
             self.conn.commit()
             self._set_schema_version(4)
 
+        if current < 5:
+            # v5: positions.initial_stop_price 추가 (청산 사유 SL/트레일링 분류)
+            try:
+                self.conn.execute(
+                    "ALTER TABLE positions ADD COLUMN initial_stop_price INTEGER DEFAULT 0"
+                )
+                logger.info("마이그레이션 v5: positions.initial_stop_price 컬럼 추가")
+            except sqlite3.OperationalError:
+                pass
+            # 기존 open 포지션 — initial_stop_price가 0이면 현재 stop_price로 백필
+            # (보수적: 기존 포지션은 모두 SL로 분류됨)
+            try:
+                self.conn.execute(
+                    "UPDATE positions SET initial_stop_price = stop_price "
+                    "WHERE status = 'open' AND initial_stop_price = 0"
+                )
+            except sqlite3.OperationalError:
+                pass
+            self.conn.commit()
+            self._set_schema_version(5)
+
     def _get_schema_version(self) -> int:
         """현재 스키마 버전 조회."""
         try:
@@ -284,8 +308,9 @@ class DataStore:
                     (code, name, entry_date, entry_price, quantity,
                      stop_price, target_price, status, high_since_entry,
                      partial_sold, entry_strategy, updated_at,
-                     initial_quantity, tp2_price, partial_sold_2)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     initial_quantity, tp2_price, partial_sold_2,
+                     initial_stop_price)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pos.code,
@@ -303,6 +328,7 @@ class DataStore:
                     initial_qty,
                     pos.tp2_price,
                     0,
+                    pos.initial_stop_price if pos.initial_stop_price > 0 else pos.stop_price,
                 ),
             )
             self.conn.commit()

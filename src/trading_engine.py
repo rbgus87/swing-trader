@@ -660,8 +660,12 @@ class TradingEngine:
         실시간: SL / TP1 분할(30%) / TP2 분할(30%) / Trail
         EOD: 추세이탈(MA5<MA20) / Hold 20일
         """
-        # 1. 손절 (SL ATR×2.0)
+        # 1. 손절/트레일링 (SL ATR×2.0 or 트레일링)
+        #    초기 SL보다 stop_price가 높아져 있으면 트레일링이 활성화된 상태.
         if self._stop_mgr.is_stopped(pos, current_price):
+            initial_sl = pos.initial_stop_price or pos.stop_price
+            if pos.stop_price > initial_sl:
+                return ExitReason.TRAILING_STOP
             return ExitReason.STOP_LOSS
 
         # 2. TP1 분할 매도 (ATR×2.0, 30% 매도)
@@ -1284,6 +1288,7 @@ class TradingEngine:
             entry_strategy=strategy_name,
             initial_quantity=qty,
             tp2_price=tp2_price,
+            initial_stop_price=stop_price,
         )
         self._ds.insert_position(pos)
         self._invalidate_positions_cache()
@@ -1466,6 +1471,7 @@ class TradingEngine:
             initial_quantity=d.get("initial_quantity", 0) or d["quantity"],
             tp2_price=d.get("tp2_price", 0),
             partial_sold_2=bool(d.get("partial_sold_2", 0)),
+            initial_stop_price=d.get("initial_stop_price", 0) or d["stop_price"],
         )
 
     # ── 장마감 ──

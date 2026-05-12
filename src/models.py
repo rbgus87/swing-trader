@@ -54,6 +54,8 @@ class Position:
     initial_quantity: int = 0    # 진입 시점 수량 (TP2 사이징 기준)
     tp2_price: int = 0           # entry_price + atr × tp2_atr (TP2 발동 가격)
     partial_sold_2: bool = False # TP2 발동 여부
+    # 청산 사유 정확 분류용: 진입 시점 SL 가격 (트레일링으로 상향되면 trailing_stop)
+    initial_stop_price: int = 0
 
 
 @dataclass
