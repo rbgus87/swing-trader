@@ -448,6 +448,7 @@ class MainWindow(QMainWindow):
         self._update_dashboard(positions, signals_list, snapshot)
         self._update_sidebar(positions, snapshot)
         self._update_status_bar(snapshot)
+        self._update_tray_tooltip()
 
     def _update_dashboard(self, positions: list, signals_list: list,
                           snapshot: dict | None):
@@ -826,6 +827,7 @@ class MainWindow(QMainWindow):
 
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()  # 시작 시부터 트레이 상주
 
     def _tray_show(self):
         self.showNormal()
@@ -834,9 +836,18 @@ class MainWindow(QMainWindow):
     def _tray_quit(self):
         self._cleanup_and_quit()
 
+    def _update_tray_tooltip(self):
+        mode = self.combo_mode.currentText().upper()
+        engine = "엔진 " + self._lbl_engine_status.text()
+        pos = self._lbl_sidebar_pos.text()
+        self._tray.setToolTip(f"Swing Trader — {mode} | {engine} | {pos}")
+
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.DoubleClick:
-            self._tray_show()
+            if self.isVisible():
+                self.hide()
+            else:
+                self._tray_show()
 
     def closeEvent(self, event):
         engine_running = (
@@ -847,7 +858,6 @@ class MainWindow(QMainWindow):
         if engine_running:
             event.ignore()
             self.hide()
-            self._tray.show()
             self._tray.showMessage(
                 "Swing Trader",
                 "엔진이 구동 중입니다. 트레이에서 실행됩니다.",
