@@ -58,24 +58,16 @@ class MarketRegime:
             return self._is_bullish
 
         try:
-            # KOSPI 지수 일봉 조회 — DataProvider 경유 (KRX API → pykrx → KODEX200 폴백)
-            from data.provider import get_provider
-            provider = get_provider()
-            start = (datetime.strptime(date, "%Y%m%d") - timedelta(days=400)).strftime("%Y%m%d")
-            df = provider.get_kospi_ohlcv(start, date)
+            df = self._load_kospi_df(date)
 
             if df.empty or len(df) < self._sma_period:
-                logger.warning(f"KOSPI 데이터 부족 ({len(df) if not df.empty else 0}일) — 추세장으로 간주")
+                logger.warning(
+                    f"KOSPI 데이터 부족 ({len(df)}일) — 추세장으로 간주"
+                )
                 self._is_bullish = True
                 return True
 
-            # KODEX200 ETF 프록시 여부 감지
-            is_proxy = getattr(df, "attrs", {}).get("source") == "kodex200_proxy"
-
-            # DataProvider가 영문 컬럼으로 통일
-            close_col = "close"
-            high_col = "high"
-            low_col = "low"
+            close_col, high_col, low_col = "close", "high", "low"
             closes = df[close_col]
 
             # 1. KOSPI 200일선 체크
@@ -83,28 +75,21 @@ class MarketRegime:
             latest_close = closes.iloc[-1]
             self._kospi_close = int(latest_close)
             self._kospi_sma200 = float(sma200)
-
             above_sma = latest_close > sma200
 
             # 2. ADX 횡보장 감지 (KOSPI 지수 기반)
             self._kospi_adx = self._calculate_adx(df, close_col, high_col, low_col)
-
             is_trending = self._kospi_adx >= self._adx_sideways_threshold
 
-            # 3. VKOSPI 공포 차단
+            # 3. VKOSPI 공포 차단 (데이터 없으면 calm으로 간주)
             self._vkospi = self._get_vkospi(date)
-            if self._vkospi < 0:
-                # VKOSPI 조회 실패 → 공포장 판단 스킵 (calm으로 간주)
-                is_calm = True
-                logger.info("VKOSPI 조회 실패 — 공포장 판단 스킵")
-            else:
-                is_calm = self._vkospi <= self._vkospi_fear_threshold
+            is_calm = self._vkospi <= self._vkospi_fear_threshold
 
-            # 종합 판단
-            self._is_bullish = above_sma and is_calm  # ADX와 무관하게 매수 허용
+            # 종합 판단 (ADX는 로깅용, 실제 gate는 SMA+VKOSPI)
+            self._is_bullish = above_sma and is_calm
             self._last_check_date = date
 
-            # 국면 유형 결정 (전략 전환용)
+            # 국면 유형 결정
             if not above_sma or not is_calm:
                 self._regime_type = "bearish"
             elif is_trending:
@@ -115,17 +100,22 @@ class MarketRegime:
             # 차단 사유 기록
             reasons = []
             if not above_sma:
-                reasons.append(f"KOSPI {self._kospi_close:,} < 200일선 {self._kospi_sma200:,.0f}")
+                reasons.append(
+                    f"KOSPI {self._kospi_close:,} < 200일선 {self._kospi_sma200:,.0f}"
+                )
             if not is_trending:
-                reasons.append(f"ADX {self._kospi_adx:.1f} < {self._adx_sideways_threshold} (횡보)")
+                reasons.append(
+                    f"ADX {self._kospi_adx:.1f} < {self._adx_sideways_threshold} (횡보)"
+                )
             if not is_calm:
-                reasons.append(f"VKOSPI {self._vkospi:.1f} > {self._vkospi_fear_threshold} (공포)")
+                reasons.append(
+                    f"VKOSPI {self._vkospi:.1f} > {self._vkospi_fear_threshold} (공포)"
+                )
             self._block_reason = " | ".join(reasons) if reasons else ""
 
             regime = "추세장" if self._is_bullish else "방어모드"
-            source_label = "KODEX200(프록시)" if is_proxy else "KOSPI"
             detail = (
-                f"{source_label} {self._kospi_close:,} "
+                f"KOSPI {self._kospi_close:,} "
                 f"(200일선 {self._kospi_sma200:,.0f}), "
                 f"ADX {self._kospi_adx:.1f}, VKOSPI {self._vkospi:.1f}"
             )
@@ -140,11 +130,46 @@ class MarketRegime:
             self._is_bullish = True
             return True
 
+    def _load_kospi_df(self, date: str) -> pd.DataFrame:
+        """index_daily에서 KOSPI 일봉 조회.
+
+        date: YYYYMMDD 형식.
+        반환: date 컬럼 없는 OHLCV DataFrame (index=날짜 순서).
+        """
+        from src.data_pipeline.db import get_data_db
+
+        date_sql = datetime.strptime(date, "%Y%m%d").strftime("%Y-%m-%d")
+        start_sql = (
+            datetime.strptime(date, "%Y%m%d") - timedelta(days=400)
+        ).strftime("%Y-%m-%d")
+
+        try:
+            with get_data_db() as conn:
+                rows = conn.execute(
+                    "SELECT date, open, high, low, close, volume "
+                    "FROM index_daily "
+                    "WHERE index_code = 'KOSPI' AND date >= ? AND date <= ? "
+                    "ORDER BY date ASC",
+                    (start_sql, date_sql),
+                ).fetchall()
+        except Exception as e:
+            logger.debug(f"KOSPI index_daily 조회 실패: {e}")
+            return pd.DataFrame()
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(r) for r in rows])
+        df["date"] = pd.to_datetime(df["date"])
+        return df.set_index("date")
+
     def _calculate_adx(
         self, df: pd.DataFrame, close_col: str, high_col: str, low_col: str
     ) -> float:
         """KOSPI 지수의 ADX 계산."""
         try:
+            from src.utils.numba_mock import ensure_numba_mock
+            ensure_numba_mock()
             import pandas_ta as ta
 
             adx_df = ta.adx(
@@ -164,13 +189,27 @@ class MarketRegime:
         return 25.0  # 실패 시 추세 있음으로 간주
 
     def _get_vkospi(self, date: str) -> float:
-        """VKOSPI(변동성지수) 조회 — DataProvider 경유."""
+        """VKOSPI 조회 — index_daily 테이블.
+
+        VKOSPI가 수집되지 않은 경우 0.0 반환 (is_calm=True, 공포 판단 스킵).
+        date: YYYYMMDD 형식.
+        """
         try:
-            from data.provider import get_provider
-            return get_provider().get_vkospi(date)
-        except Exception as e:
-            logger.debug(f"VKOSPI 조회 실패: {e}")
-            return 0.0
+            from src.data_pipeline.db import get_data_db
+
+            date_sql = datetime.strptime(date, "%Y%m%d").strftime("%Y-%m-%d")
+            with get_data_db() as conn:
+                row = conn.execute(
+                    "SELECT close FROM index_daily "
+                    "WHERE index_code = 'VKOSPI' AND date <= ? "
+                    "ORDER BY date DESC LIMIT 1",
+                    (date_sql,),
+                ).fetchone()
+            if row and row["close"]:
+                return float(row["close"])
+        except Exception:
+            pass
+        return 0.0  # 데이터 없음 → 공포 판단 스킵 (is_calm = True)
 
     @property
     def is_bullish(self) -> bool:

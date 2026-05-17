@@ -41,6 +41,7 @@ def build() -> None:
         "--hidden-import=src.utils.cost_model",
         "--hidden-import=src.utils.tick_size",
         "--hidden-import=src.utils.slippage_model",
+        "--hidden-import=src.utils.numba_mock",
         # ── 실시간 엔진 (TradingEngine) ──
         "--hidden-import=src.trading_engine",
         "--hidden-import=src.strategy.trend_following_v2",
