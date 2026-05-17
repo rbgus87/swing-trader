@@ -1,0 +1,107 @@
+﻿python : 2026-05-17 18:47:56.721 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:287 - Loading trading dates...
+At line:1 char:50
++ ... ONUTF8='1'; python experiments/experiment_new_strategies.py 2>&1 | Ou ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (2026-05-17 18:4...rading dates...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+2026-05-17 18:47:57.742 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:295 - Trading dates: 3035
+2026-05-17 18:47:57.742 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:297 - Building initial universe...
+2026-05-17 18:47:57.748 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:300 - Initial universe: 0 tickers
+2026-05-17 18:47:57.749 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:302 - Collecting candidate tickers (eve
+r-eligible)...
+2026-05-17 18:49:07.662 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:312 - Candidate tickers: 291
+2026-05-17 18:49:07.662 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:314 - Loading candle data + computing i
+ndicators...
+2026-05-17 18:49:18.084 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:316 - Loaded candle data for 286 ticker
+s
+2026-05-17 18:49:19.422 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:326 - Loading KOSPI/KOSDAQ relative str
+ength maps...
+2026-05-17 18:49:19.463 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:329 - KOSPI ret map: 3031 entries, KOSD
+AQ ret map: 3030 entries
+2026-05-17 18:49:19.473 | INFO     | src.backtest.portfolio_backtester:load_backtest_data:335 - Ticker→market map: 3449 entries
+======================================================================
+신규 전략 알파 스크리닝 실험
+기간: 2014-01-02 ~ 2026-05-15 (12년+)
+비용: 고정 0.30% (왕복)
+판정: PF >= 1.1 AND 거래 >= 100건 → 알파 존재
+H4 (기관/외인 수급): DB에 inst_net/foreign_net 컬럼 없음 → SKIP
+======================================================================
+
+[1/4] 데이터 로드 중...
+    거래일: 3035일 (2014-01-02 ~ 2026-05-15)
+    종목 수: 286
+
+[2/4] 보조 지표 계산 중 (ma50, ma150, rsi14, high_52w, atr_ma60 등)...
+    완료
+
+[3/4] v2.7 신호 사전 계산 (universe_at 추출)...
+    Universe 스냅샷: 3035일분
+
+[4/4] 전략별 신호 계산 중...
+    H1 우량주 과매도 반등...
+    H1 신호일: 288일
+    H2 VCP 변동성 수축 돌파...
+    H2 신호일: 140일
+    H3 갭업 모멘텀...
+    H3 신호일: 58일
+    H5 52주 신고가 근접 돌파...
+    H5 신호일: 535일
+
+======================================================================
+전략별 백테스트 (미니 백테스터, 비용 0.30% 고정)
+======================================================================
+
+  H1: 우량주 과매도 반등
+  H1 우량주 과매도 반등                     | 거래  265건 | WR  46.0% | PF   0.84 | CAGR   -1.6% | MDD  -27.7% | 평균보유  5.7일 | [FAIL] 알파 없음
+    MAX_HOLD            :  145건 ( 54.7%)
+    STOP                :   86건 ( 32.5%)
+    TARGET              :   34건 ( 12.8%)
+
+  H2: VCP 변동성 수축 돌파
+  H2 VCP 변동성 수축 돌파                  | 거래  130건 | WR  25.4% | PF   0.67 | CAGR   -1.8% | MDD  -28.3% | 평균보유  6.1일 | [FAIL] 알파 없음
+    STOP                :  125건 ( 96.2%)
+    MAX_HOLD            :    4건 (  3.1%)
+    FORCED_EXIT         :    1건 (  0.8%)
+
+  H3: 갭업 모멘텀
+  H3 갭업 모멘텀                         | 거래   67건 | WR  40.3% | PF   1.06 | CAGR   +0.1% | MDD   -9.8% | 평균보유  2.3일 | [FAIL] 알파 없음
+    STOP                :   37건 ( 55.2%)
+    TARGET              :   21건 ( 31.3%)
+    MAX_HOLD            :    9건 ( 13.4%)
+
+  H5: 52주 신고가 근접 돌파
+  H5 52주 신고가 근접 돌파                  | 거래  409건 | WR  38.9% | PF   1.03 | CAGR   +0.6% | MDD  -55.0% | 평균보유 13.2일 | [FAIL] 알파 없음
+    STOP                :  332건 ( 81.2%)
+    MAX_HOLD            :   74건 ( 18.1%)
+    FORCED_EXIT         :    3건 (  0.7%)
+
+======================================================================
+전략 요약 테이블
+======================================================================
+전략    이름                            거래      WR     PF     CAGR     MDD     보유 판정
+-------------------------------------------------------------------------------------
+H1    우량주 과매도 반등                   265   46.0%   0.84    -1.6%  -27.7%   5.7d FAIL
+H2    VCP 변동성 수축 돌파                130   25.4%   0.67    -1.8%  -28.3%   6.1d FAIL
+H3    갭업 모멘텀                        67   40.3%   1.06    +0.1%   -9.8%   2.3d FAIL
+H5    52주 신고가 근접 돌파                409   38.9%   1.03    +0.6%  -55.0%  13.2d FAIL
+-------------------------------------------------------------------------------------
+판정 기준: PF >= 1.1 AND 거래 >= 100건
+
+======================================================================
+통과 전략 없음 — 결합 검증 생략
+결론: 4개 전략 가설 모두 단독 알파 미확인
+권고: 진입 필터 완화 또는 청산 로직 재설계가 필요하나,
+      현재 기본값 검증 기준에서는 채택 불가.
+======================================================================
+
+======================================================================
+종합 결론
+======================================================================
+  알파 확인 (PF≥1.1, 거래≥100): 없음
+  경계선 (PF 1.0~1.1):                      ['H3', 'H5']
+  채택 불가 (PF<1.0 또는 거래<50):                  ['H1', 'H2']
+
+  → 현재 Universe + 비용 구조에서 검증된 독립 알파 없음.
+    Phase 5 전략 개발은 실전 데이터 축적 후 재시도 권장.
+======================================================================

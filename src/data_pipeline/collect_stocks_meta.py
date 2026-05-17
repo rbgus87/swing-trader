@@ -188,6 +188,15 @@ def _extract_sector(meta: KrxStockMeta) -> Optional[str]:
     return None
 
 
+def _extract_industry(meta: KrxStockMeta, market: str) -> Optional[str]:
+    """업종 추출: KOSPI는 IDX_IND_NM(실제 업종), KOSDAQ은 'KOSDAQ_기타'."""
+    if market == "KOSPI":
+        raw = meta.model_dump()
+        v = raw.get("IDX_IND_NM", "")
+        return str(v).strip() or None
+    return "KOSDAQ_기타"
+
+
 def _sample_by_type(rows: list[dict], stype: str, n: int = 3) -> list[dict]:
     return [r for r in rows if r["stock_type"] == stype][:n]
 
@@ -217,6 +226,7 @@ def collect_from_bydd_trd(client: KrxClient, base_date: str) -> list[dict]:
                 "sector": _extract_sector(meta),
                 "stock_type": stype,
                 "parent_ticker": None,
+                "industry": _extract_industry(meta, market),
             }
         )
 
@@ -234,10 +244,10 @@ def collect_from_bydd_trd(client: KrxClient, base_date: str) -> list[dict]:
             INSERT OR REPLACE INTO stocks (
                 ticker, name, market, sector, stock_type, parent_ticker,
                 listed_date, delisted_date, delisting_reason,
-                first_candle_date, last_candle_date, last_updated
+                first_candle_date, last_candle_date, last_updated, industry
             ) VALUES (
                 :ticker, :name, :market, :sector, :stock_type, :parent_ticker,
-                NULL, NULL, NULL, NULL, NULL, :last_updated
+                NULL, NULL, NULL, NULL, NULL, :last_updated, :industry
             )
             """,
             [{**r, "last_updated": now_iso} for r in records],

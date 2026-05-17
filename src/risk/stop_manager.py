@@ -5,6 +5,7 @@ ATR 기반 초기 손절가 설정과 트레일링스탑 업데이트를 제공.
 """
 
 from src.models import Position
+from src.utils.tick_size import adjust_price
 
 
 class StopManager:
@@ -38,7 +39,7 @@ class StopManager:
         """
         atr_stop = entry_price - atr * self.stop_atr_mult
         pct_stop = entry_price * (1 - self.max_stop_pct)
-        return int(max(atr_stop, pct_stop))
+        return adjust_price(max(atr_stop, pct_stop), direction="down")
 
     def update_trailing_stop(
         self, position: Position, current_price: int, atr: float
@@ -70,7 +71,9 @@ class StopManager:
             return position.stop_price
 
         # 2. 트레일링스탑 계산
-        trailing = int(position.high_since_entry - atr * self.trailing_atr_mult)
+        trailing = adjust_price(
+            position.high_since_entry - atr * self.trailing_atr_mult, direction="up"
+        )
 
         # 3. 후퇴 금지: 기존 stop_price보다 낮으면 기존 유지
         if trailing <= position.stop_price:

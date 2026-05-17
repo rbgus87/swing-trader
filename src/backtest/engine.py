@@ -23,7 +23,7 @@ def get_strategy(*args, **kwargs):  # noqa: ARG001
 
 # 비용 모델 기본값 (fallback)
 _DEFAULT_COMMISSION = 0.00015  # 수수료 0.015% (편도)
-_DEFAULT_TAX = 0.0015  # 거래세 0.15% (2025년, 매도만)
+_DEFAULT_TAX = 0.0020  # 거래세 0.20% (2026년 KOSPI/KOSDAQ, 매도만)
 _DEFAULT_SLIPPAGE = 0.001  # 슬리피지 0.1%
 
 

@@ -160,8 +160,26 @@ def _migrate_snapshot_to_trade_db(data_db: Path, trade_db: Path) -> None:
             pass
 
 
+def _ensure_data_schema() -> None:
+    """data DB 스키마 보강 — 신규 컬럼 없으면 추가."""
+    db_path = Path(DATA_DB_PATH)
+    if not db_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("ALTER TABLE stocks ADD COLUMN industry TEXT DEFAULT NULL")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # 이미 존재
+        conn.close()
+    except Exception:
+        pass
+
+
 # 모듈 import 시 1회 실행
 _migrate_legacy_db_files()
+_ensure_data_schema()
 
 
 @contextmanager

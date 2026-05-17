@@ -14,9 +14,11 @@ from src.broker.tr_codes import (
     ORDER_BUY_CANCEL,
     ORDER_SELL,
     ORDER_SELL_CANCEL,
+    PRICE_LIMIT,
     PRICE_MARKET,
 )
 from src.models import Order, OrderResult
+from src.utils.tick_size import adjust_price
 
 # 미체결 취소 최대 재시도 횟수
 _MAX_CANCEL_RETRIES = 3
@@ -69,6 +71,11 @@ class OrderManager:
             side_label = "매수" if order_type == ORDER_BUY else "매도"
             logger.info(f"[PAPER] 주문 시뮬레이션: {code} {side_label} {qty}주")
             return OrderResult(success=True, order_no="PAPER-SIM", message="paper mode")
+
+        # 지정가 주문 — 호가단위 보정
+        if hoga_type == PRICE_LIMIT and price > 0:
+            direction = "up" if order_type == ORDER_SELL else "down"
+            price = adjust_price(price, direction)
 
         # 입력 검증
         if not _CODE_PATTERN.match(code):

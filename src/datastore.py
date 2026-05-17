@@ -21,6 +21,13 @@ _POSITION_UPDATABLE_COLUMNS = frozenset({
     "initial_quantity", "tp2_price", "partial_sold_2",
     # 청산 사유 분류 (SL/트레일링)
     "initial_stop_price",
+    # Phase A-4: 트레일링스탑 일관성용 진입 ATR
+    "atr_at_entry",
+    # Phase B-4: 동적 보유기간용 진입 ADX
+    "entry_adx",
+    # Phase B-5: 분할 매수
+    "scale_in_triggered", "scale_in_price", "scale_in_target_qty",
+    "original_alloc", "tranche_count",
 })
 
 
@@ -35,8 +42,8 @@ class DataStore:
         if db_path is None:
             from src.data_pipeline import TRADE_DB_PATH
             db_path = str(TRADE_DB_PATH)
-        # 상대 경로면 앱 디렉토리 기준으로 해석 (exe 호환)
-        if not Path(db_path).is_absolute():
+        # :memory:는 SQLite 특수 경로 — 절대/상대 판별 없이 그대로 사용
+        if db_path != ":memory:" and not Path(db_path).is_absolute():
             from src.utils.config import _get_app_dir
             db_path = str(_get_app_dir() / db_path)
         self._db_path = db_path
@@ -88,7 +95,14 @@ class DataStore:
                     initial_quantity INTEGER DEFAULT 0,
                     tp2_price INTEGER DEFAULT 0,
                     partial_sold_2 INTEGER DEFAULT 0,
-                    initial_stop_price INTEGER DEFAULT 0
+                    initial_stop_price INTEGER DEFAULT 0,
+                    atr_at_entry REAL DEFAULT 0,
+                    entry_adx REAL DEFAULT 0,
+                    scale_in_triggered INTEGER DEFAULT 0,
+                    scale_in_price INTEGER DEFAULT 0,
+                    scale_in_target_qty INTEGER DEFAULT 0,
+                    original_alloc INTEGER DEFAULT 0,
+                    tranche_count INTEGER DEFAULT 1
                 );
 
                 CREATE TABLE IF NOT EXISTS trades (
@@ -165,6 +179,24 @@ class DataStore:
                     version INTEGER PRIMARY KEY,
                     applied_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS etf_positions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL,
+                    entry_price INTEGER NOT NULL,
+                    qty INTEGER NOT NULL,
+                    entry_date TEXT NOT NULL,
+                    exit_price INTEGER DEFAULT 0,
+                    exit_date TEXT,
+                    pnl INTEGER DEFAULT 0,
+                    hold_days INTEGER DEFAULT 0,
+                    reason TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_etf_positions_status
+                    ON etf_positions(status);
                 """
             )
             self.conn.commit()
@@ -268,6 +300,81 @@ class DataStore:
             self.conn.commit()
             self._set_schema_version(5)
 
+        if current < 6:
+            # v6: positions.atr_at_entry 추가 (Phase A-4: 트레일링스탑 일관성)
+            try:
+                self.conn.execute(
+                    "ALTER TABLE positions ADD COLUMN atr_at_entry REAL DEFAULT 0"
+                )
+                logger.info("마이그레이션 v6: positions.atr_at_entry 컬럼 추가")
+            except sqlite3.OperationalError:
+                pass
+            self.conn.commit()
+            self._set_schema_version(6)
+
+        if current < 7:
+            # v7: positions.entry_adx 추가 (Phase B-4: 동적 보유기간)
+            try:
+                self.conn.execute(
+                    "ALTER TABLE positions ADD COLUMN entry_adx REAL DEFAULT 0"
+                )
+                logger.info("마이그레이션 v7: positions.entry_adx 컬럼 추가")
+            except sqlite3.OperationalError:
+                pass
+            self.conn.commit()
+            self._set_schema_version(7)
+
+        if current < 8:
+            # v8: positions에 Phase B-5 분할 매수 컬럼 추가
+            for col, ddl in (
+                ("scale_in_triggered",
+                 "ALTER TABLE positions ADD COLUMN scale_in_triggered INTEGER DEFAULT 0"),
+                ("scale_in_price",
+                 "ALTER TABLE positions ADD COLUMN scale_in_price INTEGER DEFAULT 0"),
+                ("scale_in_target_qty",
+                 "ALTER TABLE positions ADD COLUMN scale_in_target_qty INTEGER DEFAULT 0"),
+                ("original_alloc",
+                 "ALTER TABLE positions ADD COLUMN original_alloc INTEGER DEFAULT 0"),
+                ("tranche_count",
+                 "ALTER TABLE positions ADD COLUMN tranche_count INTEGER DEFAULT 1"),
+            ):
+                try:
+                    self.conn.execute(ddl)
+                    logger.info(f"마이그레이션 v8: positions.{col} 컬럼 추가")
+                except sqlite3.OperationalError:
+                    pass
+            self.conn.commit()
+            self._set_schema_version(8)
+
+        if current < 9:
+            # v9: ETF 포지션 테이블 추가 (ETF IBS 평균회귀 전략)
+            try:
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS etf_positions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        code TEXT NOT NULL,
+                        entry_price INTEGER NOT NULL,
+                        qty INTEGER NOT NULL,
+                        entry_date TEXT NOT NULL,
+                        exit_price INTEGER DEFAULT 0,
+                        exit_date TEXT,
+                        pnl INTEGER DEFAULT 0,
+                        hold_days INTEGER DEFAULT 0,
+                        reason TEXT,
+                        status TEXT NOT NULL DEFAULT 'open',
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                self.conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_etf_positions_status
+                    ON etf_positions(status)
+                """)
+                logger.info("마이그레이션 v9: etf_positions 테이블 추가")
+            except sqlite3.OperationalError:
+                pass
+            self.conn.commit()
+            self._set_schema_version(9)
+
     def _get_schema_version(self) -> int:
         """현재 스키마 버전 조회."""
         try:
@@ -309,8 +416,10 @@ class DataStore:
                      stop_price, target_price, status, high_since_entry,
                      partial_sold, entry_strategy, updated_at,
                      initial_quantity, tp2_price, partial_sold_2,
-                     initial_stop_price)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     initial_stop_price, atr_at_entry, entry_adx,
+                     scale_in_triggered, scale_in_price, scale_in_target_qty,
+                     original_alloc, tranche_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pos.code,
@@ -329,6 +438,13 @@ class DataStore:
                     pos.tp2_price,
                     0,
                     pos.initial_stop_price if pos.initial_stop_price > 0 else pos.stop_price,
+                    pos.atr_at_entry,
+                    pos.entry_adx,
+                    int(pos.scale_in_triggered),
+                    pos.scale_in_price,
+                    pos.scale_in_target_qty,
+                    pos.original_alloc,
+                    pos.tranche_count,
                 ),
             )
             self.conn.commit()
@@ -689,6 +805,84 @@ class DataStore:
                 (code, start_date, end_date),
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    # ── ETF Positions ──────────────────────────────────────────
+
+    def insert_etf_position(
+        self, code: str, entry_price: int, qty: int, entry_date: str
+    ) -> int:
+        """ETF 포지션 삽입.
+
+        Returns:
+            삽입된 row의 id.
+        """
+        from datetime import datetime as _dt
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO etf_positions
+                    (code, entry_price, qty, entry_date, status, created_at)
+                VALUES (?, ?, ?, ?, 'open', ?)
+                """,
+                (code, entry_price, qty, entry_date, _dt.now().isoformat()),
+            )
+            self.conn.commit()
+            return cursor.lastrowid
+
+    def close_etf_position(
+        self,
+        code: str,
+        exit_price: int,
+        pnl: int,
+        exit_date: str,
+        hold_days: int,
+        reason: str,
+    ) -> None:
+        """ETF 포지션 청산."""
+        with self._lock:
+            self.conn.execute(
+                """
+                UPDATE etf_positions
+                SET status = 'closed', exit_price = ?, pnl = ?,
+                    exit_date = ?, hold_days = ?, reason = ?
+                WHERE code = ? AND status = 'open'
+                """,
+                (exit_price, pnl, exit_date, hold_days, reason, code),
+            )
+            self.conn.commit()
+
+    def get_open_etf_position(self) -> dict | None:
+        """열린 ETF 포지션 조회 (최신 1건)."""
+        with self._lock:
+            cursor = self.conn.execute(
+                "SELECT * FROM etf_positions WHERE status = 'open' "
+                "ORDER BY id DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_etf_stats(self, limit: int = 50) -> dict:
+        """최근 ETF 거래 통계."""
+        with self._lock:
+            cursor = self.conn.execute(
+                "SELECT pnl, hold_days FROM etf_positions "
+                "WHERE status = 'closed' ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            rows = cursor.fetchall()
+
+        if not rows:
+            return {"count": 0, "total_pnl": 0, "win_rate": 0.0, "avg_hold": 0.0}
+
+        pnls = [r["pnl"] for r in rows]
+        wins = [p for p in pnls if p > 0]
+        holds = [r["hold_days"] for r in rows]
+        return {
+            "count": len(pnls),
+            "total_pnl": sum(pnls),
+            "win_rate": len(wins) / len(pnls),
+            "avg_hold": sum(holds) / len(holds),
+        }
 
     def cleanup_ohlcv_cache(self, retention_days: int = 400) -> int:
         """오래된 OHLCV 캐시 데이터 삭제.

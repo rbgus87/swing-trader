@@ -11,15 +11,19 @@ import pytest
 from src.datastore import DataStore
 from src.models import Position, Tick, TradeRecord
 
+# test_backtest.py는 전체 pytestmark=skip — pandas/numpy import 오버헤드 방지
+collect_ignore_glob = ["test_backtest.py"]
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: time.sleep 의존 느린 테스트")
+    config.addinivalue_line("markers", "e2e: E2E 통합 테스트")
+
 
 @pytest.fixture
-def tmp_db(tmp_path):
-    """임시 SQLite DB를 생성하고 DataStore 인스턴스를 반환.
-
-    테스트 종료 시 자동 정리됨.
-    """
-    db_path = str(tmp_path / "test.db")
-    store = DataStore(db_path=db_path)
+def tmp_db():
+    """인메모리 SQLite DataStore — 파일 I/O 없음."""
+    store = DataStore(db_path=":memory:")
     store.connect()
     store.create_tables()
     yield store
@@ -63,10 +67,22 @@ def sample_config():
             "daily_loss_limit": -0.03,
             "max_mdd": -0.20,
         },
+        "trend_following": {
+            "buy_commission": 0.00015,
+            "sell_commission": 0.00015,
+            "sell_tax_kospi": 0.0020,
+            "sell_tax_kosdaq": 0.0020,
+            "slippage": 0.0005,
+            "sizing_mode": "equity",
+            "tp1_sell_ratio": 0.10,
+            "tp2_atr": 4.0,
+            "tp2_sell_ratio": 0.10,
+        },
         "backtest": {
             "commission": 0.00015,
-            "tax": 0.0015,
-            "slippage": 0.001,
+            "tax_kospi": 0.0020,
+            "tax_kosdaq": 0.0020,
+            "slippage": 0.0005,
             "initial_capital": 10_000_000,
         },
     }
@@ -199,8 +215,15 @@ def populated_db(tmp_db):
     return tmp_db
 
 
+@pytest.fixture(scope="session")
+def _engine_module():
+    """TradingEngine 클래스를 1회만 import — patch는 매 테스트마다 재적용."""
+    from src.trading_engine import TradingEngine
+    return TradingEngine
+
+
 @pytest.fixture
-def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
+def trading_engine(_engine_module, tmp_db, mock_kiwoom, mock_telegram, sample_config):
     """모든 의존성이 mock된 TradingEngine (paper 모드).
 
     실제 DataStore, RiskManager, PositionSizer, StopManager를 사용하고,
@@ -275,9 +298,7 @@ def trading_engine(tmp_db, mock_kiwoom, mock_telegram, sample_config):
         )
         MockStopMgr.return_value = stop_mgr
 
-        from src.trading_engine import TradingEngine
-
-        eng = TradingEngine(mode="paper")
+        eng = _engine_module(mode="paper")
         eng._running = True
 
         yield eng

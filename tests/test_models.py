@@ -136,7 +136,7 @@ class TestExitReason:
         assert ExitReason.MAX_HOLD.value == "max_hold"
 
     def test_enum_count(self):
-        assert len(ExitReason) == 10
+        assert len(ExitReason) == 11  # EARLY_TIME_EXIT 추가 (Phase A-4)
 
 
 class TestTradeRecord:

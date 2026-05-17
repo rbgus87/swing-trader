@@ -24,6 +24,7 @@ pydantic>=2.0
 # ── Dev / Test ──
 pytest>=7.4
 pytest-cov>=4.0
+pytest-xdist>=3.5
 requests-mock>=1.12
 pytest-asyncio>=0.23
 black>=23.0

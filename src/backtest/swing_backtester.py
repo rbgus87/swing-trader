@@ -9,6 +9,8 @@ import pandas as pd
 import numpy as np
 from loguru import logger
 
+from src.utils.cost_model import CostModel  # noqa: F401  (re-export for back-compat)
+
 
 @dataclass
 class TradeResult:
@@ -23,19 +25,6 @@ class TradeResult:
     pnl_pct: float
     pnl_amount: float
     atr_at_entry: float
-
-
-@dataclass
-class CostModel:
-    """거래 비용."""
-    buy_commission: float = 0.00015
-    sell_commission: float = 0.00015
-    sell_tax: float = 0.0018
-    slippage: float = 0.0005
-
-    def total_cost_pct(self) -> float:
-        return (self.buy_commission + self.slippage +
-                self.sell_commission + self.sell_tax + self.slippage)
 
 
 @dataclass

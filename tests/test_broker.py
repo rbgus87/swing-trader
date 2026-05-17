@@ -160,9 +160,10 @@ class TestRateLimiter:
             limiter.wait()
         assert len(limiter._calls) == 3
 
+    @pytest.mark.slow
     def test_wait_blocks_when_exceeded(self):
         """제한 초과 시 wait()가 대기한다."""
-        limiter = RateLimiter(max_calls=2, period=0.1)
+        limiter = RateLimiter(max_calls=2, period=0.02)
         limiter.wait()
         limiter.wait()
 
@@ -170,17 +171,18 @@ class TestRateLimiter:
         limiter.wait()  # 대기 후 호출
         elapsed = time.monotonic() - start
 
-        # 최소 대기 시간이 있어야 함 (약간의 여유)
-        assert elapsed >= 0.05
+        # period(0.02s) 내에서 대기가 발생했어야 함
+        assert elapsed >= 0.01
 
+    @pytest.mark.slow
     def test_old_calls_purged(self):
         """period 경과 후 오래된 호출이 제거된다."""
-        limiter = RateLimiter(max_calls=2, period=0.1)
+        limiter = RateLimiter(max_calls=2, period=0.02)
         limiter.wait()
         limiter.wait()
         assert limiter.can_call() is False
 
-        time.sleep(0.15)
+        time.sleep(0.03)
         assert limiter.can_call() is True
 
 

@@ -37,9 +37,31 @@ def build() -> None:
         "--hidden-import=src.utils.config",
         "--hidden-import=src.utils.logger",
         "--hidden-import=src.utils.market_calendar",
+        # ── 유틸 모듈 (Phase A-1, A-2, B-6) ──
+        "--hidden-import=src.utils.cost_model",
+        "--hidden-import=src.utils.tick_size",
+        "--hidden-import=src.utils.slippage_model",
         # ── 실시간 엔진 (TradingEngine) ──
         "--hidden-import=src.trading_engine",
         "--hidden-import=src.strategy.trend_following_v2",
+        # ── 엔진 모듈 분리 (Phase C-1) ──
+        "--hidden-import=src.engine",
+        "--hidden-import=src.engine.screener",
+        "--hidden-import=src.engine.entry_handler",
+        "--hidden-import=src.engine.exit_handler",
+        "--hidden-import=src.engine.portfolio",
+        "--hidden-import=src.engine.scheduler_jobs",
+        "--hidden-import=src.engine.polling",
+        "--hidden-import=src.engine.etf_handler",
+        "--hidden-import=src.engine.paper_fill",
+        "--hidden-import=src.engine.health_monitor",
+        # ── 전략 모듈 (Phase A-4, B-1, B-5, ETF) ──
+        "--hidden-import=src.strategy.exit_evaluator",
+        "--hidden-import=src.strategy.ranking",
+        "--hidden-import=src.strategy.sector_constraint",
+        "--hidden-import=src.strategy.dynamic_hold",
+        "--hidden-import=src.strategy.scaling",
+        "--hidden-import=src.strategy.etf_mean_reversion",
         # ── 데이터 파이프라인 (일일 실행용) ──
         "--hidden-import=src.data_pipeline",
         "--hidden-import=src.data_pipeline.db",
@@ -58,6 +80,7 @@ def build() -> None:
         "--hidden-import=src.broker.order_manager",
         "--hidden-import=src.broker.realtime_data",
         "--hidden-import=src.broker.tr_codes",
+        "--hidden-import=src.broker.reconciler",
         # ── 리스크/알림 ──
         "--hidden-import=src.risk.risk_manager",
         "--hidden-import=src.risk.position_sizer",

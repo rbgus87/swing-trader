@@ -56,6 +56,16 @@ class Position:
     partial_sold_2: bool = False # TP2 발동 여부
     # 청산 사유 정확 분류용: 진입 시점 SL 가격 (트레일링으로 상향되면 trailing_stop)
     initial_stop_price: int = 0
+    # Phase A-4: 트레일링스탑 일관성용 진입 ATR
+    atr_at_entry: float = 0.0
+    # Phase B-4: 동적 보유기간용 진입 ADX
+    entry_adx: float = 0.0
+    # Phase B-5: 분할 매수(Scaling-in)
+    scale_in_triggered: bool = False   # 2차 진입 완료 여부
+    scale_in_price: int = 0            # 2차 진입 트리거 가격
+    scale_in_target_qty: int = 0       # 2차 진입 목표 수량
+    original_alloc: int = 0            # 최초 배분 금액 (2차 계산용)
+    tranche_count: int = 1             # 현재 트랜치 수
 
 
 @dataclass
@@ -99,7 +109,8 @@ class ExitReason(Enum):
     FLOW_EXIT = "flow_exit"
     DISPARITY_EXIT = "disparity_exit"
     MAX_HOLD = "max_hold"
-    TREND_EXIT = "trend_exit"  # v2.3: MA5 < MA20 EOD 전환
+    TREND_EXIT = "trend_exit"        # v2.3: MA5 < MA20 EOD 전환
+    EARLY_TIME_EXIT = "early_time_exit"  # Phase A-4: dead money 조기 청산
 
 
 @dataclass

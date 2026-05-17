@@ -187,12 +187,12 @@ class TestStopManager:
         assert result == 67000
 
     def test_initial_stop_pct_higher(self):
-        """최대손절% 기반 손절가가 더 높을 때 최대손절% 선택."""
+        """최대손절% 기반 손절가가 더 높을 때 최대손절% 선택 후 호가단위 보정."""
         # entry=70000, atr=5000 → atr_stop=70000-7500=62500
-        # pct_stop=int(70000*0.93)=65099
-        # max(62500, 65099) = 65099
+        # pct_stop=70000*0.93 = 65099.99... (부동소수점) → int=65099
+        # max(62500, 65099.99) = 65099.99 → adjust_price("down") → tick=100 → 65000
         result = self.sm.get_initial_stop(entry_price=70000, atr=5000.0)
-        assert result == int(70000 * (1 - 0.07))
+        assert result == 65000
 
     # ── update_trailing_stop ──
 

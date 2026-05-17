@@ -34,7 +34,10 @@ if __name__ == "__main__":
     from src.utils.config import config
     from src.utils.logger import setup_logger
 
-    setup_logger(log_level=config.get_env("LOG_LEVEL", "INFO"))
+    setup_logger(
+        log_level=config.get_env("LOG_LEVEL", "INFO"),
+        json_enabled=config.get("logging.json_enabled", True),
+    )
 
     from src.gui.main_window import run_gui
 

@@ -4,14 +4,20 @@
 # 민감 정보(API키, 계좌번호 등)는 .env 파일에서 관리합니다.
 # 이 파일은 git에 커밋되므로 비밀번호/토큰을 절대 포함하지 마세요.
 #
-# 갱신: 2026-04-30 (Phase 2 연장 v2.6)
-# - 자본 1000만원, 6종목 동시 보유
-# - 비용 모델: 왕복 0.31%
-# - 단일 전략: TrendFollowing v2.6 (equity 균등 + TP1/TP2 10%/10% + 잔여 80%)
+# 갱신: 2026-05-17 (파라미터 최적화 — IS 그리드 서치 + Walk-Forward OOS 검증)
+# - adx_threshold 20→25, rs_threshold 0.05→0.08 (IS/OOS 일관)
+# - ranking_weights.rs 0.35→0.50 (상대강도 비중 강화)
+# - max_positions 6→5 (집중 포트폴리오)
+# - stop_loss_atr 2.0→3.0 / take_profit_atr 2.0→1.5 / trailing_atr 4.0→3.0
+#   (롤백 이전값: SL 2.0 / TP 2.0 / Trail 4.0)
+# - B1(복합 랭킹) + B2(이중 국면) + B6(동적 슬리피지): 유지
+# - B3(섹터 분산): disabled — 실험에서 61% 거래 차단, 알파 파괴 확인
+# - B4(동적 보유기간): disabled — 실험에서 PF -0.05 역효과 확인
+# - B5(분할 매수): disabled 유지 — 실험에서 WR 46.7% 급락 확인
 
 
 # ============================================================================
-# TrendFollowing v2.6 전략 파라미터 (상태 기반 추세추종 + 시장별 상대강도 + TP2 + 러닝 80%)
+# TrendFollowing v2.7 전략 파라미터 (파라미터 최적화 적용)
 # ============================================================================
 # 이 섹션이 백테스트 및 라이브 운용의 기준값.
 
@@ -33,7 +39,7 @@ trend_following:
 
   # 상대강도 (vs KOSPI)
   relative_strength_period: 20         # v2.2 신규
-  relative_strength_threshold: 0.05    # v2.2 신규 (+5%p)
+  relative_strength_threshold: 0.08    # v2.7: 0.05→0.08 (IS/OOS 일관 상향)
 
   # 거래량
   vol_short: 5                         # v2.2 신규
@@ -41,30 +47,77 @@ trend_following:
 
   # 공통
   adx_period: 14
-  adx_threshold: 20
+  adx_threshold: 25                    # v2.7: 20→25 (IS/OOS 일관, Top10 전부 25)
   atr_period: 14
   atr_price_min: 0.025                 # ATR 밴드 하한
   atr_price_max: 0.08                  # ATR 밴드 상한
   min_trading_value: 5_000_000_000     # 50억원
 
-  # 청산 (v2.6 — TP1 10% + TP2 10% + 잔여 80% 트레일링)
-  stop_loss_atr: 2.0
-  take_profit_atr: 2.0
-  trailing_atr: 4.0
+  # 청산 (v2.7 — 최적화 적용, TP1/TP2 10% 유지)
+  # 롤백 이전값: stop_loss_atr 2.0 / take_profit_atr 2.0 / trailing_atr 4.0
+  stop_loss_atr: 3.0                  # v2.7: 2.0→3.0 (넓은 손절, OOS PF 1.59)
+  take_profit_atr: 1.5                # v2.7: 2.0→1.5 (TP1 앞당김, 10%만 청산)
+  trailing_atr: 3.0                   # v2.7: 4.0→3.0 (트레일 타이트화)
   max_hold_days: 20
   tp1_sell_ratio: 0.10                 # v2.5 0.30 → v2.6 0.10 (러닝 극대화)
   tp2_atr: 4.0                         # v2.5 신규 — TP2 발동 ATR 배수
   tp2_sell_ratio: 0.10                 # v2.5 0.30 → v2.6 0.10 (러닝 극대화)
+
+  # 이중 국면 게이트 (Phase B-2: breadth + KOSPI MA200)
+  regime_gate_enabled: true
+
+  # 섹터 분산 제약 (Phase B-3: 동일 업종 최대 N종목)
+  # 실험 결과: max=2에서 61% 거래 차단 → 알파 파괴. Universe 확대 시 재검토.
+  sector_constraint:
+    enabled: false       # ❌ 비활성 (2026-05-16 실험 결과)
+    max_per_sector: 2    # 참고용 유지
+
+  # 동적 슬리피지 모델 (Phase B-6)
+  slippage_model:
+    enabled: true
+    base_slippage: 0.0003       # 기본 스프레드 0.03%
+    impact_coefficient: 0.1     # 시장 충격 계수 (제곱근 모델)
+    max_slippage: 0.02          # 최대 2% 캡
+    fixed_slippage: 0.0005      # 비활성 시 고정값 (기존 호환)
+
+  # 분할 매수 (Phase B-5: Scaling-in)
+  # 실험 결과: WR 46.7% 급락 → 비활성 확정.
+  scaling:
+    enabled: false                # ❌ 비활성 확정 (2026-05-16 실험 결과)
+    first_entry_ratio: 0.60       # 1차 진입 60%
+    second_entry_ratio: 0.40      # 2차 진입 40%
+    scale_in_atr_mult: 1.0        # +1 ATR 상승 시 2차 진입
+    max_tranches: 2               # 최대 2회
+    adjust_stop_on_scale: true    # 2차 진입 후 SL 평균단가 기준 재조정
+
+  # ADX 기반 동적 보유기간 (Phase B-4)
+  # 실험 결과: PF -0.05 역효과. ATR 트레일링이 이미 보유 기간을 조절함.
+  dynamic_hold:
+    enabled: false              # ❌ 비활성 (2026-05-16 실험 결과)
+    base_hold_days: 20          # 기준 보유기간 (max_hold_days와 동일)
+    extend_multiplier: 1.5      # ADX 강세 시 30일 (20 × 1.5)
+    shorten_multiplier: 0.5     # ADX 약세 시 10일 (20 × 0.5)
+    adx_strong_threshold: 30    # 이 이상이면 연장
+    adx_weak_threshold: 15      # 이 이하이면 단축
+
+  # 복합 랭킹 가중치 (v2.7: rs 비중 강화, 합계 1.00)
+  ranking_weights:
+    rs: 0.50              # v2.7: 0.35→0.50 (상대강도 — 핵심 알파)
+    momentum_atr: 0.20    # v2.7: 0.25→0.20
+    adx: 0.15             # v2.7: 0.20→0.15
+    liquidity: 0.10       # 거래대금 (유지)
+    ma_alignment: 0.05    # v2.7: 0.10→0.05
 
   # 사이징 모드 (v2.5 신규)
   # - "cash":   alloc = cash × (1 / max_positions)            (현행 v2.4)
   # - "equity": alloc = total_equity / max_positions  (균등 + 복리, v2.5)
   sizing_mode: equity
 
-  # 비용 모델
+  # 비용 모델 (2026년 현행)
   buy_commission: 0.00015              # 0.015%
   sell_commission: 0.00015             # 0.015%
-  sell_tax: 0.0018                     # 0.18% (2026)
+  sell_tax_kospi: 0.0020               # KOSPI: 거래세 0.05% + 농특세 0.15% = 0.20%
+  sell_tax_kosdaq: 0.0020              # KOSDAQ: 거래세 0.20%
   slippage: 0.0005                     # 0.05%
 
 
@@ -74,7 +127,7 @@ trend_following:
 
 trading:
   universe: kospi_kosdaq
-  max_positions: 6
+  max_positions: 5                    # v2.7: 6→5 (집중 포트폴리오)
   initial_capital: 10_000_000          # v2.5: 1000만원
   reentry_cooldown_days: 3
   order_type: market
@@ -102,11 +155,16 @@ universe_pool:
 # ============================================================================
 
 risk:
-  max_position_ratio: 0.30             # 종목당 최대 30% (6종목 기준 16.7% 균등 + 여유)
+  max_position_ratio: 0.30             # 종목당 최대 30% (5종목 기준 20% 균등 + 여유)
   min_position_amount: 1_000_000       # 종목당 최소 100만원
   daily_loss_limit: -0.03
   daily_loss_warning: -0.02
   max_mdd: -0.20
+  # Phase A-4: 청산 보조 파라미터
+  early_exit_enabled: false            # dead money 조기 청산 (기본 비활성)
+  early_exit_hold_days: 10             # 이 보유일 이후부터 체크
+  early_exit_return_min: -0.02         # 수익률이 이 값 미만이면 청산
+  trend_exit_enabled: true             # MA5 < MA20 데드크로스 청산
 
 
 # ============================================================================
@@ -115,7 +173,8 @@ risk:
 
 backtest:
   commission: 0.00015                  # 0.015%
-  tax: 0.0018                          # 0.18% (2026)
+  tax_kospi: 0.0020                    # KOSPI: 0.20%
+  tax_kosdaq: 0.0020                   # KOSDAQ: 0.20%
   slippage: 0.0005                     # 0.05%
   initial_capital: 10_000_000          # v2.5: 1000만원
 
@@ -136,10 +195,63 @@ broker:
 
 schedule:
   screening_time: "08:30"
+  premarket_queue_time: "08:35"
+  premarket_submit_time: "08:50"
   polling_start_time: "09:00"
   polling_stop_time: "15:35"
   polling_interval: 10
   daily_report_time: "16:00"
   reconnect_time: "08:45"
+  reconcile_time: "15:45"              # 잔고 정합성 검사 (post_market_cleanup 후)
 
+
+# ============================================================================
+# 로깅 설정
+# ============================================================================
+
+logging:
+  level: INFO                 # LOG_LEVEL 환경변수로 오버라이드 가능
+  json_enabled: true          # JSON Lines 구조화 로그 (trading_json.log)
+  max_size: "10 MB"
+  backup_count: 5
+
+
+# ============================================================================
+# 모니터링 / 헬스체크
+# ============================================================================
+
+monitoring:
+  health_check_enabled: true           # 1분 주기 헬스체크 스케줄
+  heartbeat_stale_seconds: 120         # 이 시간 이상 heartbeat 없으면 알림
+  poll_fail_threshold: 5               # 연속 폴링 실패 N회 시 텔레그램 알림
+
+
+# ============================================================================
+# Paper 체결 시뮬레이터
+# ============================================================================
+
+paper_fill:
+  enabled: true
+  slippage_enabled: true
+  spread_bps: 5.0              # 스프레드 0.05% (현재 참고값, 미사용)
+  volume_limit_pct: 0.10       # 거래량 10% 초과 시 경고 임계치
+
+
+# ============================================================================
+# ETF IBS 평균회귀 전략 (유휴 현금 활용)
+# ============================================================================
+# 동시호가(09:00 체결) = ETF 전용, 장중(09:30~) = 주식 전용
+# 시간대 분리로 현금 충돌·미수 리스크 원천 차단
+#
+# 백테스트 근거: V27+IBS → CAGR 7.4%→11.1%(+3.7%p), MDD -34.1%→-33.0%
+
+etf_strategy:
+  enabled: true
+  etf_code: "069500"              # KODEX 200
+  index_code: "KOSPI"
+  ibs_entry: 0.1                  # IBS < 0.1 → 매수 (저가 마감)
+  ibs_exit: 0.8                   # IBS > 0.8 → 매도 (고가 마감)
+  max_hold_days: 10               # 최대 보유일 초과 시 강제 청산
+  min_idle_cash: 1_000_000        # 유휴 현금 최소 100만원 이상이어야 진입
+  cost_pct: 0.0003                # ETF 왕복 수수료 0.03%
 

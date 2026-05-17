@@ -1,6 +1,6 @@
 """메인 윈도우 — 좌측 사이드바 + 우측 탭 레이아웃.
 
-TradingEngine(v2.6) 직접 연결:
+TradingEngine(v2.7 + ETF IBS) 직접 연결:
   - 일일 실행: DailyRunWorker가 TradingEngine 진입점을 1회 트리거
   - 10초 타이머로 DB에서 positions/signals/snapshot 직접 조회
   - 실시간 폴링 없음 (EOD 배치 구조)
@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("appTitle")
         sidebar_layout.addWidget(title)
 
-        ver_label = QLabel("v2.6")
+        ver_label = QLabel("v2.7")
         ver_label.setStyleSheet(
             "color: #45475a; font-size: 10px; margin-top: -8px; padding: 0;"
         )
@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         # ── 전략 요약 ──
         sidebar_layout.addWidget(self._sidebar_section("전략"))
 
-        self._lbl_strategy_name = QLabel("TF v2.6")
+        self._lbl_strategy_name = QLabel("TF v2.7 + ETF")
         self._lbl_strategy_name.setObjectName("strategyName")
         sidebar_layout.addWidget(self._lbl_strategy_name)
 
@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("▶ 시작")
         self.btn_start.setObjectName("startBtn")
         self.btn_start.setCursor(Qt.PointingHandCursor)
-        self.btn_start.setToolTip("실시간 엔진 시작 (TradingEngine + v2.6 전략)")
+        self.btn_start.setToolTip("실시간 엔진 시작 (TradingEngine + v2.7 전략)")
         btn_live_row.addWidget(self.btn_start)
 
         self.btn_stop = QPushButton("■ 중지")
@@ -195,16 +195,54 @@ class MainWindow(QMainWindow):
         # ── 파라미터 요약 ──
         sidebar_layout.addWidget(self._sidebar_section("파라미터"))
 
-        self._lbl_params = QLabel(
-            "SL ATR×2.0\nTP1 ATR×2.0 (10%)\nTP2 ATR×4.0 (10%)\n"
-            "Trail ATR×4.0 (잔여 80%)\nHold 20일\nSizing: equity/4"
+        _sl = config.get("trend_following.stop_loss_atr", 2.0)
+        _tp1 = config.get("trend_following.take_profit_atr", 2.0)
+        _tp1r = int(float(config.get("trend_following.tp1_sell_ratio", 0.10)) * 100)
+        _tp2 = config.get("trend_following.tp2_atr", 4.0)
+        _tp2r = int(float(config.get("trend_following.tp2_sell_ratio", 0.10)) * 100)
+        _trail = config.get("trend_following.trailing_atr", 4.0)
+        _hold = int(config.get("trend_following.max_hold_days", 20))
+        _sizing = config.get("trading.sizing_mode", "equity")
+        _maxpos = int(config.get("trading.max_positions", 5))
+        _params_text = (
+            f"SL ATR×{_sl}\nTP1 ATR×{_tp1} ({_tp1r}%)\n"
+            f"TP2 ATR×{_tp2} ({_tp2r}%)\n"
+            f"Trail ATR×{_trail}\nHold {_hold}일\n"
+            f"Sizing: {_sizing}/{_maxpos}"
         )
+        self._lbl_params = QLabel(_params_text)
         self._lbl_params.setStyleSheet(
             "color: #a6adc8; font-size: 10px; padding: 0; "
             "line-height: 1.4;"
         )
         self._lbl_params.setWordWrap(True)
         sidebar_layout.addWidget(self._lbl_params)
+
+        # ── ETF IBS 상태 ──
+        sidebar_layout.addWidget(self._hline())
+        sidebar_layout.addWidget(self._sidebar_section("ETF IBS"))
+
+        self._lbl_etf_status = QLabel("ETF: 미보유")
+        self._lbl_etf_status.setObjectName("sidebarInfo")
+        self._lbl_etf_status.setStyleSheet(
+            "color: #6c7086; font-size: 11px; padding: 1px 0;"
+        )
+        self._lbl_etf_status.setWordWrap(True)
+        sidebar_layout.addWidget(self._lbl_etf_status)
+
+        self._lbl_idle_cash = QLabel("유휴 현금: -")
+        self._lbl_idle_cash.setStyleSheet(
+            "color: #45475a; font-size: 10px; padding: 0;"
+        )
+        sidebar_layout.addWidget(self._lbl_idle_cash)
+
+        # ── 헬스 인디케이터 ──
+        self._lbl_health = QLabel("")
+        self._lbl_health.setStyleSheet(
+            "color: #a6adc8; font-size: 10px; padding: 2px 0;"
+        )
+        self._lbl_health.setWordWrap(True)
+        sidebar_layout.addWidget(self._lbl_health)
 
         sidebar_layout.addStretch()
 
@@ -397,6 +435,8 @@ class MainWindow(QMainWindow):
         positions: list[dict] = []
         signals_list: list[dict] = []
         snapshot: dict | None = None
+        etf_position: dict | None = None
+        etf_closed: list[dict] = []
 
         try:
             with get_combined_db() as conn:
@@ -441,17 +481,37 @@ class MainWindow(QMainWindow):
                     snapshot = dict(row) if row else None
                 except Exception as e:
                     logger.debug(f"snapshot 조회 스킵: {e}")
+
+                # ETF 포지션 (open)
+                try:
+                    row = conn.execute(
+                        "SELECT * FROM trade.etf_positions WHERE status='open' LIMIT 1"
+                    ).fetchone()
+                    etf_position = dict(row) if row else None
+                except Exception as e:
+                    logger.debug(f"etf_positions 조회 스킵: {e}")
+
+                # ETF 청산 이력 (최근 20건)
+                try:
+                    rows = conn.execute(
+                        "SELECT * FROM trade.etf_positions "
+                        "WHERE status='closed' ORDER BY exit_date DESC LIMIT 20"
+                    ).fetchall()
+                    etf_closed = [dict(r) for r in rows]
+                except Exception as e:
+                    logger.debug(f"etf_positions closed 조회 스킵: {e}")
         except Exception as e:
             logger.warning(f"DB 연결 실패: {e}")
             return
 
-        self._update_dashboard(positions, signals_list, snapshot)
+        self._update_dashboard(positions, signals_list, snapshot, etf_closed)
         self._update_sidebar(positions, snapshot)
+        self._update_etf_sidebar(etf_position, positions)
         self._update_status_bar(snapshot)
-        self._update_tray_tooltip()
+        self._update_tray_tooltip(etf_position)
 
     def _update_dashboard(self, positions: list, signals_list: list,
-                          snapshot: dict | None):
+                          snapshot: dict | None, etf_closed: list | None = None):
         """DashboardTab 데이터 주입 — positions는 DataStore 스키마."""
         pos_dicts = []
         today = datetime.now().date()
@@ -499,7 +559,7 @@ class MainWindow(QMainWindow):
             })
         self.dashboard_tab.update_candidates(cand_dicts)
 
-        # 당일 EXIT 신호 → 체결 영역에 간단 표시
+        # 당일 EXIT 신호 → 체결 영역에 간단 표시 (ETF 청산 이력 포함)
         exit_signals = [s for s in signals_list if s.get('signal_type') == 'EXIT']
         trade_dicts = []
         for s in exit_signals[:20]:
@@ -513,6 +573,18 @@ class MainWindow(QMainWindow):
                 "pnl": 0,
                 "reason": s.get('reason', ''),
             })
+        for e in (etf_closed or [])[:10]:
+            trade_dicts.append({
+                "executed_at": e.get('exit_date', ''),
+                "code": e.get('code', '069500'),
+                "name": "KODEX 200 (ETF)",
+                "side": "sell",
+                "quantity": e.get('qty', 0),
+                "price": e.get('exit_price', 0),
+                "pnl": e.get('pnl', 0),
+                "reason": e.get('reason', 'ETF IBS'),
+            })
+        trade_dicts.sort(key=lambda x: x.get('executed_at', ''), reverse=True)
         self.dashboard_tab.update_trades(trade_dicts)
 
         # 상태 카드 (daily_pnl_pct/mdd는 비율 — dashboard_tab에서 ×100 표시)
@@ -542,11 +614,14 @@ class MainWindow(QMainWindow):
         if snapshot:
             gate = snapshot.get('gate_status') or 'UNKNOWN'
             breadth = snapshot.get('breadth') or 0.0
+            ma200_above = self._check_kospi_ma200()
             if gate == 'OPEN':
-                text = f"🟢 OPEN (breadth {breadth:.0%})"
+                ma_icon = "📈" if ma200_above else "📉"
+                text = f"🟢 OPEN ({breadth:.0%}/{ma_icon}MA200)"
                 color = "#a6e3a1"
             elif gate == 'CLOSED':
-                text = f"🔴 CLOSED (breadth {breadth:.0%})"
+                ma_icon = "📈" if ma200_above else "📉"
+                text = f"🔴 CLOSED ({breadth:.0%}/{ma_icon}MA200)"
                 color = "#f38ba8"
             else:
                 text = f"⚪ {gate}"
@@ -577,7 +652,7 @@ class MainWindow(QMainWindow):
 
     def _update_status_bar(self, snapshot: dict | None):
         mode = self.combo_mode.currentText().upper()
-        strategy = "TF v2.6"
+        strategy = "TF v2.7 + ETF"
         next_td = self._next_trading_date()
         if snapshot:
             gate = snapshot.get('gate_status') or 'UNKNOWN'
@@ -836,11 +911,70 @@ class MainWindow(QMainWindow):
     def _tray_quit(self):
         self._cleanup_and_quit()
 
-    def _update_tray_tooltip(self):
+    def _update_tray_tooltip(self, etf_position: dict | None = None):
         mode = self.combo_mode.currentText().upper()
         engine = "엔진 " + self._lbl_engine_status.text()
         pos = self._lbl_sidebar_pos.text()
-        self._tray.setToolTip(f"Swing Trader — {mode} | {engine} | {pos}")
+        if etf_position:
+            etf_info = f"ETF {etf_position.get('qty', 0)}주 보유"
+        else:
+            etf_info = "ETF 미보유"
+        self._tray.setToolTip(
+            f"Swing Trader — {mode} | {engine} | {pos} | {etf_info}"
+        )
+
+    def _check_kospi_ma200(self) -> bool:
+        """KOSPI 현재가가 MA200 위에 있는지 확인."""
+        try:
+            with get_data_db() as conn:
+                rows = conn.execute(
+                    "SELECT close FROM index_daily "
+                    "WHERE index_code='KOSPI' ORDER BY date DESC LIMIT 200"
+                ).fetchall()
+            if len(rows) < 200:
+                return True
+            closes = [r['close'] for r in rows]
+            current = closes[0]
+            ma200 = sum(closes) / len(closes)
+            return current > ma200
+        except Exception:
+            return True
+
+    def _update_etf_sidebar(self, etf_position: dict | None, positions: list):
+        """ETF 섹션 사이드바 업데이트."""
+        initial = int(config.get(
+            "trading.initial_capital",
+            config.get("backtest.initial_capital", 10_000_000),
+        ))
+        stock_invested = sum(
+            p.get('entry_price', 0) * p.get('quantity', 0)
+            for p in positions
+        )
+        etf_invested = (
+            (etf_position.get('entry_price', 0) * etf_position.get('qty', 0))
+            if etf_position else 0
+        )
+        idle_cash = max(0, initial - stock_invested - etf_invested)
+
+        if etf_position:
+            code = etf_position.get('code', '069500')
+            qty = etf_position.get('qty', 0)
+            entry_price = etf_position.get('entry_price', 0)
+            hold_days = etf_position.get('hold_days', 0)
+            self._lbl_etf_status.setText(
+                f"보유: {code} {qty}주\n"
+                f"@{entry_price:,} ({hold_days}일차)"
+            )
+            self._lbl_etf_status.setStyleSheet(
+                "color: #89b4fa; font-size: 11px; padding: 1px 0;"
+            )
+        else:
+            self._lbl_etf_status.setText("ETF: 미보유")
+            self._lbl_etf_status.setStyleSheet(
+                "color: #6c7086; font-size: 11px; padding: 1px 0;"
+            )
+
+        self._lbl_idle_cash.setText(f"유휴 현금: {idle_cash:,.0f}원")
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.DoubleClick:

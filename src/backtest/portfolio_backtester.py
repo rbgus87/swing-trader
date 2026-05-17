@@ -13,8 +13,11 @@ import numpy as np
 from loguru import logger
 
 from src.data_pipeline.db import get_connection
+from src.models import ExitReason
+from src.strategy.exit_evaluator import ExitContext, ExitParams, evaluate_exit
 from src.strategy.trend_following_v2 import StrategyParams, calculate_indicators
-from src.backtest.swing_backtester import CostModel
+from src.utils.cost_model import CostModel
+from src.utils.tick_size import adjust_price
 
 
 @dataclass
@@ -34,6 +37,12 @@ class Position:
     tp1_triggered: bool = False
     tp2_triggered: bool = False
     strategy: str = 'TF'       # 'TF' or 'MR'
+    entry_adx: float = 0.0     # Phase B-4: 진입 시 ADX
+    # Phase B-5: 분할 매수
+    scale_in_triggered: bool = False
+    scale_in_price: float = 0.0
+    original_alloc: float = 0.0
+    tranche_count: int = 1
 
 
 @dataclass
@@ -73,8 +82,8 @@ class PortfolioResult:
     monthly_returns: dict = field(default_factory=dict)
 
 
-MCAP_THRESHOLD = 3_000_000_000_000       # 시총 3조 (fix2 확정)
-TRADING_VALUE_THRESHOLD = 5_000_000_000  # 거래대금 50억 (fix2 확정)
+DEFAULT_MCAP_THRESHOLD = 3_000_000_000_000       # 시총 3조 기본값
+DEFAULT_TRADING_VALUE_THRESHOLD = 5_000_000_000  # 거래대금 50억 기본값
 EXCLUDED_TYPES = ('SPAC', 'REIT', 'FOREIGN', 'PREFERRED')
 UNIVERSE_REFRESH_DAYS = 60
 BREADTH_GATE_THRESHOLD = 0.4             # Universe 중 >MA200 비율 40% 이상 시 진입 허용
@@ -115,8 +124,16 @@ class RiskParams:
     enable_ticker_cooldown: bool = True
 
 
-def build_universe(date_str: str, conn) -> set:
+def build_universe(
+    date_str: str,
+    conn,
+    mcap_threshold: int | None = None,
+    trading_value_threshold: int | None = None,
+) -> set:
     """특정 일자 기준 Universe Pool 구성."""
+    mcap = mcap_threshold if mcap_threshold is not None else DEFAULT_MCAP_THRESHOLD
+    tv = trading_value_threshold if trading_value_threshold is not None else DEFAULT_TRADING_VALUE_THRESHOLD
+
     cursor = conn.execute("""
         SELECT m.ticker
         FROM market_cap_history m
@@ -131,7 +148,7 @@ def build_universe(date_str: str, conn) -> set:
                 AND start_date <= ?
                 AND (end_date IS NULL OR end_date > ?)
           )
-    """, (date_str, MCAP_THRESHOLD, *EXCLUDED_TYPES, date_str, date_str, date_str))
+    """, (date_str, mcap, *EXCLUDED_TYPES, date_str, date_str, date_str))
 
     mcap_tickers = {row['ticker'] for row in cursor.fetchall()}
     if not mcap_tickers:
@@ -145,7 +162,7 @@ def build_universe(date_str: str, conn) -> set:
           AND ticker IN ({placeholders})
         GROUP BY ticker
         HAVING n >= 5 AND avg_tv >= ?
-    """, (date_str, date_str, *mcap_tickers, TRADING_VALUE_THRESHOLD))
+    """, (date_str, date_str, *mcap_tickers, tv))
 
     return {row['ticker'] for row in cursor.fetchall()}
 
@@ -199,6 +216,38 @@ def load_kospi_ret_map(period: int) -> dict:
     return _load_index_ret_map('KOSPI', period)
 
 
+def _compute_ma200_above_series(
+    dates: list[str], closes: list[float]
+) -> dict[str, bool]:
+    """종가 시계열에서 200일선 초과 여부 맵 {date_str: bool} 계산.
+
+    200일 데이터 미만 구간은 True (데이터 부족 → 게이트 차단 안 함).
+    """
+    result: dict[str, bool] = {}
+    for i, d in enumerate(dates):
+        if i < 199:
+            result[d] = True
+        else:
+            ma200 = sum(closes[i - 199: i + 1]) / 200.0
+            result[d] = closes[i] > ma200
+    return result
+
+
+def _load_index_ma200_map(index_code: str = "KOSPI") -> dict[str, bool]:
+    """index_daily에서 지수 종가 MA200 초과 여부 맵 {date_str: bool} 로드."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT date, close FROM index_daily WHERE index_code = ? ORDER BY date",
+            (index_code,),
+        ).fetchall()
+    if not rows:
+        logger.warning(f"index_daily({index_code}) empty — MA200 gate disabled")
+        return {}
+    dates = [r['date'] for r in rows]
+    closes = [float(r['close']) for r in rows]
+    return _compute_ma200_above_series(dates, closes)
+
+
 def load_ticker_market_map() -> dict:
     """{ticker: market} 매핑 (KOSPI/KOSDAQ/UNKNOWN)."""
     with get_connection() as conn:
@@ -206,10 +255,25 @@ def load_ticker_market_map() -> dict:
     return {r['ticker']: r['market'] for r in rows}
 
 
-def load_backtest_data(params: StrategyParams = None) -> dict:
+def _load_ticker_industry() -> dict[str, str]:
+    """stocks 테이블에서 {ticker: industry} 매핑 로드."""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT ticker, industry FROM stocks").fetchall()
+    return {r['ticker']: (r['industry'] or 'UNKNOWN') for r in rows}
+
+
+def load_backtest_data(
+    params: StrategyParams = None,
+    mcap_threshold: int | None = None,
+    trading_value_threshold: int | None = None,
+) -> dict:
     """백테스트에 필요한 데이터(거래일/종목풀/지표/KOSPI) 1회 로드.
 
     반복 실험에서 재사용 목적. run_portfolio_backtest(preloaded_data=...)로 전달.
+
+    Args:
+        mcap_threshold: 시총 하한 (None → DEFAULT_MCAP_THRESHOLD=3조).
+        trading_value_threshold: 거래대금 하한 (None → DEFAULT_TRADING_VALUE_THRESHOLD=50억).
 
     Returns dict keys:
         trading_dates, initial_universe, all_possible,
@@ -217,6 +281,8 @@ def load_backtest_data(params: StrategyParams = None) -> dict:
     """
     if params is None:
         params = StrategyParams()
+    mcap = mcap_threshold if mcap_threshold is not None else DEFAULT_MCAP_THRESHOLD
+    tv = trading_value_threshold if trading_value_threshold is not None else DEFAULT_TRADING_VALUE_THRESHOLD
 
     logger.info("Loading trading dates...")
     with get_connection() as conn:
@@ -230,7 +296,7 @@ def load_backtest_data(params: StrategyParams = None) -> dict:
 
     logger.info("Building initial universe...")
     with get_connection() as conn:
-        initial_universe = build_universe(trading_dates[0], conn)
+        initial_universe = build_universe(trading_dates[0], conn, mcap, tv)
     logger.info(f"Initial universe: {len(initial_universe)} tickers")
 
     logger.info("Collecting candidate tickers (ever-eligible)...")
@@ -241,7 +307,7 @@ def load_backtest_data(params: StrategyParams = None) -> dict:
             JOIN stocks s ON m.ticker = s.ticker
             WHERE m.market_cap >= ?
               AND s.stock_type NOT IN (?, ?, ?, ?)
-        """, (MCAP_THRESHOLD, *EXCLUDED_TYPES))
+        """, (mcap, *EXCLUDED_TYPES))
         all_possible = {row['ticker'] for row in cursor.fetchall()}
     logger.info(f"Candidate tickers: {len(all_possible)}")
 
@@ -290,6 +356,9 @@ def precompute_daily_signals(
     kospi_ret_map: dict = None,
     kosdaq_ret_map: dict = None,
     ticker_market: dict = None,
+    weights=None,  # RankingWeights | None
+    mcap_threshold: int | None = None,
+    trading_value_threshold: int | None = None,
 ) -> dict:
     """v2.4 상태 기반 추세추종 진입 후보 사전 계산.
 
@@ -316,7 +385,11 @@ def precompute_daily_signals(
     if params is None:
         params = StrategyParams()
 
+    # trading_value_threshold 오버라이드 — None이면 params.min_trading_value 사용
+    eff_tv = trading_value_threshold if trading_value_threshold is not None else int(params.min_trading_value)
+
     market_aware = kosdaq_ret_map is not None and ticker_market is not None
+    ticker_industry = _load_ticker_industry()
 
     breadth_by_date = {}
     candidates_by_date = {}
@@ -330,7 +403,7 @@ def precompute_daily_signals(
         ts = pd.Timestamp(date_str)
         if day_idx - last_refresh >= UNIVERSE_REFRESH_DAYS:
             with get_connection() as conn:
-                universe = build_universe(date_str, conn)
+                universe = build_universe(date_str, conn, mcap_threshold, trading_value_threshold)
             last_refresh = day_idx
             refresh_count += 1
 
@@ -386,7 +459,7 @@ def precompute_daily_signals(
                 continue
             if day['adx'] < params.adx_threshold:
                 continue
-            if day['avg_trading_value_20'] < params.min_trading_value:
+            if day['avg_trading_value_20'] < eff_tv:
                 continue
             atr_ratio = day['atr'] / day['close']
             if not (params.atr_price_min <= atr_ratio <= params.atr_price_max):
@@ -407,15 +480,30 @@ def precompute_daily_signals(
                 if (day['stock_ret_n'] - float(bench_ret)) < params.relative_strength_threshold:
                     continue
 
+            # rs: bench_ret이 None이면 0
+            rs_val = (
+                float(day['stock_ret_n']) - float(bench_ret)
+                if bench_ret is not None and not pd.isna(bench_ret)
+                else 0.0
+            )
             cands.append({
                 'ticker': ticker,
-                'score': float(day['adx']),
+                'code': ticker,  # compute_composite_score 호환
+                'score': float(day['adx']),  # 하위 호환 유지
                 'close': float(day['close']),
                 'atr': float(day['atr']),
                 'atr_ratio': float(atr_ratio),
                 'ma60_dist': float(day['ma60_dist']),
+                'adx': float(day['adx']),
+                'rs': rs_val,
+                'stock_ret_n': float(day['stock_ret_n']),
+                'avg_trading_value_20': float(day['avg_trading_value_20']),
+                'industry': ticker_industry.get(ticker, 'UNKNOWN'),
             })
-        cands.sort(key=lambda x: x['score'], reverse=True)
+
+        # 복합 스코어 정렬 (ADX 단일 → RS+모멘텀+유동성+ADX 복합)
+        from src.strategy.ranking import compute_composite_score
+        compute_composite_score(cands, weights)
         candidates_by_date[date_str] = cands
 
     return {
@@ -423,6 +511,8 @@ def precompute_daily_signals(
         'candidates': candidates_by_date,
         'universe_at': universe_by_date,
         'universe_refresh_count': refresh_count,
+        'index_above_ma200': _load_index_ma200_map("KOSPI"),
+        'ticker_industry': ticker_industry,
     }
 
 
@@ -439,6 +529,11 @@ def run_portfolio_backtest(
     alloc_tracker: list | None = None,
     equity_alloc_cap: float | None = None,
     breadth_gate_threshold: float | None = None,
+    regime_gate_enabled: bool = True,
+    sector_constraint=None,  # SectorConstraint | None
+    dynamic_hold=None,       # DynamicHoldParams | None
+    scaling=None,            # ScalingParams | None
+    slippage_params=None,    # SlippageParams | None — None → 동적 슬리피지 기본값
 ) -> PortfolioResult:
     """포트폴리오 레벨 백테스트 실행.
 
@@ -463,12 +558,18 @@ def run_portfolio_backtest(
     ticker_data = preloaded_data['ticker_data']
     ticker_date_idx = preloaded_data['ticker_date_idx']
     ticker_names = preloaded_data['ticker_names']
+    ticker_market_map: dict[str, str] = preloaded_data.get('ticker_market', {})
 
     cash = initial_capital
     positions = []
     trades = []
     equity_curve = []
-    total_cost_pct = cost.total_cost_pct()
+    total_cost_pct = cost.total_cost_pct()  # 고정값 — 폴백 및 precomputed 미사용 경로
+
+    # Phase B-6: 동적 슬리피지
+    from src.utils.slippage_model import SlippageParams
+    if slippage_params is None:
+        slippage_params = SlippageParams()  # enabled=True, 기본 파라미터
 
     last_universe_refresh = 0
     universe_refresh_count = 1
@@ -493,6 +594,33 @@ def run_portfolio_backtest(
     dd_crisis_days = 0
     daily_loss_trigger_count = 0
     ticker_cooldown_block_count = 0
+
+    # 섹터 제약 초기화
+    from src.strategy.sector_constraint import SectorConstraint, filter_by_sector
+    if sector_constraint is None:
+        sector_constraint = SectorConstraint()
+    ticker_industry: dict[str, str] = (
+        precomputed.get('ticker_industry', {}) if precomputed is not None else {}
+    )
+
+    # 분할 매수 초기화
+    from src.strategy.scaling import (
+        ScalingParams, compute_first_entry_qty, compute_scale_in_trigger,
+        compute_scale_in_qty, compute_adjusted_stop,
+    )
+    if scaling is None:
+        scaling = ScalingParams(enabled=False)
+
+    # ExitParams: risk/params 불변이므로 루프 전체에서 재사용
+    exit_params = ExitParams(
+        max_hold_days=params.max_hold_days,
+        trailing_atr_mult=params.trailing_atr,
+        early_exit_enabled=risk.early_exit_enabled if risk is not None else False,
+        early_exit_hold_days=risk.early_exit_hold_days if risk is not None else 10,
+        early_exit_return_min=risk.early_exit_return_min if risk is not None else -0.02,
+        trend_exit_enabled=True,
+        dynamic_hold=dynamic_hold,
+    )
 
     for day_idx, date_str in enumerate(trading_dates):
         ts = pd.Timestamp(date_str)
@@ -530,26 +658,94 @@ def run_portfolio_backtest(
             pos.hold_days += 1
             pos.highest_since_entry = max(pos.highest_since_entry, day['high'])
 
-            trailing_stop = pos.highest_since_entry - pos.atr_at_entry * params.trailing_atr
+            # 이전 봉 MA (추세이탈 판단용)
+            prev_ma5 = prev_ma20 = None
+            if pos.hold_days > 1 and curr_i is not None and curr_i > 0:
+                prev_row = ticker_data[pos.ticker].iloc[curr_i - 1]
+                prev_ma5_raw = prev_row.get('ma5')
+                prev_ma20_raw = prev_row.get('ma20')
+                if pd.notna(prev_ma5_raw) and pd.notna(prev_ma20_raw):
+                    prev_ma5 = float(prev_ma5_raw)
+                    prev_ma20 = float(prev_ma20_raw)
 
-            exit_price = None
-            exit_reason = None
+            curr_ma5_raw = day.get('ma5')
+            curr_ma20_raw = day.get('ma20')
+            curr_ma5 = float(curr_ma5_raw) if pd.notna(curr_ma5_raw) else None
+            curr_ma20 = float(curr_ma20_raw) if pd.notna(curr_ma20_raw) else None
 
-            # 1. 손절
-            if day['low'] <= pos.stop_price:
-                exit_price = pos.stop_price
-                exit_reason = 'STOP_LOSS'
+            tp2_price = (
+                adjust_price(pos.entry_price + pos.atr_at_entry * params.tp2_atr, "up")
+                if params.tp2_atr > 0 else 0
+            )
 
-            # 2. TP1 (take_profit_atr > 0 이고 아직 미발동이면)
-            elif (params.take_profit_atr > 0
-                  and not pos.tp1_triggered
-                  and day['high'] >= pos.tp1_price):
+            # Phase B-5: 2차 진입 체크 (청산 전에 먼저 처리)
+            if (
+                scaling.enabled
+                and not pos.scale_in_triggered
+                and pos.scale_in_price > 0
+                and float(day['high']) >= pos.scale_in_price
+                and pos.tranche_count < scaling.max_tranches
+            ):
+                scale_qty = compute_scale_in_qty(
+                    int(pos.original_alloc), int(pos.scale_in_price), scaling
+                )
+                scale_cost = scale_qty * pos.scale_in_price
+                if scale_qty > 0 and cash >= scale_cost:
+                    cash -= scale_cost
+                    old_qty = pos.shares
+                    new_qty = old_qty + scale_qty
+                    avg_price = int(
+                        (pos.entry_price * old_qty + pos.scale_in_price * scale_qty)
+                        // new_qty
+                    )
+                    if scaling.adjust_stop_on_scale:
+                        new_stop = compute_adjusted_stop(
+                            int(pos.entry_price), old_qty,
+                            int(pos.scale_in_price), scale_qty,
+                            pos.atr_at_entry, params.stop_loss_atr,
+                        )
+                        pos.stop_price = float(new_stop)
+                    pos.shares = new_qty
+                    pos.entry_price = float(avg_price)
+                    pos.scale_in_triggered = True
+                    pos.tranche_count += 1
+
+            ctx = ExitContext(
+                entry_price=pos.entry_price,
+                day_low=float(day['low']),
+                day_high=float(day['high']),
+                stop_price=pos.stop_price,
+                initial_stop_price=pos.stop_price,  # 백테스트: stop_price = 초기 SL (불변)
+                target_price=pos.tp1_price,
+                tp2_price=tp2_price,
+                high_since_entry=pos.highest_since_entry,
+                atr_at_entry=pos.atr_at_entry,
+                partial_sold=pos.tp1_triggered,
+                partial_sold_2=pos.tp2_triggered,
+                hold_days=pos.hold_days,
+                current_return=float(day['close']) / pos.entry_price - 1,
+                prev_ma5=prev_ma5,
+                prev_ma20=prev_ma20,
+                curr_ma5=curr_ma5,
+                curr_ma20=curr_ma20,
+                current_adx=float(day.get('adx', 25.0) or 25.0),
+                entry_adx=pos.entry_adx,
+            )
+
+            reason = evaluate_exit(ctx, exit_params)
+
+            if reason == ExitReason.PARTIAL_TARGET:
                 partial_shares = int(pos.shares * params.tp1_sell_ratio)
                 if partial_shares > 0:
-                    pnl_pct = (pos.tp1_price / pos.entry_price - 1) - total_cost_pct
+                    _avg_tv = float(day.get('avg_trading_value_20', 1e10) or 1e10)
+                    _market = ticker_market_map.get(pos.ticker, 'KOSPI')
+                    trade_cost_pct = cost.total_cost_pct_dynamic(
+                        _market, partial_shares * pos.tp1_price, _avg_tv, slippage_params
+                    )
+                    pnl_pct = (pos.tp1_price / pos.entry_price - 1) - trade_cost_pct
                     pnl_amount = (partial_shares * pos.entry_price
                                   * (pos.tp1_price / pos.entry_price - 1)
-                                  - partial_shares * pos.entry_price * total_cost_pct)
+                                  - partial_shares * pos.entry_price * trade_cost_pct)
                     trades.append(PortfolioTradeResult(
                         ticker=pos.ticker,
                         name=ticker_names.get(pos.ticker, pos.ticker),
@@ -571,18 +767,19 @@ def run_portfolio_backtest(
                     today_realized_pnl += pnl_amount
                 continue
 
-            # 2.5 TP2 (실험 13: TP1 후 추가 익절. tp2_atr=0이면 비활성)
-            elif (params.tp2_atr > 0 and params.tp2_sell_ratio > 0
-                  and pos.tp1_triggered and not pos.tp2_triggered
-                  and day['high'] >= pos.entry_price + pos.atr_at_entry * params.tp2_atr):
-                tp2_price = pos.entry_price + pos.atr_at_entry * params.tp2_atr
+            if reason == ExitReason.PARTIAL_TARGET_2:
                 partial_shares = int(pos.initial_shares * params.tp2_sell_ratio)
                 partial_shares = min(partial_shares, pos.shares)
                 if partial_shares > 0:
-                    pnl_pct = (tp2_price / pos.entry_price - 1) - total_cost_pct
+                    _avg_tv = float(day.get('avg_trading_value_20', 1e10) or 1e10)
+                    _market = ticker_market_map.get(pos.ticker, 'KOSPI')
+                    trade_cost_pct = cost.total_cost_pct_dynamic(
+                        _market, partial_shares * tp2_price, _avg_tv, slippage_params
+                    )
+                    pnl_pct = (tp2_price / pos.entry_price - 1) - trade_cost_pct
                     pnl_amount = (partial_shares * pos.entry_price
                                   * (tp2_price / pos.entry_price - 1)
-                                  - partial_shares * pos.entry_price * total_cost_pct)
+                                  - partial_shares * pos.entry_price * trade_cost_pct)
                     trades.append(PortfolioTradeResult(
                         ticker=pos.ticker,
                         name=ticker_names.get(pos.ticker, pos.ticker),
@@ -604,59 +801,61 @@ def run_portfolio_backtest(
                     today_realized_pnl += pnl_amount
                 continue
 
-            # 3. 트레일링
-            elif day['low'] <= trailing_stop:
-                exit_price = trailing_stop
-                exit_reason = 'TRAILING'
+            if reason is None:
+                continue
 
-            # 4. 추세 이탈
-            elif pos.hold_days > 1 and curr_i is not None and curr_i > 0:
-                prev = ticker_data[pos.ticker].iloc[curr_i - 1]
-                if (pd.notna(prev.get('ma5')) and pd.notna(prev.get('ma20')) and
-                    pd.notna(day.get('ma5')) and pd.notna(day.get('ma20'))):
-                    if prev['ma5'] >= prev['ma20'] and day['ma5'] < day['ma20']:
-                        exit_price = day['close']
-                        exit_reason = 'TREND_EXIT'
+            # 전량 청산 — 청산가 결정
+            if reason == ExitReason.STOP_LOSS:
+                exit_price = pos.stop_price
+                exit_reason_str = 'STOP_LOSS'
+            elif reason == ExitReason.TRAILING_STOP:
+                exit_price = adjust_price(
+                    pos.highest_since_entry - pos.atr_at_entry * params.trailing_atr, "up"
+                )
+                exit_reason_str = 'TRAILING'
+            elif reason == ExitReason.TREND_EXIT:
+                exit_price = float(day['close'])
+                exit_reason_str = 'TREND_EXIT'
+            elif reason == ExitReason.EARLY_TIME_EXIT:
+                exit_price = float(day['close'])
+                exit_reason_str = 'EARLY_TIME_EXIT'
+            elif reason == ExitReason.MAX_HOLD:
+                exit_price = float(day['close'])
+                exit_reason_str = 'TIME_EXIT'
+            else:
+                exit_price = float(day['close'])
+                exit_reason_str = reason.value
 
-            # 5a. 조기 시간손절 (dead money)
-            if (exit_price is None and risk is not None and risk.early_exit_enabled
-                    and pos.hold_days >= risk.early_exit_hold_days):
-                current_return = (day['close'] / pos.entry_price) - 1
-                if current_return < risk.early_exit_return_min:
-                    exit_price = day['close']
-                    exit_reason = 'EARLY_TIME_EXIT'
+            _avg_tv = float(day.get('avg_trading_value_20', 1e10) or 1e10)
+            _market = ticker_market_map.get(pos.ticker, 'KOSPI')
+            trade_cost_pct = cost.total_cost_pct_dynamic(
+                _market, pos.shares * exit_price, _avg_tv, slippage_params
+            )
+            pnl_pct = (exit_price / pos.entry_price - 1) - trade_cost_pct
+            pnl_amount = (pos.shares * pos.entry_price * (exit_price / pos.entry_price - 1)
+                          - pos.shares * pos.entry_price * trade_cost_pct)
+            trades.append(PortfolioTradeResult(
+                ticker=pos.ticker,
+                name=ticker_names.get(pos.ticker, pos.ticker),
+                entry_date=pos.entry_date,
+                entry_price=pos.entry_price,
+                exit_date=date_str,
+                exit_price=exit_price,
+                exit_reason=exit_reason_str,
+                hold_days=pos.hold_days,
+                shares=pos.shares,
+                pnl_amount=pnl_amount,
+                pnl_pct=pnl_pct,
+                is_partial=pos.tp1_triggered,
+                initial_shares=pos.initial_shares,
+            ))
+            cash += pos.shares * exit_price
+            today_realized_pnl += pnl_amount
+            closed_positions.append(pos)
 
-            # 5b. 시간 청산
-            if exit_price is None and pos.hold_days >= params.max_hold_days:
-                exit_price = day['close']
-                exit_reason = 'TIME_EXIT'
-
-            if exit_price is not None:
-                pnl_pct = (exit_price / pos.entry_price - 1) - total_cost_pct
-                pnl_amount = (pos.shares * pos.entry_price * (exit_price / pos.entry_price - 1)
-                              - pos.shares * pos.entry_price * total_cost_pct)
-                trades.append(PortfolioTradeResult(
-                    ticker=pos.ticker,
-                    name=ticker_names.get(pos.ticker, pos.ticker),
-                    entry_date=pos.entry_date,
-                    entry_price=pos.entry_price,
-                    exit_date=date_str,
-                    exit_price=exit_price,
-                    exit_reason=exit_reason,
-                    hold_days=pos.hold_days,
-                    shares=pos.shares,
-                    pnl_amount=pnl_amount,
-                    pnl_pct=pnl_pct,
-                    is_partial=pos.tp1_triggered,
-                    initial_shares=pos.initial_shares,
-                ))
-                cash += pos.shares * exit_price
-                today_realized_pnl += pnl_amount
-                closed_positions.append(pos)
-
-                # 재진입 쿨다운
-                if risk is not None and risk.enable_ticker_cooldown and exit_reason == 'STOP_LOSS':
-                    ticker_cooldown[pos.ticker] = day_idx + risk.ticker_sl_cooldown
+            # 재진입 쿨다운
+            if risk is not None and risk.enable_ticker_cooldown and reason == ExitReason.STOP_LOSS:
+                ticker_cooldown[pos.ticker] = day_idx + risk.ticker_sl_cooldown
 
         for pos in closed_positions:
             positions.remove(pos)
@@ -681,7 +880,11 @@ def run_portfolio_backtest(
                     above += 1
             breadth = above / total_b if total_b > 0 else 0.5
         gate_th = breadth_gate_threshold if breadth_gate_threshold is not None else BREADTH_GATE_THRESHOLD
-        gate_open = breadth >= gate_th
+        breadth_ok = breadth >= gate_th
+        regime_ok = True
+        if regime_gate_enabled and precomputed is not None:
+            regime_ok = precomputed.get('index_above_ma200', {}).get(date_str, True)
+        gate_open = breadth_ok and regime_ok
         if gate_open:
             gate_open_days += 1
         else:
@@ -718,6 +921,15 @@ def run_portfolio_backtest(
                         ticker_cooldown_block_count += 1
                         continue
                 filtered_cands.append(c)
+
+            # 섹터 분산 제약
+            held_with_industry = [
+                {'code': p.ticker, 'industry': ticker_industry.get(p.ticker, 'UNKNOWN')}
+                for p in positions
+            ]
+            filtered_cands = filter_by_sector(
+                filtered_cands, held_with_industry, sector_constraint
+            )
 
             for cand in filtered_cands[:open_slots]:
                 next_day_idx = day_idx + 1
@@ -781,7 +993,8 @@ def run_portfolio_backtest(
 
                     if alloc < min_position_amount:
                         continue
-                    shares = int(alloc / entry_price)
+                    # Phase B-5: 분할 매수 — 1차 진입 수량만 계산
+                    shares = compute_first_entry_qty(int(alloc), int(entry_price), scaling)
                     if shares <= 0:
                         continue
                     actual_cost = shares * entry_price
@@ -800,6 +1013,14 @@ def run_portfolio_backtest(
 
                 cash -= actual_cost
 
+                # Phase B-5: 2차 진입 트리거 가격
+                if scaling.enabled and cand['atr'] > 0:
+                    _scale_price = float(compute_scale_in_trigger(
+                        int(entry_price), float(cand['atr']), scaling
+                    ))
+                else:
+                    _scale_price = 0.0
+
                 positions.append(Position(
                     ticker=cand['ticker'],
                     name=ticker_names.get(cand['ticker'], cand['ticker']),
@@ -809,9 +1030,13 @@ def run_portfolio_backtest(
                     initial_shares=shares,
                     allocated_capital=actual_cost,
                     atr_at_entry=cand['atr'],
-                    stop_price=entry_price - cand['atr'] * params.stop_loss_atr,
-                    tp1_price=entry_price + cand['atr'] * params.take_profit_atr,
+                    stop_price=adjust_price(entry_price - cand['atr'] * params.stop_loss_atr, "down"),
+                    tp1_price=adjust_price(entry_price + cand['atr'] * params.take_profit_atr, "up"),
                     highest_since_entry=entry_price,
+                    entry_adx=float(cand.get('adx', 25.0) or 25.0),
+                    scale_in_price=_scale_price,
+                    original_alloc=float(alloc),
+                    tranche_count=1,
                 ))
 
         # ── 3. equity 기록 ──
@@ -873,10 +1098,16 @@ def run_portfolio_backtest(
         idx_map = ticker_date_idx.get(pos.ticker, {})
         li = idx_map.get(last_ts)
         if li is not None:
-            exit_price = ticker_data[pos.ticker].iloc[li]['close']
-            pnl_pct = (exit_price / pos.entry_price - 1) - total_cost_pct
+            last_row = ticker_data[pos.ticker].iloc[li]
+            exit_price = last_row['close']
+            _avg_tv = float(last_row.get('avg_trading_value_20', 1e10) or 1e10)
+            _market = ticker_market_map.get(pos.ticker, 'KOSPI')
+            trade_cost_pct = cost.total_cost_pct_dynamic(
+                _market, pos.shares * exit_price, _avg_tv, slippage_params
+            )
+            pnl_pct = (exit_price / pos.entry_price - 1) - trade_cost_pct
             pnl_amount = (pos.shares * pos.entry_price * (exit_price / pos.entry_price - 1)
-                          - pos.shares * pos.entry_price * total_cost_pct)
+                          - pos.shares * pos.entry_price * trade_cost_pct)
             trades.append(PortfolioTradeResult(
                 ticker=pos.ticker,
                 name=ticker_names.get(pos.ticker, pos.ticker),

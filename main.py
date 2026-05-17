@@ -44,7 +44,10 @@ async def main():
 
     from src.utils.logger import setup_logger
 
-    setup_logger(log_level=config.get_env("LOG_LEVEL", "INFO"))
+    setup_logger(
+        log_level=config.get_env("LOG_LEVEL", "INFO"),
+        json_enabled=config.get("logging.json_enabled", True),
+    )
 
     # live 모드 안전 체크
     if mode == "live":

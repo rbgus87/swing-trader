@@ -142,3 +142,26 @@ def get_next_trading_day(target_date: date | None = None) -> date:
     while not is_trading_day(next_day):
         next_day += timedelta(days=1)
     return next_day
+
+
+def count_trading_days(start_date: date, end_date: date) -> int:
+    """두 날짜 사이 거래일 수 (start 제외, end 포함).
+
+    최대 30일 범위(hold_days 계산 용도) 내에서 사용 가정.
+
+    Args:
+        start_date: 기준 시작일 (포함 안 됨 — 진입일).
+        end_date:   기준 종료일 (포함됨 — 오늘).
+
+    Returns:
+        거래일 수. start >= end이면 0.
+    """
+    if start_date >= end_date:
+        return 0
+    count = 0
+    current = start_date + timedelta(days=1)
+    while current <= end_date:
+        if is_trading_day(current):
+            count += 1
+        current += timedelta(days=1)
+    return count

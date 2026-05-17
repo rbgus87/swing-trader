@@ -9,6 +9,7 @@ CREATE TABLE stocks (
     name TEXT NOT NULL,
     market TEXT NOT NULL,                -- 'KOSPI' / 'KOSDAQ'
     sector TEXT,                         -- 산업 분류 (별도 Phase에서 채움)
+    industry TEXT,                       -- 업종 (KOSPI: IDX_IND_NM, KOSDAQ: KOSDAQ_기타)
     stock_type TEXT NOT NULL,            -- 'COMMON' / 'PREFERRED' / 'SPAC' / 'REIT' / 'FOREIGN' / 'ETF' / 'ETN' / 'OTHER'
     parent_ticker TEXT,
     listed_date DATE,
