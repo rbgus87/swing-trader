@@ -111,7 +111,7 @@ class SchedulerJobsMixin:
         """장 마감 후 정리 (15:35).
 
         1. (live) 미체결 주문 전량 취소 + selling 포지션 복원
-        2. v2.6 추세 이탈 체크 (MA5 < MA20) — 일봉 확정 후
+        2. v2.7 추세 이탈 체크 (MA5 < MA20) — 일봉 확정 후
         """
         logger.info("장마감 정리 시작")
 
@@ -140,7 +140,7 @@ class SchedulerJobsMixin:
                 self._invalidate_positions_cache()
                 self._sell_retry_counts.clear()
 
-        # 3. v2.6 추세 이탈 체크 (MA5 < MA20 EOD)
+        # 3. v2.7 추세 이탈 체크 (MA5 < MA20 EOD)
         try:
             await self._v23_check_trend_exit()
         except Exception as e:

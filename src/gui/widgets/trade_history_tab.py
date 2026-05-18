@@ -29,7 +29,7 @@ _BASE = "#1e1e2e"
 _MANTLE = "#181825"
 _CRUST = "#11111b"
 
-# 사유 한글 매핑 (v2.6 + legacy)
+# 사유 한글 매핑 (v2.7 + legacy)
 _EXIT_REASON_KR = {
     "STOP_LOSS": "손절",
     "TAKE_PROFIT_1": "TP1 분할(10%)",
@@ -49,8 +49,8 @@ _EXIT_REASON_KR = {
     "signal": "매수신호",
 }
 
-# 전략 한글 매핑 (v2.6)
-_STRATEGY_KR = {"TF": "추세추종 v2.6", "TF_v2.3": "추세추종 v2.6"}
+# 전략 한글 매핑 (v2.7)
+_STRATEGY_KR = {"TF": "추세추종 v2.7", "TF_v2.3": "추세추종 v2.7"}
 
 
 class TradeHistoryTab(QWidget):

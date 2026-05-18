@@ -19,7 +19,7 @@ class ScreenerMixin:
     """스크리닝 관련 메서드."""
 
     async def _pre_market_screening(self, _retry: int = 0):
-        """장전 스크리닝 — v2.6 상태 기반 추세추종 후보 생성 + ETF IBS 판단 (08:30)."""
+        """장전 스크리닝 — v2.7 상태 기반 추세추종 후보 생성 + ETF IBS 판단 (08:30)."""
         max_retries = 3
 
         # 토큰 갱신
@@ -31,7 +31,7 @@ class ScreenerMixin:
         try:
             await asyncio.to_thread(self._v23_screen_universe)
         except Exception as e:
-            logger.error(f"v2.6 스크리닝 실패 (시도 {_retry + 1}/{max_retries + 1}): {e}")
+            logger.error(f"v2.7 스크리닝 실패 (시도 {_retry + 1}/{max_retries + 1}): {e}")
             if _retry < max_retries:
                 delay = 60 * (_retry + 1)
                 logger.info(f"스크리닝 재시도 예약: {delay}초 후")
@@ -164,7 +164,7 @@ class ScreenerMixin:
                     mock_tick = Tick(
                         code=code, price=fill_price, volume=0, timestamp=datetime.now()
                     )
-                    await self._record_buy(mock_tick, qty, "TF_v2.6_pre")
+                    await self._record_buy(mock_tick, qty, "TF_v2.7_pre")
                     self._v23_entry_cache.pop(code, None)
                     if code in self._candidates:
                         try:
@@ -184,7 +184,7 @@ class ScreenerMixin:
             logger.info("동시호가 제출: ETF 주문 없음 — 스킵")
 
     def _v23_screen_universe(self):
-        """v2.6 진입 조건으로 Universe를 스캔 → self._candidates + self._v23_entry_cache 갱신."""
+        """v2.7 진입 조건으로 Universe를 스캔 → self._candidates + self._v23_entry_cache 갱신."""
         import pandas as pd
         from datetime import timedelta
 
@@ -258,7 +258,7 @@ class ScreenerMixin:
             (r['ticker'], r['name'], r['market'], r['industry'])
             for r in universe_row
         ]
-        logger.info(f"v2.6 Universe: {len(universe)}종목")
+        logger.info(f"v2.7 Universe: {len(universe)}종목")
 
         # 4. 각 종목 일봉 로드 + 조건 체크
         candidates = {}
@@ -358,7 +358,7 @@ class ScreenerMixin:
                 "candidates_count": len(candidates),
                 "top_candidates": [c["code"] for c in scored[:5]],
             },
-        ).info("v2.6 후보 확정: {}종목 (breadth={:.0%})", len(candidates), breadth)
+        ).info("v2.7 후보 확정: {}종목 (breadth={:.0%})", len(candidates), breadth)
 
         # 텔레그램 알림
         try:
@@ -382,7 +382,7 @@ class ScreenerMixin:
                 ma200_tag = "OK" if self._market_regime.is_bullish else "FAIL"
                 regime_label = f" / MA200 {ma200_tag}"
             self._telegram.send(
-                f"📋 v2.6 후보 {n_cands}종목\n"
+                f"📋 v2.7 후보 {n_cands}종목\n"
                 f"시장: {gate_mark} (breadth {breadth:.0%}{regime_label})\n\n"
                 f"{sample_text}{more}"
             )
@@ -538,12 +538,12 @@ class ScreenerMixin:
             logger.error(f"config.yaml 업데이트 실패: {e}")
 
     async def _evening_watchlist_screening(self):
-        """장마감 후 HTS 조건검색 — v2.6 모드에서는 불필요하여 스킵.
+        """장마감 후 HTS 조건검색 — v2.7 모드에서는 불필요하여 스킵.
 
-        v2.6은 장전 _v23_screen_universe()로 Universe 기반 후보를 동적 생성하므로
+        v2.7은 장전 _v23_screen_universe()로 Universe 기반 후보를 동적 생성하므로
         전날 저녁 조건검색 결과를 DB에 적재할 필요 없음.
         """
         logger.info(
-            "v2.6 모드 — 저녁 HTS 조건검색 스킵 (장전 스크리닝으로 대체)"
+            "v2.7 모드 — 저녁 HTS 조건검색 스킵 (장전 스크리닝으로 대체)"
         )
         return

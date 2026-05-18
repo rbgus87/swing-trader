@@ -149,7 +149,7 @@ class ExitHandlerMixin:
         )
 
     def _check_strategy_exit(self, pos: Position, current_price: int) -> ExitReason | None:
-        """v2.6: 전략별 분기 제거 — _evaluate_exit에 통합. 호환성 위해 no-op."""
+        """v2.7: 전략별 분기 제거 — _evaluate_exit에 통합. 호환성 위해 no-op."""
         return None
 
     async def _execute_sell(self, position: Position, price: int, reason: ExitReason):
@@ -348,9 +348,9 @@ class ExitHandlerMixin:
                 logger.warning(f"추세 체크 실패 ({code}): {e}")
 
         if not to_close:
-            logger.info("v2.6 추세 이탈 청산 대상 없음")
+            logger.info("v2.7 추세 이탈 청산 대상 없음")
             return
 
-        logger.info(f"v2.6 추세 이탈 청산: {len(to_close)}건")
+        logger.info(f"v2.7 추세 이탈 청산: {len(to_close)}건")
         for pos, last_close in to_close:
             await self._execute_sell(pos, last_close, ExitReason.TREND_EXIT)

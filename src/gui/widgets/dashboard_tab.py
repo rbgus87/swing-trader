@@ -357,7 +357,7 @@ class DashboardTab(QWidget):
             else:
                 pnl_pct = 0.0
 
-            strategy_kr = {"TF": "추세추종 v2.6", "TF_v2.3": "추세추종 v2.6"}
+            strategy_kr = {"TF": "추세추종 v2.7", "TF_v2.3": "추세추종 v2.7"}
             entry_strat = pos.get("entry_strategy", "")
             strat_display = strategy_kr.get(entry_strat, entry_strat)
 
@@ -374,7 +374,7 @@ class DashboardTab(QWidget):
             else:
                 tp1_display = "-"
 
-            # TP2 표시 (v2.6)
+            # TP2 표시 (v2.7)
             tp2_price = float(pos.get("tp2_price", 0) or 0)
             tp2_triggered = bool(pos.get("tp2_triggered", 0))
             if tp2_price > 0:
@@ -437,7 +437,7 @@ class DashboardTab(QWidget):
         # 카운트 라벨
         self._lbl_pos_count.setText(f"{len(positions)}종목")
 
-    # 사유 한글 매핑 (v2.6 + legacy)
+    # 사유 한글 매핑 (v2.7 + legacy)
     _EXIT_REASON_KR = {
         # 백테스터 (대문자)
         "STOP_LOSS": "손절",

@@ -15,7 +15,7 @@ class EntryHandlerMixin:
     """진입 관련 메서드."""
 
     async def _check_entry_conditions(self, tick: Tick):
-        """v2.6 진입 — 스크리닝에서 확정된 후보만 시가 매수."""
+        """v2.7 진입 — 스크리닝에서 확정된 후보만 시가 매수."""
         name = self._poll_stock_names.get(tick.code, tick.code)
 
         cache = self._v23_entry_cache.get(tick.code)
@@ -85,7 +85,7 @@ class EntryHandlerMixin:
                 tick.code, qty, order_price, ORDER_BUY, hoga
             )
             if result.success:
-                await self._record_buy(tick, qty, "TF_v2.6", original_alloc=alloc)
+                await self._record_buy(tick, qty, "TF_v2.7", original_alloc=alloc)
         elif self.mode == "paper":
             from src.engine.paper_fill import simulate_fill_price
             avg_tv = float(cache.get('avg_trading_value_20', 1e10)) if cache else 1e10
@@ -104,7 +104,7 @@ class EntryHandlerMixin:
                 volume=tick.volume,
                 timestamp=tick.timestamp,
             )
-            await self._record_buy(fill_tick, qty, "TF_v2.6", original_alloc=alloc)
+            await self._record_buy(fill_tick, qty, "TF_v2.7", original_alloc=alloc)
             if fill_price != tick.price:
                 logger.bind(
                     event="PAPER_BUY",
@@ -136,7 +136,7 @@ class EntryHandlerMixin:
         strategy_name: str = "",
         original_alloc: int = 0,
     ):
-        """매수 기록 — v2.6 stop/target 직접 계산."""
+        """매수 기록 — v2.7 stop/target 직접 계산."""
         # ATR: 스크리닝 캐시 우선, 없으면 _get_atr 폴백
         cache = self._v23_entry_cache.get(tick.code)
         if cache and cache.get('atr'):

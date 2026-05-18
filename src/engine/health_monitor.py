@@ -78,9 +78,10 @@ class HealthMonitor:
         warnings: list[str] = []
         now = time.time()
 
-        # 장외 시간 무시 (09:00~15:59만 체크)
-        hour = datetime.now().hour
-        if not (9 <= hour <= 15):
+        # 장외 시간 무시 (09:00~15:35만 체크)
+        now_dt = datetime.now()
+        hour, minute = now_dt.hour, now_dt.minute
+        if not ((9, 0) <= (hour, minute) <= (15, 35)):
             return warnings
 
         # heartbeat 지연 체크

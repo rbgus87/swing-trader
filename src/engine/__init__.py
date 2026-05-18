@@ -61,7 +61,7 @@ from src.utils.market_calendar import count_trading_days, is_market_open
 from src.utils.tick_size import adjust_price
 
 
-# v2.6 Universe 파라미터 (config에서 로드, 인스턴스 변수로 관리)
+# v2.7 Universe 파라미터 (config에서 로드, 인스턴스 변수로 관리)
 V23_EXCLUDED_TYPES = ('SPAC', 'REIT', 'FOREIGN', 'PREFERRED')
 V23_BREADTH_GATE = 0.40
 
@@ -138,7 +138,7 @@ class TradingEngine(
 
         self._risk_mgr = RiskManager(self._ds, config.data)
         self._sizer = PositionSizer()
-        # StopManager는 v2.6 규칙으로 초기화:
+        # StopManager는 v2.7 규칙으로 초기화:
         #   SL = entry - ATR×2.0, Trail = highest - ATR×4.0
         #   trailing_activate_pct=0 → 즉시 활성 (후퇴 금지 룰로 초기 SL 유지)
         self._stop_mgr = StopManager(
@@ -149,12 +149,12 @@ class TradingEngine(
         )
         self._telegram = TelegramBot()
 
-        # 단일 전략 모드 (v2.6)
-        self._strategy_type = "TF_v2.6"
+        # 단일 전략 모드 (v2.7)
+        self._strategy_type = "TF_v2.7"
         self._is_adaptive = False
         self._strategies = []
         self._strategy = None
-        logger.info("전략 로드: TrendFollowing v2.6")
+        logger.info("전략 로드: TrendFollowing v2.7")
 
         # breadth 가드레일 캐시 (장전에 갱신)
         self._breadth_ok: bool = True
@@ -170,7 +170,7 @@ class TradingEngine(
         # 17:00 일일 데이터 갱신 중복 실행 방지
         self._data_update_running: bool = False
 
-        # v2.6 진입 후보 캐시 (스크리닝에서 사전 계산)
+        # v2.7 진입 후보 캐시 (스크리닝에서 사전 계산)
         self._v23_entry_cache: dict = {}
 
         # 시장 국면 판단기 (breadth로 대체되지만 레거시 호환 유지)
@@ -257,20 +257,23 @@ class TradingEngine(
         # 체결 콜백 등록 (REST polling 모드에서도 체결 이벤트는 별도 처리)
         self._kiwoom.on_chejan_callback = self.on_chejan
 
-    def _make_safe_job(self, func, job_name: str):
+    def _make_safe_job(self, func, job_name: str, silent: bool = False):
         """스케줄 job 안전 래퍼 팩토리.
 
         AsyncIOScheduler가 직접 호출할 수 있는 async 함수를 반환.
         async/sync 함수 모두 지원.
+        silent=True 이면 정상 실행/완료 로그를 생략 (경고·오류는 항상 출력).
         """
         async def wrapper():
             try:
-                logger.info(f"스케줄 실행: {job_name}")
+                if not silent:
+                    logger.info(f"스케줄 실행: {job_name}")
                 if inspect.iscoroutinefunction(func):
                     await func()
                 else:
                     await asyncio.to_thread(func)
-                logger.info(f"스케줄 완료: {job_name}")
+                if not silent:
+                    logger.info(f"스케줄 완료: {job_name}")
             except Exception as e:
                 logger.error(f"스케줄 job 실패 [{job_name}]: {e}", exc_info=True)
                 try:
@@ -396,7 +399,7 @@ class TradingEngine(
         # 헬스체크 1분 주기 (config.monitoring.health_check_enabled)
         if config.get("monitoring.health_check_enabled", True):
             self._scheduler.add_job(
-                self._make_safe_job(self._run_health_check, "헬스체크"),
+                self._make_safe_job(self._run_health_check, "헬스체크", silent=True),
                 "interval", minutes=1,
                 misfire_grace_time=60,
             )
@@ -404,9 +407,9 @@ class TradingEngine(
         self._scheduler.start()
 
         # watchlist → 후보 등록 (polling 시작 전에 준비)
-        # v2.6: 고정 watchlist 경로 폐기 → 스크리닝으로 Universe 동적 선정
+        # v2.7: 고정 watchlist 경로 폐기 → 스크리닝으로 Universe 동적 선정
         self._candidates = []
-        logger.info("v2.6 모드 — 장전 스크리닝으로 후보 동적 선정")
+        logger.info("v2.7 모드 — 장전 스크리닝으로 후보 동적 선정")
 
         # 재시작 시 보유 포지션 high_since_entry 복구 (일봉 기반)
         try:
@@ -414,11 +417,11 @@ class TradingEngine(
         except Exception as e:
             logger.warning(f"기동 시 high_since_entry 보정 실패: {e}")
 
-        # 엔진 기동 즉시 v2.6 스크리닝 1회 실행 (스케줄 시각(08:30) 대기 없이 바로 후보 확보)
+        # 엔진 기동 즉시 v2.7 스크리닝 1회 실행 (스케줄 시각(08:30) 대기 없이 바로 후보 확보)
         try:
             await self._pre_market_screening()
         except Exception as e:
-            logger.warning(f"기동 시 v2.6 스크리닝 실패 (cron에서 재시도됨): {e}")
+            logger.warning(f"기동 시 v2.7 스크리닝 실패 (cron에서 재시도됨): {e}")
 
         # 장 시간대이면 즉시 REST polling 시작 (프로그램이 장중에 시작된 경우)
         from src.utils.market_calendar import is_trading_day, now_kst
@@ -482,7 +485,7 @@ class TradingEngine(
         self._update_daily_pnl(tick)
 
         # 3. 후보 종목 진입 조건 체크
-        # v2.6 가드레일: breadth < 0.40이면 매수 전체 차단
+        # v2.7 가드레일: breadth < 0.40이면 매수 전체 차단
         if not self._breadth_ok:
             if not getattr(self, "_regime_block_logged", False):
                 logger.info(

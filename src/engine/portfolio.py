@@ -109,7 +109,7 @@ class PortfolioMixin:
             self.halt()
 
     def _switch_strategy_by_regime(self):
-        """v2.6: 단일 전략 모드 — no-op (레거시 호출 호환)."""
+        """v2.7: 단일 전략 모드 — no-op (레거시 호출 호환)."""
         return
 
     def _get_hoga_type(self) -> str:

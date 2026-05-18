@@ -1,9 +1,9 @@
-"""설정 탭 — config.yaml 편집 + .env 관리 (v2.6 전용).
+"""설정 탭 — config.yaml 편집 + .env 관리 (v2.7 전용).
 
-v2.6 정리:
+v2.7 정리:
   - 5개 탭: 매매 / 전략 / 리스크 / 스케줄 / API
   - 종목관리/스크리닝 탭 제거 (v1 레거시 — 동적 Universe 사용)
-  - 전략 탭: TrendFollowing v2.6 파라미터 직접 편집
+  - 전략 탭: TrendFollowing v2.7 파라미터 직접 편집
 
 슬라이더 값은 ×1000 또는 ×scale 정수로 저장하여 float 정밀도 유지.
 """
@@ -125,7 +125,7 @@ class SettingField:
 
 
 class SettingsTab(QWidget):
-    """설정 탭 — config.yaml + .env 편집 (v2.6 전용)."""
+    """설정 탭 — config.yaml + .env 편집 (v2.7 전용)."""
 
     def __init__(self, config_path: str = "config.yaml", parent=None):
         super().__init__(parent)
@@ -157,7 +157,7 @@ class SettingsTab(QWidget):
             elif child.layout():
                 self._clear_layout(child.layout())
 
-        # v2.6 서브탭 — 5개
+        # v2.7 서브탭 — 5개
         self.sub_tabs = QTabWidget()
         self.sub_tabs.addTab(self._build_trading_tab(), "\U0001F4B0 매매")
         self.sub_tabs.addTab(self._build_strategy_tab(), "\U0001F3AF 전략")
@@ -230,7 +230,7 @@ class SettingsTab(QWidget):
         info = QLabel(
             f"• 시총 {min_cap}조원 이상 / 거래대금 {min_amt}억원 이상\n"
             f"• {refresh}일마다 재계산 (분기별)\n"
-            "• v2.6 단일 전략(TrendFollowing)이 매일 동적으로 진입 후보 산출"
+            "• v2.7 단일 전략(TrendFollowing)이 매일 동적으로 진입 후보 산출"
         )
         info.setStyleSheet(
             "color: #a6adc8; font-size: 11px; line-height: 1.4; "
@@ -263,8 +263,8 @@ class SettingsTab(QWidget):
 
         tf = self._config.get("trend_following", {})
 
-        # v2.6 전략 요약 (읽기 전용)
-        form.addRow(self._make_separator("현재 전략 (TrendFollowing v2.6)"))
+        # v2.7 전략 요약 (읽기 전용)
+        form.addRow(self._make_separator("현재 전략 (TrendFollowing v2.7)"))
         summary = QLabel(
             "• 진입: 추세추종 (완전 정배열 + MA60 +5~+20% + MACD hist > 0\n"
             "        + 시장별 상대강도 +5%p + ADX≥20)\n"
@@ -372,7 +372,7 @@ class SettingsTab(QWidget):
         form.addRow("최대 MDD (-)", self.w_max_mdd)
 
         info = QLabel(
-            "• v2.6 사이징은 trend_following.sizing_mode가 결정 (전략 탭 참고)\n"
+            "• v2.7 사이징은 trend_following.sizing_mode가 결정 (전략 탭 참고)\n"
             "• SL / Trail 등 청산 ATR 배수는 전략 탭에서 관리"
         )
         info.setStyleSheet(
@@ -519,7 +519,7 @@ class SettingsTab(QWidget):
         self._build_content()
 
     def _collect_config(self):
-        """위젯 값들을 self._config 딕셔너리에 수집 (v2.6 사양)."""
+        """위젯 값들을 self._config 딕셔너리에 수집 (v2.7 사양)."""
 
         # ── trading ──
         trading = self._config.setdefault("trading", {})
@@ -529,7 +529,7 @@ class SettingsTab(QWidget):
         trading["entry_start_time"] = self.w_entry_start.text()
         trading["entry_end_time"] = self.w_entry_end.text()
 
-        # ── trend_following (v2.6 청산 파라미터 + 사이징) ──
+        # ── trend_following (v2.7 청산 파라미터 + 사이징) ──
         tf = self._config.setdefault("trend_following", {})
         tf["stop_loss_atr"] = self.w_sl_atr._slider.value() / self.w_sl_atr._scale
         tf["take_profit_atr"] = self.w_tp1_atr._slider.value() / self.w_tp1_atr._scale
@@ -540,7 +540,7 @@ class SettingsTab(QWidget):
         tf["max_hold_days"] = self.w_hold_days.value()
         tf["sizing_mode"] = self.w_sizing_mode.currentText()
 
-        # ── risk (v2.6 사용 항목만) ──
+        # ── risk (v2.7 사용 항목만) ──
         risk = self._config.setdefault("risk", {})
         risk["min_position_amount"] = self.w_min_pos_amount.value()
         risk["daily_loss_limit"] = -(self.w_daily_loss_limit._slider.value() / 1000)

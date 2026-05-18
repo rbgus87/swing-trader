@@ -136,8 +136,30 @@ class TestCheckHealth:
         mon.status.last_tick_time = time.time() - 400  # 400초 전 = 5분 초과
         with patch("src.engine.health_monitor.datetime") as mock_dt:
             mock_dt.now.return_value.hour = 11
+            mock_dt.now.return_value.minute = 0
             result = mon.check_health()
         assert any("틱" in w for w in result)
+
+    def test_after_market_close_returns_empty(self, tmp_path):
+        """15:36 이후는 장외 — heartbeat stale이어도 경고 없음."""
+        mon = _make_monitor(tmp_path, stale_threshold=10)
+        mon.status.last_heartbeat = time.time() - 300  # 5분 전 (stale)
+        with patch("src.engine.health_monitor.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 15
+            mock_dt.now.return_value.minute = 36
+            result = mon.check_health()
+        assert result == []
+
+    def test_at_market_close_boundary_checks(self, tmp_path):
+        """15:35는 장중 마지막 분 — heartbeat stale 경고 발생."""
+        mon = _make_monitor(tmp_path, stale_threshold=10)
+        mon.status.last_heartbeat = time.time() - 30  # 30초 전 (stale)
+        with patch("src.engine.health_monitor.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 15
+            mock_dt.now.return_value.minute = 35
+            result = mon.check_health()
+        assert len(result) == 1
+        assert "Heartbeat" in result[0]
 
 
 # ---------------------------------------------------------------------------
