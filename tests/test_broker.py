@@ -34,12 +34,17 @@ from src.broker.tr_codes import (
     TR_OPW00004,
     TR_OPW00018,
     # REST API 상수
-    API_STOCK_ORDER,
+    API_STOCK_BUY,
+    API_STOCK_SELL,
+    API_STOCK_MODIFY,
     API_STOCK_CANCEL,
+    API_STOCK_ORDER,
     API_STOCK_PRICE,
     API_STOCK_DAILY,
     API_STOCK_MINUTE,
     API_ACCOUNT_BALANCE,
+    API_ACCOUNT_HOLDINGS,
+    API_ORDER_AVAILABLE,
     EP_ORDER,
     EP_STOCK,
     EP_CHART,
@@ -107,12 +112,17 @@ class TestTrCodes:
 
     def test_rest_api_ids(self):
         """REST API ID 상수 검증."""
-        assert API_STOCK_ORDER == "kt10000"
-        assert API_STOCK_CANCEL == "kt10001"
+        assert API_STOCK_BUY == "kt10000"
+        assert API_STOCK_SELL == "kt10001"
+        assert API_STOCK_MODIFY == "kt10002"
+        assert API_STOCK_CANCEL == "kt10003"
+        assert API_STOCK_ORDER == API_STOCK_BUY   # deprecated alias
         assert API_STOCK_PRICE == "ka10001"
-        assert API_STOCK_DAILY == "ka10002"
-        assert API_STOCK_MINUTE == "ka10003"
+        assert API_STOCK_DAILY == "ka10081"
+        assert API_STOCK_MINUTE == "ka10080"
         assert API_ACCOUNT_BALANCE == "ka10070"
+        assert API_ACCOUNT_HOLDINGS == "kt00018"
+        assert API_ORDER_AVAILABLE == "kt00010"
 
     def test_rest_endpoints(self):
         """REST 엔드포인트 상수 검증."""

@@ -205,8 +205,8 @@ class KiwoomRestClient:
     async def send_order(self, code: str, qty: int, price: int,
                          order_type: int, hoga_type: str,
                          account: str) -> dict:
-        """주문 전송."""
-        from src.broker.tr_codes import API_STOCK_ORDER, EP_ORDER
+        """매수 주문 전송."""
+        from src.broker.tr_codes import API_STOCK_BUY, EP_ORDER
         data = {
             "stk_cd": code,
             "ord_qty": qty,
@@ -215,25 +215,37 @@ class KiwoomRestClient:
             "ord_tp": order_type,
             "acnt_no": account,
         }
-        return await self.request("POST", EP_ORDER, API_STOCK_ORDER, data=data)
+        return await self.request("POST", EP_ORDER, API_STOCK_BUY, data=data)
 
     async def cancel_order(self, order_no: str, code: str, qty: int,
                            account: str) -> dict:
-        """주문 취소."""
-        from src.broker.tr_codes import API_STOCK_CANCEL, EP_ORDER
+        """매도 주문 전송."""
+        from src.broker.tr_codes import API_STOCK_SELL, EP_ORDER
         data = {
             "org_ord_no": order_no,
             "stk_cd": code,
             "ord_qty": qty,
             "acnt_no": account,
         }
-        return await self.request("POST", EP_ORDER, API_STOCK_CANCEL, data=data)
+        return await self.request("POST", EP_ORDER, API_STOCK_SELL, data=data)
 
     async def get_account_balance(self, account: str) -> dict:
         """계좌 잔고 조회."""
         from src.broker.tr_codes import API_ACCOUNT_BALANCE, EP_ACCOUNT
         data = {"acnt_no": account}
         return await self.request("POST", EP_ACCOUNT, API_ACCOUNT_BALANCE, data=data)
+
+    async def get_account_holdings(self, account: str) -> dict:
+        """계좌평가잔고내역 — 보유종목/수량/평가금액."""
+        from src.broker.tr_codes import API_ACCOUNT_HOLDINGS, EP_ACCOUNT
+        data = {"acnt_no": account, "req_type": "0"}
+        return await self.request("POST", EP_ACCOUNT, API_ACCOUNT_HOLDINGS, data=data)
+
+    async def get_order_available(self, account: str) -> dict:
+        """주문인출가능금액."""
+        from src.broker.tr_codes import API_ORDER_AVAILABLE, EP_ACCOUNT
+        data = {"acnt_no": account}
+        return await self.request("POST", EP_ACCOUNT, API_ORDER_AVAILABLE, data=data)
 
     async def close(self):
         """클라이언트 종료."""

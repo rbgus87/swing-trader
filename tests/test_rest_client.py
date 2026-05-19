@@ -108,6 +108,40 @@ class TestKiwoomRestClient:
         assert result[0]["close"] == 50000
 
     @pytest.mark.asyncio
+    async def test_get_account_holdings(self, client):
+        """계좌평가잔고내역 조회."""
+        client._access_token = "token"
+        client._token_expires = datetime.now() + timedelta(hours=23)
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"return_code": 0, "acnt_evlt_remn_indv_tot": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(client._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            result = await client.get_account_holdings("1234567890")
+
+        assert result["return_code"] == 0
+        call_headers = mock_post.call_args.kwargs["headers"]
+        assert call_headers["api-id"] == "kt00018"
+
+    @pytest.mark.asyncio
+    async def test_get_order_available(self, client):
+        """주문인출가능금액 조회."""
+        client._access_token = "token"
+        client._token_expires = datetime.now() + timedelta(hours=23)
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"return_code": 0, "ord_psbl_amt": "5000000"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(client._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            result = await client.get_order_available("1234567890")
+
+        assert result["return_code"] == 0
+        call_headers = mock_post.call_args.kwargs["headers"]
+        assert call_headers["api-id"] == "kt00010"
+
+    @pytest.mark.asyncio
     async def test_close(self, client):
         """클라이언트 종료."""
         with patch.object(client._client, "aclose", new_callable=AsyncMock) as mock_close:

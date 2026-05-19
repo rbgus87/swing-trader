@@ -155,6 +155,12 @@ class PollingMixin:
             while self._running:
                 cycle_start = asyncio.get_event_loop().time()
 
+                # 폴링 루프 생존 확인 — 보유 유무 무관하게 매 사이클 호출
+                try:
+                    self._health.beat()
+                except AttributeError:
+                    pass
+
                 # polling 대상 결정: 보유 종목 + (여유 있을 때만) 후보 종목
                 open_positions = self._get_cached_positions()
                 held_codes = {p["code"] for p in open_positions} if open_positions else set()
@@ -164,6 +170,12 @@ class PollingMixin:
                 poll_codes: set[str] = set(held_codes)
                 if not positions_full and self._candidates:
                     poll_codes.update(self._candidates)
+
+                # 틱 수신 중단 경고 조건 갱신
+                try:
+                    self._health.status.has_positions = len(held_codes) > 0
+                except AttributeError:
+                    pass
 
                 if not poll_codes:
                     logger.debug("polling 대상 없음 — 다음 주기 대기")
@@ -205,11 +217,9 @@ class PollingMixin:
                     # rate limit 준수: 5 TR/sec → 0.2초 간격
                     await asyncio.sleep(0.2)
 
-                # heartbeat / poll_failure 기록
+                # poll_failure 기록 (beat()는 루프 최상단에서 처리)
                 try:
-                    if success_count > 0:
-                        self._health.beat()
-                    elif fail_count > 0 and success_count == 0:
+                    if fail_count > 0 and success_count == 0:
                         self._health.record_poll_failure()
                 except AttributeError:
                     pass

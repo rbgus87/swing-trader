@@ -48,12 +48,25 @@ ERR_CODES = {
 
 # ── REST API IDs ──
 API_AUTH_TOKEN = "au10001"
-API_STOCK_ORDER = "kt10000"
-API_STOCK_CANCEL = "kt10001"
+
+# 주문
+API_STOCK_BUY = "kt10000"     # 주식 매수주문
+API_STOCK_SELL = "kt10001"    # 주식 매도주문
+API_STOCK_MODIFY = "kt10002"  # 주식 정정주문
+API_STOCK_CANCEL = "kt10003"  # 주식 취소주문
+API_STOCK_ORDER = API_STOCK_BUY  # deprecated — API_STOCK_BUY 사용 권장
+
+# 시세
 API_STOCK_PRICE = "ka10001"
-API_STOCK_DAILY = "ka10002"
-API_STOCK_MINUTE = "ka10003"
-API_ACCOUNT_BALANCE = "ka10070"
+API_STOCK_DAILY = "ka10081"   # 주식일봉차트조회요청 (구: ka10002)
+API_STOCK_MINUTE = "ka10080"  # 주식분봉차트조회요청 (구: ka10003)
+
+# 계좌
+API_ACCOUNT_BALANCE = "ka10070"    # 업종별계좌평가현황
+API_ACCOUNT_HOLDINGS = "kt00018"   # 계좌평가잔고내역 (보유종목/수량/평가금액)
+API_ORDER_AVAILABLE = "kt00010"    # 주문인출가능금액
+
+# 종목 목록
 API_STOCK_LIST = "ka10100"
 
 # ── REST Endpoints ──

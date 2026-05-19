@@ -29,6 +29,7 @@ class TestHealthStatus:
         assert s.last_heartbeat == 0.0
         assert s.consecutive_poll_failures == 0
         assert s.polling_active is False
+        assert s.has_positions is False
         assert s.engine_started is False
         assert s.warnings == []
 
@@ -133,12 +134,25 @@ class TestCheckHealth:
     def test_tick_stale_warning(self, tmp_path):
         mon = _make_monitor(tmp_path)
         mon.status.polling_active = True
+        mon.status.has_positions = True
         mon.status.last_tick_time = time.time() - 400  # 400초 전 = 5분 초과
         with patch("src.engine.health_monitor.datetime") as mock_dt:
             mock_dt.now.return_value.hour = 11
             mock_dt.now.return_value.minute = 0
             result = mon.check_health()
         assert any("틱" in w for w in result)
+
+    def test_tick_stale_no_warning_when_no_positions(self, tmp_path):
+        """보유 종목 0종목이면 틱 수신 중단 경고 발생하지 않음."""
+        mon = _make_monitor(tmp_path)
+        mon.status.polling_active = True
+        mon.status.has_positions = False  # 보유 없음
+        mon.status.last_tick_time = time.time() - 400
+        with patch("src.engine.health_monitor.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 11
+            mock_dt.now.return_value.minute = 0
+            result = mon.check_health()
+        assert not any("틱" in w for w in result)
 
     def test_after_market_close_returns_empty(self, tmp_path):
         """15:36 이후는 장외 — heartbeat stale이어도 경고 없음."""

@@ -19,6 +19,7 @@ class HealthStatus:
     polling_active: bool = False         # 폴링 루프 활성 여부
     engine_started: bool = False         # 엔진 시작 여부
     last_daily_update: str = ""          # 마지막 일일 데이터 갱신 날짜
+    has_positions: bool = False          # 현재 보유 종목 존재 여부
     warnings: list[str] = field(default_factory=list)
 
 
@@ -95,8 +96,10 @@ class HealthMonitor:
                 warnings.append(msg)
                 self._alert("HEARTBEAT_STALE", msg)
 
-        # 폴링 중인데 틱이 5분 이상 안 들어오는 경우
-        if self.status.polling_active and self.status.last_tick_time > 0:
+        # 폴링 중이고 보유 종목이 있을 때만 틱 수신 중단 경고
+        if (self.status.polling_active
+                and self.status.has_positions
+                and self.status.last_tick_time > 0):
             tick_elapsed = now - self.status.last_tick_time
             if tick_elapsed > 300:
                 msg = f"⚠️ 틱 수신 중단: {tick_elapsed:.0f}초 경과"
