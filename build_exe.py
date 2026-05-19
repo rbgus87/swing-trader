@@ -63,6 +63,15 @@ def build() -> None:
         "--hidden-import=src.strategy.dynamic_hold",
         "--hidden-import=src.strategy.scaling",
         "--hidden-import=src.strategy.etf_mean_reversion",
+        # ── 스코어러 + 감시 목록 (Phase C 이후) ──
+        "--hidden-import=src.strategy.scorers",
+        "--hidden-import=src.strategy.scorers.indicators",
+        "--hidden-import=src.strategy.scorers.technical",
+        "--hidden-import=src.strategy.scorers.momentum",
+        "--hidden-import=src.strategy.scorers.supply",
+        "--hidden-import=src.strategy.scorers.fundamental",
+        "--hidden-import=src.strategy.watchlist_scorer",
+        "--hidden-import=src.strategy.score_adapter",
         # ── 데이터 파이프라인 (일일 실행용) ──
         "--hidden-import=src.data_pipeline",
         "--hidden-import=src.data_pipeline.db",
