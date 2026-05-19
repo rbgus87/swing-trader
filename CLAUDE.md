@@ -637,6 +637,33 @@ B3/B4/B5 = disabled (config.yaml에 반영, 2026-05-16)
 - OOS 유지율 300%+는 2022~2026 상승장과의 궁합. 하락장에서 재검증 필요.
 - ranking_weights 합 검증: 0.50+0.20+0.15+0.10+0.05 = 1.00 ✅
 
+## 청산 파라미터 재최적화 (2026-05-19) — v2.7.1 확정
+
+### 변경 내용
+
+| 파라미터 | v2.7 | v2.7.1 | 근거 |
+|---------|------|--------|------|
+| stop_loss_atr | 3.0 | **2.5** | 손절 전담 (SL < Trail 역할 분리) |
+| take_profit_atr (TP1) | 1.5 | **1.0** | 조기 일부 익절 앞당김 |
+| tp2_atr (TP2) | 4.0 | **6.0** | 큰 수익 더 늦게 확보 |
+| trailing_atr | 3.0 | **4.0** | 이익 추적 전담 (SL과 분리) |
+
+### 검증 결과
+
+- 전체 기간 백테스트 (2014~2026): PF 1.27 → **1.51**, CAGR +7.3% → **+9.5%**, WR 59.5% → **61.1%**
+- Walk-Forward (2년Train/1년Test/10윈도우): 5/10 WARN → **5/10 WARN** (현행과 동일)
+- trailing_stop 평균 PnL: +13,007원 → **+165,772원** (Trail이 이익 보호 전담 확인)
+- SL 발동 건수: 1건 → 67건 (SL=손절, Trail=이익추적으로 역할 명확히 분리)
+
+### 롤백 값 (v2.7)
+```
+stop_loss_atr: 3.0 / take_profit_atr: 1.5 / tp2_atr: 4.0 / trailing_atr: 3.0
+```
+
+### 실험 파일
+- `experiments/experiment_exit_reoptimize.py` — 3라운드 그리드 서치
+- `experiments/run_wf_new_exit.py` — [A]/[B] WF 비교
+
 ## 옛 절대규칙 무효화
 
 이전 CLAUDE.md에 있던 다음 규칙들은 Phase 1 재설계로 무효:
