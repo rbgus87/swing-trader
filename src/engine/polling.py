@@ -170,6 +170,13 @@ class PollingMixin:
                 poll_codes: set[str] = set(held_codes)
                 if not positions_full and self._candidates:
                     poll_codes.update(self._candidates)
+                # 감시 목록 상위 N종목 폴링 (0포지션 시에도 heartbeat 유지)
+                _wl = getattr(self, "_scored_watchlist", [])
+                if _wl:
+                    _poll_top_n = int(
+                        config.get("watchlist.scorer.poll_top_n", 20)
+                    )
+                    poll_codes.update(item.ticker for item in _wl[:_poll_top_n])
 
                 # 틱 수신 중단 경고 조건 갱신
                 try:

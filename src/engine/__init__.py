@@ -216,6 +216,8 @@ class TradingEngine(
         # partial_sold는 DB positions.partial_sold 컬럼으로 관리
         self._daily_trades_cache: list[dict] | None = None  # 당일 매매 기록 캐시
         self._entry_logged: dict[str, str] = {}  # 종목별 마지막 로그 사유 (반복 방지)
+        self._scored_watchlist: list = []  # 스코어 기반 감시 목록 (모니터링 전용)
+        self._watchlist_prev_scores: dict[str, float] = {}  # 전일 스코어 (급등 감지용)
 
         # MDD 초기 자본 설정 + DB에서 마지막 세션 복원
         self._risk_mgr.set_initial_capital(float(self._initial_capital))

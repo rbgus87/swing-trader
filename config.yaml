@@ -255,3 +255,24 @@ etf_strategy:
   min_idle_cash: 1_000_000        # 유휴 현금 최소 100만원 이상이어야 진입
   cost_pct: 0.0003                # ETF 왕복 수수료 0.03%
 
+
+# ============================================================================
+# 감시 목록 (스코어러 기반 — 모니터링 전용, 매매 판단과 독립)
+# ============================================================================
+# 스코어 = technical × weight_technical + momentum × weight_momentum
+# 매매 판단은 v2.7 이진 필터 그대로. 감시 목록은 폴링·GUI·텔레그램 표시 전용.
+
+watchlist:
+  scorer:
+    enabled: true
+    min_score: 40                 # 이 점수 미만 종목은 목록 제외
+    max_size: 50                  # 감시 목록 최대 종목 수
+    weight_technical: 0.60        # Technical 스코어 가중치
+    weight_momentum: 0.40         # Momentum 스코어 가중치
+    poll_top_n: 20                # 폴링 루프에 추가할 상위 N종목
+
+  alerts:
+    score_jump_threshold: 15      # 이 점수 이상 급등 시 텔레그램 알림
+    daily_summary: true           # 스크리닝 후 일일 요약 텔레그램 발송
+    summary_top_n: 5              # 일일 요약 상위 N종목
+

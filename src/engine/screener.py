@@ -348,6 +348,50 @@ class ScreenerMixin:
         for c in scored:
             self._atr_cache[c['code']] = c['atr']
 
+        # 감시 목록 생성 (스코어러 — 매매 판단과 독립, 모니터링 전용)
+        try:
+            from src.strategy.watchlist_scorer import WatchlistConfig, build_watchlist
+            from src.strategy.score_adapter import load_daily_for_scorer, load_market_df
+            _wl_cfg = WatchlistConfig.from_config(config.data)
+            if _wl_cfg.enabled:
+                _ticker_meta = {
+                    t: {"name": n, "market": m, "industry": i or ""}
+                    for t, n, m, i in universe
+                }
+                _ticker_data = load_daily_for_scorer(
+                    list(_ticker_meta.keys()), lookback_days=180, today=today
+                )
+                _market_map = {
+                    "KOSPI": load_market_df("KOSPI", 180, today),
+                    "KOSDAQ": load_market_df("KOSDAQ", 180, today),
+                }
+                _wl = build_watchlist(_ticker_data, _market_map, _wl_cfg, _ticker_meta)
+                self._scored_watchlist = _wl
+                # 스코어 이름 캐시 보강 (폴링 name 조회용)
+                for _item in _wl:
+                    self._poll_stock_names.setdefault(_item.ticker, _item.name)
+
+                # 스코어 급등 알림
+                _jump_thresh = float(
+                    config.get("watchlist.alerts.score_jump_threshold", 15.0)
+                )
+                for _item in _wl:
+                    _prev_s = self._watchlist_prev_scores.get(_item.ticker)
+                    if _prev_s is not None and (_item.score - _prev_s) >= _jump_thresh:
+                        try:
+                            self._telegram.send(
+                                f"📈 스코어 급등: {_item.name}({_item.ticker})\n"
+                                f"  {_prev_s:.0f}점 → {_item.score:.0f}점 "
+                                f"(+{_item.score - _prev_s:.0f}점)"
+                            )
+                        except Exception:
+                            pass
+                self._watchlist_prev_scores = {
+                    _item.ticker: _item.score for _item in _wl
+                }
+        except Exception as _wl_err:
+            logger.warning("감시 목록 생성 실패: {}", _wl_err)
+
         logger.bind(
             event="SCREENING",
             data={
@@ -381,10 +425,27 @@ class ScreenerMixin:
             if config.get("trend_following.regime_gate_enabled", True):
                 ma200_tag = "OK" if self._market_regime.is_bullish else "FAIL"
                 regime_label = f" / MA200 {ma200_tag}"
+            # 감시 목록 일일 요약
+            wl_text = ""
+            if config.get("watchlist.alerts.daily_summary", True):
+                _top_n = int(config.get("watchlist.alerts.summary_top_n", 5))
+                _wl_items = getattr(self, "_scored_watchlist", [])
+                if _wl_items:
+                    _wl_lines = [
+                        f"  {w.name}({w.ticker}) {w.score:.0f}점 "
+                        f"T{w.technical_score:.0f}/M{w.momentum_score:.0f}"
+                        for w in _wl_items[:_top_n]
+                    ]
+                    wl_text = (
+                        f"\n\n📊 관심종목 Top{min(_top_n, len(_wl_items))}:\n"
+                        + "\n".join(_wl_lines)
+                    )
+
             self._telegram.send(
                 f"📋 v2.7 후보 {n_cands}종목\n"
                 f"시장: {gate_mark} (breadth {breadth:.0%}{regime_label})\n\n"
                 f"{sample_text}{more}"
+                f"{wl_text}"
             )
         except Exception:
             pass
